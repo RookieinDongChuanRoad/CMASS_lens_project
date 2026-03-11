@@ -1,0 +1,66 @@
+# Root ignore policy for publishing this research codebase to GitHub.
+# The intent is to version source code, configs, tests, and documentation,
+# while excluding machine-local state, generated outputs, and large binaries
+# that would make the repository noisy, slow to clone, or impossible to push.
+
+# macOS / editor metadata that is specific to one workstation.
+.DS_Store
+.obsidian/
+
+# Python cache directories and interpreter artifacts. These files are
+# reproducible locally and should not be shared as source of truth.
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and local dependency installations are environment
+# specific and must be recreated by each developer.
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter checkpoint files are generated automatically and do not contain
+# authoritative notebook content.
+.ipynb_checkpoints/
+
+# Research outputs and benchmark artifacts are generated from runs, often
+# large, and would dominate repository size without adding maintainable code.
+outputs/
+Posterior_predictive_test/results/
+Posterior_predictive_test/worktrees/
+key_tests/output/
+
+# Data caches and derived artifacts are not part of the code snapshot that
+# should be published to GitHub.
+data/caches/
+data/derived/
+
+# Binary data products from samplers, interpolation grids, raw observation
+# dumps, and packaged experiment outputs are intentionally excluded from the
+# code-only sync.
+*.h5
+*.hdf5
+*.npz
+
+# Local databases, secrets, and private credentials should never be pushed.
+*.db
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.p12
+.env
+.env.*
+
+# Temporary logs and scratch files are useful during local development but
+# should not be treated as durable repository content.
+*.log
+*.tmp
+*.swp

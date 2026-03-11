@@ -1,0 +1,43 @@
+profile:
+  name: devauc
+data:
+  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_m5_grids.hdf5
+  cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
+sampling:
+  n_walkers: 24
+  n_steps: 4
+  warmup: 0
+  random_seed: 7
+  initial_center:
+    mu5_0: 11.32
+    beta5: 0.59
+    xi5: -0.11
+    sigma5: 0.06
+    mu_gamma_0: 1.99
+    beta_gamma: 0.1
+    xi_gamma: -0.67
+    sigma_gamma: 0.149
+    mu_zs: 1.8
+    sigma_zs: 0.215
+    theta0: 0.93
+    loga: 1.0
+  initial_jitter_scale: 0.001
+integration:
+  gamma_points: 200
+  mstar_points: 200
+  normalization_samples: 100000
+runtime:
+  distance_table_max_z: 5.0
+  distance_table_size: 8001
+  checkpoint_every: 2
+  parallel_strategy: kernel_only
+  progress: false
+  progress_summary_every: 20
+  show_stage_timing: false
+  disable_hdf5_file_locking: false
+  num_threads: 12
+  reserve_cores: 2
+output:
+  root_dir: /Users/liurongfu/Work/CMASS_lens_project/key_tests/output/current/devauc/smoke
+  run_label: smoke
+  overwrite_latest: true
