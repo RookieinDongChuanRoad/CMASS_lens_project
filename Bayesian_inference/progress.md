@@ -209,6 +209,44 @@
 | 2026-03-08 18:13 CST | benchmark 显示当前实现仍略慢且数值与 reference 不够贴齐 | 1 | 定位到 normalization 错把原始 `cs_gamma_grid` 与 200 点 `cs_over_theta_int` 混用；拆分 raw/int 表后 benchmark 达标 |
 | 2026-03-08 18:25 CST | 直接运行 benchmark 脚本仍出现 `OMP: Info #276...` | 1 | 进一步缩小到启动阶段环境变量设置时机过晚；下一步用 `sitecustomize.py` 修复而不是改 kernel |
 | 2026-03-08 20:37 CST | OpenMP warning 清理后 fresh benchmark 相比前一轮略慢 | 1 | 记录为轻微性能波动；当前未见数量级回退，但也不能宣称完全零影响 |
+| 2026-03-11 14:12 CST | 用户指出最近一次 `devauc` run 中有一条链疑似卡住 | 1 | 先做只读诊断，确认异常链索引、参数轨迹、`log_prob` 量级和对后处理的污染范围 |
+
+## Recent Work Log
+- 读取最近一次 `devauc` 生产 run 的 `chain.h5`、`run_result.json`、`metadata.json` 和 `posterior_corner_result.json`，确认目标目录是 `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308`。
+- 对 24 条 walker 做逐条诊断，锁定 `walker 12` 为异常链：
+  - `mu5_0` 长期停在 `10.47-10.49`
+  - 仅 `196` 次位置变化
+  - 末尾 `375` 步不动
+  - `log_prob` 量级异常为 `53-55`
+- 先运行一次红灯校验，确认当前 run 仍是污染状态：
+  - `chain_shape=(13337, 24, 12)`
+  - `nwalkers=24`
+  - `max_logp=54.996162579035`
+  - `n_posterior_samples=272088`
+- 使用一次性事务式 Python 清洗脚本原地重写该 run：
+  - 临时生成 `chain.h5.tmp-cleanup`
+  - 用 `emcee.backends.HDFBackend` 验证临时文件后原子替换正式 `chain.h5`
+  - 同步重写 checkpoint、`config_snapshot.yaml`、`metadata.json`、`run_result.json`
+  - 基于过滤后样本覆盖重画 `posterior_corner.png`
+  - 覆盖更新 `posterior_corner_result.json`
+  - 在 `logs/run.log` 末尾追加 maintenance 记录
+- Files created/modified:
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/chain.h5` (rewritten)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/checkpoints/latest_coords.npy` (rewritten)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/checkpoints/latest_log_prob.npy` (rewritten)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/config_snapshot.yaml` (updated)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/metadata.json` (updated)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/run_result.json` (updated)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/posterior_corner.png` (regenerated)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/posterior_corner_result.json` (updated)
+  - `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_215643_devauc_devauc_prod_20260308/logs/run.log` (appended)
+
+## Test Results
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| 清洗前红灯校验 | 只读 Python 检查 `chain.h5` / `posterior_corner_result.json` | 当前 run 仍为未清洗污染状态 | 失败并报告 `24` walkers、`max_logp=54.996...`、`n_posterior_samples=272088` | ✓ |
+| 事务式清洗执行 | 一次性 Python 清洗脚本 | 原地删除 `walker 12` 并重建派生结果 | 成功输出 `chain_shape (13337, 23, 12)`、`posterior_samples 260751` | ✓ |
+| 清洗后 fresh 校验 | `conda run -n cmass_lens python` + `emcee.HDFBackend` 重新读取磁盘结果 | HDF5/JSON/checkpoint/派生图全部自洽 | `POSTCHECK_PASS`，`max_logp=-11.326...`，`mu5_median=11.346...`，`n_posterior_samples=260751` | ✓ |
 
 ## 5-Question Reboot Check
 | Question | Answer |

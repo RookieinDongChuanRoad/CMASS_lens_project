@@ -17,7 +17,9 @@ from pathlib import Path
 import emcee
 import h5py
 import numpy as np
+import pytest
 
+from cmass_lens_inference.cli import build_argument_parser
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 from cmass_lens_inference.outputs import create_run_layout, save_checkpoint
@@ -196,3 +198,15 @@ def test_run_inference_supports_process_pool_strategy(synthetic_config_path: Pat
     assert run_result.metadata["parallelism"]["worker_processes"] == 2
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
     assert "strategy process_pool" in run_log_text
+
+
+def test_cli_no_longer_exposes_ppt_family_commands() -> None:
+    """The inference CLI should stay focused on run/resume after PPT migration."""
+
+    parser = build_argument_parser()
+    subparser_actions = [action for action in parser._actions if getattr(action, "choices", None)]
+    command_choices = subparser_actions[0].choices
+
+    assert "posterior-predictive" not in command_choices
+    assert "posterior-predictive-monitor" not in command_choices
+    assert "posterior-trends" not in command_choices

@@ -1,10 +1,10 @@
-# 任务计划：SLACS 后验预测检验实现
+# 任务计划：SLACS 后验预测检验与独立化迁移
 
 ## 目标
-在 `Bayesian_inference` 中实现可维护的 posterior predictive test CLI，分别对 `devauc` 与 `sersic` 最新 MCMC 后验样本生成 `theta_E` 和 `sigma` 的 replicated sample 统计结果，并在 `prepare_intepolation_grids` 中落一份 sigma 插值表需求文档。
+先前已完成 `devauc` / `sersic` 的 posterior predictive test、monitor、notebook comparison 和 Fig. 8 类趋势图实现；当前目标是在不改变科学合同的前提下，将这些 PPT 家族代码完整迁移出 `Bayesian_inference`，收拢到 `Posterior_predictive_test` 自己的独立包中，并把 `Bayesian_inference` 恢复为只包含 inference engine 与 `run/resume` 的纯净包。
 
 ## 当前阶段
-Phase 11
+Phase 12
 
 ## 阶段计划
 
@@ -79,16 +79,32 @@ Phase 11
 - [x] 用真实 `devauc/latest` 和 `sersic/latest` 重跑 canonical 结果并覆盖落盘
 - **Status:** complete
 
+### Phase 12: Posterior_predictive_test 独立化迁移
+- [x] 在 `Posterior_predictive_test/` 下建立独立包结构、CLI 和本地结果 dataclass
+- [x] 将 PPT / trend / notebook comparison 实现与测试迁出 `Bayesian_inference`
+- [x] 清理 `Bayesian_inference` 中的 PPT 源码、CLI 子命令、公开导出与测试
+- [x] 完成双包测试、editable 安装与新 CLI 验证
+- **Status:** complete
+
+### Phase 13: devauc chain 覆盖后的产物刷新
+- [x] 确认 `devauc/latest/chain.h5` 在执行前已静止
+- [x] 用独立包 CLI 重跑 devauc 的 `posterior-predictive`
+- [x] 用独立包 CLI 重跑 devauc 的 `posterior-trends`
+- [x] 核对 7 个目标工件时间戳与关键 JSON 合同
+- **Status:** complete
+
 ## 关键问题
 1. 新的 PPC 逻辑应放在 `Bayesian_inference` 包内哪些模块，才能最大化复用现有 inference 代码？
 2. 在 sigma 插值表尚未产出的情况下，CLI 应如何设计输入契约，既能完整实现又不把假设写死？
 3. replicated sample 与 normalization kernel 共享哪些分布和 selection 权重，哪些职责必须拆分？
 4. notebook `full_0103.h5` 的结果差异究竟来自哪个实现分叉：总体生成、参数顺序、sigma 插值器，还是后处理统计口径？
+5. 如何在不破坏现有科学合同的前提下，把 PPT 家族工作流从 inference engine 中完整剥离？
+6. 当 `latest` 指向不变但底层 `chain.h5` 被覆盖时，如何刷新单 profile 的正式产物而不误伤另一个 profile？
 
 ## 已做决策
 | 决策 | 理由 |
 |------|------|
-| PPC 主实现放进 `Bayesian_inference/src/cmass_lens_inference/` | 复用已有配置、后验链、profile 与宇宙学逻辑，避免平行实现 |
+| PPT 家族代码整体迁移到 `Posterior_predictive_test/src/cmass_posterior_predictive/` | 用户要求保持 `Bayesian_inference` “纯粹”，不再承载研究型 PPT 工作流 |
 | `theta_E` 与 `sigma` 的 replicated sample 分两次独立抽样 | 这是用户确认的统计口径，且与真实 23-lens / 7-lens 对照最一致 |
 | sigma 侧消费“大插值表”而非逐星系 `s2_grid` | 更接近 `prepare_intepolation_grids` 的职责，也更适合对任意 replicated lens 评估 |
 | planning 文件放在 `Posterior_predictive_test/` | 这是当前任务工作区，满足 `planning-with-files` 约束 |
@@ -106,6 +122,11 @@ Phase 11
 | canonical PPC 默认候选池 cap 提升到 `100000` | 这次用户真正要放大的参数是 `candidate_pool_size`，不是 `n_replicates` |
 | canonical PPC 主统计量改为 `median/std/p10/p90` | 用户明确要求把位置统计从 `mean` 切到 `median` |
 | canonical PPC 默认执行策略为 posterior-draw chunk 的 `process_pool` | `192000 x 100000` 的真实作业必须并行，否则运行时间不可接受 |
+| 新 CLI 根命令为 `cmass-posterior-predictive` | 迁移后 `cmass-lens-inference` 只保留 `run` / `resume`，不做兼容转发 |
+| `Posterior_predictive_test` 通过依赖 `cmass_lens_inference` 复用底层能力 | 可以复用 inference engine，而不再把 PPT 实现放回 engine 包内 |
+| 顶层 comparison 脚本不再做 `sys.path` 注入 | 新包已经可 editable 安装，脚本应通过正式包入口运行 |
+| 本地双包安装顺序固定为先装 `Bayesian_inference`，再对 `Posterior_predictive_test` 执行 `pip install -e . --no-deps` | `cmass-lens-inference` 是本地包而非 PyPI 依赖，直接解析依赖名会失败 |
+| 当单个 profile 的 `latest` run ID 不变但 `chain.h5` 被覆盖时，只重跑该 profile 对应的 `posterior-predictive` 与 `posterior-trends` | 这样可以刷新过期工件，同时避免无谓重跑另一个 profile |
 
 ## 遇到的问题
 | 错误 | 尝试次数 | 处理方式 |
@@ -113,6 +134,7 @@ Phase 11
 | `CMASS_lens_project` 不是 git 仓库 | 1 | 放弃 worktree / git 流程，直接在现有目录实施并加强本地验证 |
 | HDF5 loader 初版只接受 `*_axis` schema，导致固定文件名 legacy 表监控失败 | 1 | 扩展 `SigmaUnitTable.from_path()`，增加 `*_grid` schema 转换与 `logn` 轴查询适配 |
 | Fig. 8 趋势图需要固定 stellar-mass 并冻结在 average-size 模板，不能直接复用 PPC 候选池生成函数 | 1 | 新增独立 trend evaluator，在固定 `log M*` 和 representative `R_e/n` 条件下重新采样 `z_d/z_s/m5/gamma` |
+| 新包 editable 安装初次失败：`pip` 试图从索引解析 `cmass-lens-inference` | 1 | 先将 `Bayesian_inference` editable 安装进环境，再对 `Posterior_predictive_test` 执行 `pip install -e . --no-deps` |
 
 ## 备注
 - 随进度更新阶段状态：pending → in_progress → complete

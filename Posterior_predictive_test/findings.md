@@ -9,9 +9,9 @@
 - 需要把 sigma 插值表需求写入 `prepare_intepolation_grids/2026-03-09-ppt-sigma-interpolation-requirements.md`。
 
 ## 调研发现
-- `Posterior_predictive_test/` 当前为空目录，适合作为 planning 文件与结果工作区。
+- `Posterior_predictive_test/` 已从单纯的 planning / results 工作区演变为适合承载独立 installable package 的目录。
 - `CMASS_lens_project` 当前不是 git 仓库。
-- `Bayesian_inference` 已有标准 `emcee.backends.HDFBackend` 输出，`chain.h5` 可直接读取后验样本。
+- `Bayesian_inference` 已有标准 `emcee.backends.HDFBackend` 输出，`chain.h5` 可直接读取后验样本；这些底层能力可以被新包直接 import，而无需把 PPT 实现继续留在 inference engine 内。
 - 最新有效 run 路径：
   - `devauc`: `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest -> 20260308_215643_devauc_devauc_prod_20260308`
   - `sersic`: `/Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest -> 20260308_221211_sersic_sersic_prod_20260308`
@@ -28,7 +28,7 @@
 | 决策 | 理由 |
 |------|------|
 | 先写 PPC 测试再写实现 | 遵守 TDD，先锁定行为和接口 |
-| PPC CLI 挂到现有 `cmass_lens_inference.cli` | 避免新增平行入口，便于后续直接用现有环境运行 |
+| 最终将 PPT / trend / comparison CLI 迁移到 `cmass_posterior_predictive.cli` | 用户明确要求 `Bayesian_inference` 保持纯净，只保留 inference engine 与 `run/resume` |
 | sigma 插值表值定义为 `S_unit = sigma^2 / 10**m5` | 这样质量归一化可在 PPT 端后乘恢复，减少插值维度 |
 | PPC 结果目录采用 `<output_root>/<profile>/<run_id>/` | 与现有 inference 输出按 profile 分目录的习惯一致，便于批量管理 |
 | `candidate_pool_size` 默认独立于 normalization sample count | normalization 的 `1e5` 是每次 `log_prob` 的 MC 估计规模，不适合直接拿来做每个 replicated draw 的显式候选池 |
@@ -43,6 +43,10 @@
 | canonical PPC 默认 `candidate_pool_size` 改为 `100000` | 用户澄清真正要放大的参数是候选池，而不是 replicate 数量 |
 | canonical PPC 主统计量改为 `median/std/p10/p90` | `mean` 已从 summary JSON、NPZ 和 overview 图的主统计量合同中移除 |
 | canonical PPC 用 posterior-draw chunk 的 `process_pool` 并行 | 当前机器 `cpu_count=14`、`reserve_cores=2`，因此真实默认 worker 数是 `12` |
+| `Posterior_predictive_test` 独立包名固定为 `cmass-posterior-predictive`，import 根为 `cmass_posterior_predictive` | 与 `cmass_lens_inference` 物理隔离，避免再次把研究型工作流塞回 inference engine |
+| `cmass-lens-inference` CLI 迁移后只保留 `run` / `resume` | 不保留兼容转发，避免包职责再次混淆 |
+| comparison 顶层脚本不再插入 `Bayesian_inference/src` 到 `sys.path` | 独立包已具备正式入口，脚本应使用已安装包 |
+| 本地双包 editable 安装顺序固定为“先 `Bayesian_inference`，后 `Posterior_predictive_test --no-deps`” | `cmass-lens-inference` 是本地包，不可从索引解析；第二个包若直接解析依赖会失败 |
 
 ## 遇到的问题
 | 问题 | 处理方式 |
@@ -51,13 +55,18 @@
 | 要保持与 normalization kernel 逻辑一致，但不能把 `1e5` 候选逐次全部展开 | 复用同一 latent 生成与 selection 权重公式，但把候选池大小单独做成 CLI / API 参数 |
 | 另一线程先改了测试，但源代码仍只支持 `.npz` | 先跑红灯确认，再补 HDF5 读取和监控入口 |
 | 真实外部目录中的旧 HDF5 表时间戳仍停留在 `2026-02-25 11:05:36 +08:00` | 视为 stale inputs，只做兼容性检查，不触发真实 PPT 运行 |
+| 新包 editable 安装初次失败：`pip` 试图从索引解析 `cmass-lens-inference` | 先将 `Bayesian_inference` editable 安装进环境，再对 `Posterior_predictive_test` 执行 `pip install -e . --no-deps` |
 
 ## 资源
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/cli.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/trends.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/notebook_comparison.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/types.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/tests/conftest.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/cli.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/model.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/kernels/normalization.py`
-- `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/posterior_predictive.py`
-- `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/tests/conftest.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids/interpolation_grids/physics/jeans.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids/tests/test_jeans_regression.py`
 
@@ -93,6 +102,32 @@
 - 真实完成时间可从结果文件 `mtime` 直接看到：
   - `devauc` `run_manifest.json`: `2026-03-10 21:29:42`
   - `sersic` `run_manifest.json`: `2026-03-10 21:39:11`
+
+## 2026-03-11 devauc chain 覆盖后的刷新
+- `devauc/latest` 的 run ID 没变，仍是 `20260308_215643_devauc_devauc_prod_20260308`，但 `chain.h5` 与 `config_snapshot.yaml` 在 `2026-03-11 14:22:58 CST` 被重新覆盖。
+- 刷新前做过两次 `mtime` 采样，`chain.h5` 在 2 秒窗口内保持不变，且没有发现仍在写该 run 的推断进程，因此判定可安全重跑。
+- 本次只刷新 `devauc`，不动 `sersic`。
+- PPC 刷新仍沿用当前 canonical 合同：
+  - `posterior_draw_mode = tail_capped_full_chain`
+  - `burn_in_applied = 2000`
+  - `candidate_pool_size = 100000`
+  - `parallelism.worker_processes = 12`
+  - `statistics.{theta_ein,sigma}` 仍为 `median/p10/p90/std`
+- Fig. 8 刷新仍沿用当前 bin-based 合同：
+  - `n_posterior_draws = 256`
+  - `n_parent_sample = 100000`
+  - `n_mass_bins = 19`
+  - `mass_bin_min = 10.15`
+  - `mass_bin_max = 12.05`
+  - `generator_mode = sampled_population_binned`
+- 本次刷新后，devauc 结果目录中的文件时间戳更新为：
+  - `ppc_summary.json`: `2026-03-11 14:39:53 CST`
+  - `run_manifest.json`: `2026-03-11 14:39:53 CST`
+  - `replicated_statistics.npz`: `2026-03-11 14:39:53 CST`
+  - `ppc_overview.png`: `2026-03-11 14:39:54 CST`
+  - `fig8_like_summary.json`: `2026-03-11 14:40:39 CST`
+  - `fig8_like_curves.npz`: `2026-03-11 14:40:39 CST`
+  - `fig8_like.png`: `2026-03-11 14:40:39 CST`
 
 ## Fig. 8 类趋势图实现发现
 - histogram PPC 和 Fig. 8 趋势图是两类不同统计对象：
@@ -143,13 +178,29 @@
   - observations: `/Users/liurongfu/datas/spectrums/observations_with_m5_grids.hdf5`
 - 这些路径与 `/Users/liurongfu/Desktop/Spectrum_reduction/data/...` 是同一批真实资产的当前解析位置；脚本仍保留桌面目录默认值，但运行结果会记录实际解析后的绝对路径。
 
-## 新增实现
-- 新增比较模块：
-  - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/notebook_comparison.py`
-- 新增一次性运行脚本：
+## 迁移后实现位置
+- 独立包入口：
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/pyproject.toml`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/__init__.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/cli.py`
+- 核心实现：
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/trends.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/notebook_comparison.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/types.py`
+- 顶层薄脚本：
   - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
-- 新增测试：
-  - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/tests/test_notebook_comparison.py`
+- 迁移后的测试：
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/tests/test_posterior_predictive.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/tests/test_notebook_comparison.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/tests/test_cli_surface.py`
+
+## 迁移完成状态
+- `Bayesian_inference/src/cmass_lens_inference/` 已不再包含 `posterior_predictive.py` 或 `notebook_comparison.py`。
+- `Bayesian_inference/tests/` 已不再保留 `test_posterior_predictive.py` 或 `test_notebook_comparison.py`。
+- `Bayesian_inference/src/cmass_lens_inference/cli.py` 当前只暴露 `run` / `resume`。
+- `Bayesian_inference/src/cmass_lens_inference/types.py` 已移除 PPT / trend / comparison 结果 dataclass。
+- `Bayesian_inference/pyproject.toml` 已移除仅为 PPT 引入的 `matplotlib` 依赖。
 
 ## 对比模块合同
 - notebook baseline 与 pipeline-matched 两边都输出 `median/std/p10/p90`。

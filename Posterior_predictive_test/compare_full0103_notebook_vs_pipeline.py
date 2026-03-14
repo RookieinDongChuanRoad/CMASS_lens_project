@@ -4,7 +4,7 @@ Run the notebook-vs-pipeline apples-to-apples comparison on `full_0103.h5`.
 
 This script is intentionally kept outside the installable package because it
 is a one-off scientific comparison workflow, not a production CLI contract.
-The heavy lifting lives in `cmass_lens_inference.notebook_comparison`; this
+The heavy lifting lives in `cmass_posterior_predictive.notebook_comparison`; this
 file only wires real default paths and exposes a small command-line surface.
 """
 
@@ -12,16 +12,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
-from pathlib import Path
 
-
-PROJECT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference")
-SOURCE_ROOT = PROJECT_ROOT / "src"
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
-
-from cmass_lens_inference.notebook_comparison import run_notebook_pipeline_comparison
+from cmass_posterior_predictive.notebook_comparison import run_notebook_pipeline_comparison
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

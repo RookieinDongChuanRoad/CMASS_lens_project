@@ -1,0 +1,2 @@
+[console_scripts]
+cmass-posterior-predictive = cmass_posterior_predictive.cli:main

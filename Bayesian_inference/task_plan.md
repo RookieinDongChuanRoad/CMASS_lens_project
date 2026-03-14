@@ -34,8 +34,8 @@ Phase 5
 
 ### Phase 5: Delivery
 - [x] 完成性能重构后的全量复核
-- [ ] 汇总风险、假设与后续建议
-- [ ] 向用户交付可执行结果与验证结论
+- [x] 汇总风险、假设与后续建议
+- [x] 向用户交付可执行结果与验证结论
 - **Status:** in_progress
 
 ### Phase 6: Performance Refactor
@@ -70,6 +70,9 @@ Phase 5
 | benchmark 以 `scripts/benchmark_log_prob.py` 为统一入口，并把结果写入 `/Users/liurongfu/Work/CMASS_lens_project/outputs/benchmarks` | 这样可以长期复用同一套对比方法，而不污染源码目录 |
 | OpenMP `omp_set_nested` 提示清理优先采用启动钩子修复，而不是修改 kernel 或并行策略 | 根因已定位为环境变量设置时机过晚，最安全的修复是把抑噪变量前移到 Python 启动阶段 |
 | `chain.h5` 统一改为纯 `emcee.backends.HDFBackend` 输出 | 下游 notebook 需要直接 `HDFBackend(...).get_chain()`；继续手工写 HDF5 只会制造格式漂移和恢复路径歧义 |
+| 最近一次 `devauc` 生产 run 的坏链清洗采用“原地事务式重写” | 用户明确要求直接剔除异常 walker，且该 run 已作为分析结果使用，重跑成本高于定点清洗 |
+| 异常链固定判定为 `walker 12`（0-based）并整条删除 | 其 `mu5_0` 长期停在 `10.47-10.49`，与其余链 `11.3` 左右明显分离，且 `log_prob` 量级异常 |
+| 清洗后的 `devauc` run 视为封存结果，不再承诺 `resume` | 原地删链会改变 walker 维度；保留分析自洽性优先于继续采样语义 |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
@@ -78,6 +81,7 @@ Phase 5
 | `git status` 返回 `fatal: not a git repository` | 1 | 记录当前目录无 Git 元数据，后续跳过 worktree / Git metadata 的强依赖，相关输出字段允许为空 |
 | `cmass_lens` 环境缺少 `emcee` | 1 | 在实现前补装依赖，再继续采样器开发与测试 |
 | `resume` 使用完全一致的 walker 坐标触发 `emcee` condition number 报错 | 1 | 恢复路径检测退化 checkpoint，必要时改用围绕初始化中心的抖动坐标 |
+| 最近一次 `devauc` run 中 1 条 walker 与其余链明显脱离 | 1 | 先做只读诊断锁定 `walker 12`，再按事务式清洗方案原地删除并重建派生结果 |
 | CLI 子进程无法发现 `src/` 包 | 1 | 添加 `sitecustomize.py` 自动把 `src/` 插入 `sys.path`，保证 `python -m cmass_lens_inference.cli` 可运行 |
 | 并行实现首次测试时 `cmass_lens` 环境缺少 `tqdm` | 1 | 在 conda 环境中安装 `tqdm` 后继续 |
 | `emcee` 在启用 backend 时拒绝 Python `dict` blob | 1 | 将 timing blob 改成结构化 dtype，并在 sampler 层显式展开返回值与 `blobs_dtype` |

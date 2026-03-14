@@ -112,6 +112,30 @@
   - 输出目录：`/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/20260308_211944_devauc_emcee_backend_smoke`
   - `chain.h5` 可被 `emcee.backends.HDFBackend` 直接读取，`iteration = 2`，shape 为 `(2, 24, 12)`
   - HDF5 顶层只剩 `mcmc`，不再存在顶层 `chain` / `log_prob`
+- 2026-03-11 对最近一次 `devauc` 生产 run (`20260308_215643_devauc_devauc_prod_20260308`) 的只读诊断表明：
+  - 异常链是 `walker 12`（0-based）
+  - 该链 `mu5_0` 中位数约 `10.478`，末值固定在 `10.490740863626126`
+  - 其余 23 条链 `mu5_0` 整体中位数约 `11.343`
+  - `walker 12` 在 `13337` 步中仅发生 `196` 次位置变化，末尾连续 `375` 步完全不动
+  - 该链 `log_prob` 为正且量级约 `53-55`，其余链在负值区间
+- 由于下游后处理直接使用 `emcee.backends.HDFBackend(...).get_chain(flat=True)` 展平全部 walker，这条坏链会真实污染后验：
+  - 原始 `n_posterior_samples = 272088`
+  - 仅删除 `walker 12` 后变为 `260751`
+  - 多个参数中位数发生可见偏移，其中 `mu5_0` 回到 `11.346` 左右
+- 已对该 run 做一次性原地清洗：
+  - `chain.h5` 从 `(13337, 24, 12)` 重写为 `(13337, 23, 12)`
+  - `mcmc/log_prob`、`mcmc/blobs`、`mcmc/accepted` 同步删除第 12 条链
+  - `mcmc.attrs['nwalkers']` 已改为 `23`
+  - `latest_coords.npy` / `latest_log_prob.npy` 已改为 23 条 walker
+  - `config_snapshot.yaml`、`metadata.json`、`run_result.json` 均新增 `maintenance` 区块并写明 `resume_supported: false`
+  - `posterior_corner.png` 与 `posterior_corner_result.json` 已基于清洗后样本重生成
+- 清洗后的 fresh 验证结果：
+  - `emcee.backends.HDFBackend` 可正常读取清洗后的 `chain.h5`
+  - `chain_shape = (13337, 23, 12)`
+  - `log_prob_shape = (13337, 23)`
+  - `accepted_shape = (23,)`
+  - 过滤后 `max_logp = -11.326317929098293`，不再出现 `53+`
+  - 过滤后 `mu5_0` 的 burn-in 后中位数为 `11.346249034783483`
 
 ## Technical Decisions
 | Decision | Rationale |

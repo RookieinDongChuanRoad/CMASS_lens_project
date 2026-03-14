@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cmass-posterior-predictive"
+version = "0.1.0"
+description = "Standalone posterior-predictive workflows for CMASS strong-lens analyses."
+readme = "findings.md"
+requires-python = ">=3.11"
+dependencies = [
+  "emcee>=3.1",
+  "h5py>=3.10",
+  "matplotlib>=3.8",
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "scipy>=1.11",
+  "cmass-lens-inference",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+cmass-posterior-predictive = "cmass_posterior_predictive.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,17 @@
+findings.md
+pyproject.toml
+src/cmass_posterior_predictive/__init__.py
+src/cmass_posterior_predictive/cli.py
+src/cmass_posterior_predictive/notebook_comparison.py
+src/cmass_posterior_predictive/predictive.py
+src/cmass_posterior_predictive/trends.py
+src/cmass_posterior_predictive/types.py
+src/cmass_posterior_predictive.egg-info/PKG-INFO
+src/cmass_posterior_predictive.egg-info/SOURCES.txt
+src/cmass_posterior_predictive.egg-info/dependency_links.txt
+src/cmass_posterior_predictive.egg-info/entry_points.txt
+src/cmass_posterior_predictive.egg-info/requires.txt
+src/cmass_posterior_predictive.egg-info/top_level.txt
+tests/test_cli_surface.py
+tests/test_notebook_comparison.py
+tests/test_posterior_predictive.py
