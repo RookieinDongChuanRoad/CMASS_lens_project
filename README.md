@@ -165,7 +165,7 @@ Process a single file:
 
 ```bash
 cd /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids
-conda run -n cmass_lens python -m interpolation_grids --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_m5_grids_all.hdf5
+conda run -n cmass_lens python -m interpolation_grids --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
 ```
 
 Build both posterior-predictive sigma-unit tables:

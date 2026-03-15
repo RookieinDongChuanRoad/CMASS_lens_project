@@ -21,10 +21,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_DATA_DIRECTORY = PROJECT_ROOT.parent / "data" / "raw"
 EXTERNAL_DATA_DIRECTORY = PROJECT_ROOT.parent / "data" / "external"
 
-# Historical default inputs used by this project.
+# Canonical default inputs used by the main pipeline.
+# The older `with_m5_grids` filenames remain readable as legacy inputs, but the
+# public defaults should no longer bake one specific mass definition into the
+# filename surface.
 DEFAULT_INPUT_FILENAMES = (
-    "observations_deV_with_m5_grids.hdf5",
-    "observations_with_m5_grids_all.hdf5",
+    "observations_deV_with_mass_grids.hdf5",
+    "observations_with_mass_grids_all.hdf5",
 )
 
 # The gamma grid is already present in the real files and in the reference

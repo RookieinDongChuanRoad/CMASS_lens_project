@@ -323,8 +323,8 @@ MC 抽样变量:
 
 数据现状:
 
-- `observations_deV_with_m5_grids.hdf5` 用于 `devauc`
-- `observations_with_m5_grids_all.hdf5` 用于 `sersic`
+- `observations_deV_with_mass_grids.hdf5` 用于 `devauc`
+- `observations_with_mass_grids_all.hdf5` 用于 `sersic`
 - `devauc` 分支读取字段约定:
 - stellar mass 读 `logmchab_deV`（若缺失则回退 `logmchab`）
 - effective radius 读 `reff_deV`（单位 `arcsec`，再统一转换为 `log10(kpc)` 进入模型）

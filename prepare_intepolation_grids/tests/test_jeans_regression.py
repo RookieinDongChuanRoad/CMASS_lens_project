@@ -21,6 +21,7 @@ from spherical_jeans.mass_profiles import powerlaw
 
 from interpolation_grids.config import (
     APERTURE_HEIGHT_ARCSEC,
+    DEFAULT_INPUT_FILENAMES,
     DEFAULT_APERTURE_WIDTH_ARCSEC,
     DEFAULT_RADIAL_GRID_SIZE,
     GAMMA_GRID,
@@ -33,6 +34,31 @@ from interpolation_grids.physics.jeans import compute_s2_grid, kpc_per_arcsec, u
 DATA_ROOT = "/Users/liurongfu/Work/CMASS_lens_project/data/raw"
 COSMOLOGY = FlatLambdaCDM(H0=70, Om0=0.3)
 SIGMA2_TO_KM2_PER_S2 = (G * M_sun / kpc).to("km2 / s2").value
+
+
+def test_default_input_filenames_use_canonical_mass_grid_names() -> None:
+    """The public prepare defaults should no longer advertise `with_m5_grids`.
+
+    This test locks the canonical raw-observation naming migration. The old
+    filenames remain compatible as legacy inputs, but anything described as a
+    default path should now use the definition-agnostic `with_mass_grids`
+    surface so future m10 runs do not keep baking `m5` into user-visible file
+    names.
+    """
+
+    assert DEFAULT_INPUT_FILENAMES == (
+        "observations_deV_with_mass_grids.hdf5",
+        "observations_with_mass_grids_all.hdf5",
+    )
+
+
+def test_uses_devaucouleurs_branch_accepts_new_and_legacy_canonical_filenames() -> None:
+    """Profile detection must not be tied to one historical filename string."""
+
+    assert uses_devaucouleurs_branch("observations_deV_with_m5_grids.hdf5") is True
+    assert uses_devaucouleurs_branch("observations_deV_with_mass_grids.hdf5") is True
+    assert uses_devaucouleurs_branch("observations_with_mass_grids_all.hdf5") is False
+    assert uses_devaucouleurs_branch("observations_with_m5_grids_all.hdf5") is False
 
 
 def _legacy_reference_s2_grid(galaxy, gamma_grid: np.ndarray) -> np.ndarray:

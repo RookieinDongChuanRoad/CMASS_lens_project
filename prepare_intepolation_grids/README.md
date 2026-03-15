@@ -41,13 +41,13 @@ The check validates:
 Process one file:
 
 ```bash
-conda run -n cmass_lens python -m interpolation_grids --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_m5_grids_all.hdf5
+conda run -n cmass_lens python -m interpolation_grids --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
 ```
 
 Process one galaxy group for debugging:
 
 ```bash
-conda run -n cmass_lens python -m interpolation_grids --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_m5_grids_all.hdf5 --group 023817-054555
+conda run -n cmass_lens python -m interpolation_grids --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5 --group 023817-054555
 ```
 
 Process both standard input files:

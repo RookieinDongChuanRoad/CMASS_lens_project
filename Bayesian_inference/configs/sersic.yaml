@@ -5,7 +5,7 @@ mass_definition:
   enclosed_radius_kpc: 5
 
 data:
-  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_m5_grids_all.hdf5
+  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
   cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
 
 sampling:

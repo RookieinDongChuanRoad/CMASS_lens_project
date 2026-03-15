@@ -9,7 +9,7 @@ handoff-readiness over terse implementation.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,29 @@ PARAMETER_NAMES: tuple[str, ...] = (
     "theta0",
     "loga",
 )
+
+
+def _serialize_json_friendly(value: Any) -> Any:
+    """
+    Recursively convert project dataclasses into JSON-friendly payloads.
+
+    Why this helper exists:
+    - result objects now nest other dataclasses such as latest-summary wrappers
+    - plain `asdict()` leaves `Path` instances untouched, which would break the
+      CLI's `json.dumps(...)` contract
+    - centralizing the conversion keeps every result type consistent instead of
+      repeating slightly different recursive serializers
+    """
+
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value):
+        return {key: _serialize_json_friendly(field_value) for key, field_value in asdict(value).items()}
+    if isinstance(value, dict):
+        return {key: _serialize_json_friendly(field_value) for key, field_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_json_friendly(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -399,8 +422,39 @@ class RunResult:
     def to_dict(self) -> dict[str, Any]:
         """Serialize the result into JSON-friendly data."""
 
-        payload = asdict(self)
-        for key, value in list(payload.items()):
-            if isinstance(value, Path):
-                payload[key] = str(value)
-        return payload
+        return _serialize_json_friendly(self)
+
+
+@dataclass
+class PosteriorCornerResult:
+    """Structured summary for one run-directory corner-plot generation."""
+
+    run_id: str
+    profile_name: str
+    input_run_dir: Path
+    figure_path: Path
+    result_path: Path
+    status: str
+    burn_in_applied: int
+    n_posterior_samples: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the nested result into CLI- and JSON-friendly data."""
+
+        return _serialize_json_friendly(self)
+
+
+@dataclass
+class PosteriorCornerLatestResult:
+    """Bundle the current latest corner-plot results for both profiles."""
+
+    status: str
+    devauc_result: PosteriorCornerResult
+    sersic_result: PosteriorCornerResult
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the nested latest-summary structure for CLI output."""
+
+        return _serialize_json_friendly(self)
