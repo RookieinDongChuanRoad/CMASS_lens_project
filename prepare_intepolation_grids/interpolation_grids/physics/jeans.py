@@ -57,9 +57,22 @@ def kpc_per_arcsec(zd: float) -> float:
 
 
 def uses_devaucouleurs_branch(source_filename: str) -> bool:
-    """Return whether a file belongs to the fixed deV tracer branch."""
+    """Return whether a file belongs to the fixed deV tracer branch.
 
-    return "observations_deV_with_m5_grids" in Path(source_filename).name
+    Why this helper still exists:
+    - the historical HDF5 readers do not carry an explicit top-level profile
+      tag, so the per-galaxy `s2_grid` builder still needs one piece of file
+      context to choose between the fixed deV tracer and the free-Sersic
+      tracer.
+    - the public canonical filename migrated from `with_m5_grids` to the
+      definition-agnostic `with_mass_grids`, but legacy files remain readable.
+
+    The predicate therefore recognizes both canonical deV filenames while
+    remaining conservative for everything else.
+    """
+
+    normalized_name = Path(source_filename).name
+    return normalized_name.startswith("observations_deV_with_") and normalized_name.endswith("_grids.hdf5")
 
 
 def _build_aperture_and_seeing_kpc(zd: float) -> tuple[list[float], float]:

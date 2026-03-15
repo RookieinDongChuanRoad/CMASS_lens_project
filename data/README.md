@@ -7,6 +7,6 @@
 
 Current files:
 
-- `raw/observations_with_m5_grids_all.hdf5`
-- `raw/observations_deV_with_m5_grids.hdf5`
+- `raw/observations_with_mass_grids_all.hdf5`
+- `raw/observations_deV_with_mass_grids.hdf5`
 - `external/cs_grid_power.h5`
