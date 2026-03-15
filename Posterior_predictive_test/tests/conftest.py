@@ -25,7 +25,7 @@ import yaml
 # can run the migrated package in-place without an installation step.
 PPT_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PPT_SOURCE_ROOT = PPT_PROJECT_ROOT / "src"
-INFERENCE_SOURCE_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src")
+INFERENCE_SOURCE_ROOT = PPT_PROJECT_ROOT.parent / "Bayesian_inference" / "src"
 
 for source_root in (PPT_SOURCE_ROOT, INFERENCE_SOURCE_ROOT):
     if str(source_root) not in sys.path:
@@ -145,6 +145,7 @@ def synthetic_config_path(
     path = tmp_path / "synthetic_sersic.yaml"
     config = {
         "profile": {"name": "sersic"},
+        "mass_definition": {"enclosed_radius_kpc": 5},
         "data": {
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
@@ -190,6 +191,75 @@ def synthetic_config_path(
         "output": {
             "root_dir": str(tmp_path / "outputs"),
             "run_label": "synthetic",
+            "overwrite_latest": True,
+        },
+    }
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_m10_config_path(
+    tmp_path: Path,
+    synthetic_observation_file: Path,
+    synthetic_cross_section_file: Path,
+) -> Path:
+    """
+    Create a minimal `m10` config for PPT tests that need the dynamic surface.
+
+    The observation file intentionally remains legacy `m5`-only so the PPC
+    stack also exercises the inference-side compatibility conversion path.
+    """
+
+    path = tmp_path / "synthetic_sersic_m10.yaml"
+    config = {
+        "profile": {"name": "sersic"},
+        "mass_definition": {"enclosed_radius_kpc": 10},
+        "data": {
+            "observation_path": str(synthetic_observation_file),
+            "cross_section_path": str(synthetic_cross_section_file),
+        },
+        "sampling": {
+            "n_walkers": 24,
+            "n_steps": 3,
+            "warmup": 1,
+            "random_seed": 7,
+            "initial_center": {
+                "mu10_0": 11.42,
+                "beta10": 0.49,
+                "xi10": -0.21,
+                "sigma10": 0.08,
+                "mu_gamma_0": 1.99,
+                "beta_gamma": 0.1,
+                "xi_gamma": -0.67,
+                "sigma_gamma": 0.149,
+                "mu_zs": 1.8,
+                "sigma_zs": 0.215,
+                "theta0": 0.93,
+                "loga": 1.0,
+            },
+            "initial_jitter_scale": 1.0e-3,
+        },
+        "integration": {
+            "gamma_points": 200,
+            "mstar_points": 200,
+            "normalization_samples": 128,
+        },
+        "runtime": {
+            "distance_table_max_z": 5.0,
+            "distance_table_size": 8001,
+            "checkpoint_every": 1,
+            "parallel_strategy": "auto",
+            "progress": False,
+            "progress_summary_every": 1,
+            "show_stage_timing": True,
+            "disable_hdf5_file_locking": False,
+            "num_threads": 0,
+            "reserve_cores": 2,
+        },
+        "output": {
+            "root_dir": str(tmp_path / "outputs"),
+            "run_label": "synthetic-m10",
             "overwrite_latest": True,
         },
     }

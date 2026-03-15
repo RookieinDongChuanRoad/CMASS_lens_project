@@ -277,6 +277,11 @@ def _build_pipeline_context(
     """
 
     runtime_config = load_runtime_config(pipeline_config_path)
+    if runtime_config.mass_definition.label != "m5":
+        raise ValueError(
+            "Notebook comparison is m5-only: the external notebook population model and sigma definition "
+            "have not been generalized to m10."
+        )
     overridden_data = DataConfig(
         observation_path=runtime_config.data.observation_path if observation_path is None else observation_path,
         cross_section_path=cross_section_path,
@@ -456,7 +461,7 @@ def _run_pipeline_matched_engine(
         re_kpc=sigma_sample["re_kpc"],
         n_values=sigma_sample["n"],
         gamma=sigma_sample["gamma"],
-        m5=sigma_sample["m5"],
+        m5=sigma_sample["mass"],
         add_noise=False,
         rng=rng,
     )

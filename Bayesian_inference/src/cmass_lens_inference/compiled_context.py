@@ -50,11 +50,15 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
     """
 
     profile = build_profile_spec(runtime_config.profile.name)
-    observations = load_observations(runtime_config.data.observation_path, profile)
+    observations = load_observations(
+        runtime_config.data.observation_path,
+        profile,
+        runtime_config.mass_definition,
+    )
     cross_section_grid = load_cross_section_grid(runtime_config.data.cross_section_path)
     cosmology = FlatLambdaCDM(
-        table_max_z=runtime_config.runtime.distance_table_max_z,
-        table_size=runtime_config.runtime.distance_table_size,
+        h0=runtime_config.cosmology.h0,
+        omega_m=runtime_config.cosmology.omega_m,
     )
     random_basis = build_random_basis(
         runtime_config.integration.normalization_samples,
@@ -62,8 +66,8 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
     )
 
     n_lens = len(observations)
-    n_gamma = runtime_config.integration.gamma_points
-    n_mstar = runtime_config.integration.mstar_points
+    n_gamma = runtime_config.integration.gamma_points #* default = 200
+    n_mstar = runtime_config.integration.mstar_points #* default = 200
 
     gamma_grid_int = np.linspace(
         float(observations[0].gamma_grid_17[0]),
@@ -71,9 +75,6 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         n_gamma,
         dtype=np.float64,
     )
-    gamma_w = np.full(n_gamma, gamma_grid_int[1] - gamma_grid_int[0], dtype=np.float64)
-    gamma_w[0] *= 0.5
-    gamma_w[-1] *= 0.5
     cs_over_theta_int = np.interp(
         gamma_grid_int,
         cross_section_grid.gamma_grid,
@@ -88,13 +89,11 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
     num_sigma = np.zeros(n_lens, dtype=np.int64)
     sigma_obs = np.zeros((n_lens, 2), dtype=np.float64)
     sigma_err = np.ones((n_lens, 2), dtype=np.float64)
-    m5_grid_int = np.zeros((n_lens, n_gamma), dtype=np.float64)
-    jac_grid_int = np.zeros((n_lens, n_gamma), dtype=np.float64)
+    mass_grid_int = np.zeros((n_lens, n_gamma), dtype=np.float64)
+    dmass_dthetaein_grid_int = np.zeros((n_lens, n_gamma), dtype=np.float64)
     s2_grid_int = np.zeros((n_lens, n_gamma), dtype=np.float64)
-    n_obs_for_model = np.zeros(n_lens, dtype=np.float64)
     re_logkpc = np.zeros(n_lens, dtype=np.float64)
     mstar_grid = np.zeros((n_lens, n_mstar), dtype=np.float64)
-    mstar_w = np.zeros((n_lens, n_mstar), dtype=np.float64)
 
     for lens_index, observation in enumerate(observations):
         zd[lens_index] = observation.z_d
@@ -106,21 +105,19 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
             sigma_obs[lens_index, :count] = observation.sigma_observed[:count]
             sigma_err[lens_index, :count] = observation.sigma_error[:count]
 
-        m5_grid_int[lens_index] = np.interp(
+        mass_grid_int[lens_index] = np.interp(
             gamma_grid_int,
             observation.gamma_grid_17,
-            observation.m5_grid_17,
-            left=float(observation.m5_grid_17[0]),
-            right=float(observation.m5_grid_17[-1]),
+            observation.mass_grid_17,
+            left=float(observation.mass_grid_17[0]),
+            right=float(observation.mass_grid_17[-1]),
         )
-        jac_grid_int[lens_index] = np.abs(
-            np.interp(
-                gamma_grid_int,
-                observation.gamma_grid_17,
-                observation.dm5_dthetaein_grid_17,
-                left=float(observation.dm5_dthetaein_grid_17[0]),
-                right=float(observation.dm5_dthetaein_grid_17[-1]),
-            )
+        dmass_dthetaein_grid_int[lens_index] = np.interp(
+            gamma_grid_int,
+            observation.gamma_grid_17,
+            observation.dmass_dthetaein_grid_17,
+            left=float(observation.dmass_dthetaein_grid_17[0]),
+            right=float(observation.dmass_dthetaein_grid_17[-1]),
         )
         if observation.s2_grid_17 is not None:
             s2_grid_int[lens_index] = np.interp(
@@ -131,7 +128,6 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
                 right=float(observation.s2_grid_17[-1]),
             )
 
-        n_obs_for_model[lens_index] = profile.fixed_n if profile.fixed_n is not None else max(observation.n_observed, 1.0e-8)
         re_logkpc[lens_index] = _effective_radius_log10_kpc(
             observation.effective_radius_arcsec,
             observation.z_d,
@@ -140,20 +136,21 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         lo = observation.log_stellar_mass_obs - 5.0 * observation.log_stellar_mass_err
         hi = observation.log_stellar_mass_obs + 5.0 * observation.log_stellar_mass_err
         mstar_grid[lens_index] = np.linspace(lo, hi, n_mstar, dtype=np.float64)
-        mstar_w[lens_index] = mstar_grid[lens_index, 1] - mstar_grid[lens_index, 0]
-        mstar_w[lens_index, 0] *= 0.5
-        mstar_w[lens_index, -1] *= 0.5
 
     sqrt2 = math.sqrt(2.0)
     sqrt2pi = math.sqrt(2.0 * math.pi)
     p_zd_fixed = np.exp(-0.5 * ((zd - 0.558) / 0.085) ** 2) / (0.085 * sqrt2pi)
 
     mstar_shift11p4 = np.zeros((n_lens, n_mstar), dtype=np.float64)
-    mstar_base = np.zeros((n_lens, n_mstar), dtype=np.float64)
+    mstar_integrand_base = np.zeros((n_lens, n_mstar), dtype=np.float64)
     delta_r_grid = np.zeros((n_lens, n_mstar), dtype=np.float64)
 
     for lens_index, observation in enumerate(observations):
-        n_value = n_obs_for_model[lens_index]
+        # `n` only affects the precomputed size-relation term. Once `delta_r`
+        # and the fixed `m*` base are built, the hot path never needs the
+        # lens-wise `n` array again, so we keep it local instead of exporting
+        # another compiled-context field.
+        n_value = profile.fixed_n if profile.fixed_n is not None else max(observation.n_observed, 1.0e-8)
         for mstar_index in range(n_mstar):
             mstar = mstar_grid[lens_index, mstar_index]
             shift = mstar - 11.4
@@ -173,7 +170,11 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
 
             mstar_shift11p4[lens_index, mstar_index] = shift
             delta_r_grid[lens_index, mstar_index] = delta_r
-            mstar_base[lens_index, mstar_index] = mstar_w[lens_index, mstar_index] * p_mobs * p_s * p_r
+            # Store only the parameter-independent part of the inner `m*`
+            # integrand. The likelihood kernel now applies the hyper-parameter
+            # dependent Gaussian terms first and lets `np.trapezoid(...)`
+            # handle quadrature weights explicitly from `mstar_grid`.
+            mstar_integrand_base[lens_index, mstar_index] = p_mobs * p_s * p_r
 
     context = CompiledModelContext(
         z_grid=np.ascontiguousarray(cosmology.z_table, dtype=np.float64),
@@ -182,9 +183,8 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         cs_over_theta_grid=np.ascontiguousarray(cross_section_grid.cs_over_theta_ein, dtype=np.float64),
         cs_over_theta_int=np.ascontiguousarray(cs_over_theta_int, dtype=np.float64),
         gamma_grid_int=np.ascontiguousarray(gamma_grid_int, dtype=np.float64),
-        gamma_w=np.ascontiguousarray(gamma_w, dtype=np.float64),
-        m5_grid_int=np.ascontiguousarray(m5_grid_int, dtype=np.float64),
-        jac_grid_int=np.ascontiguousarray(jac_grid_int, dtype=np.float64),
+        mass_grid_int=np.ascontiguousarray(mass_grid_int, dtype=np.float64),
+        dmass_dthetaein_grid_int=np.ascontiguousarray(dmass_dthetaein_grid_int, dtype=np.float64),
         s2_grid_int=np.ascontiguousarray(s2_grid_int, dtype=np.float64),
         has_s2=np.ascontiguousarray(has_s2, dtype=np.int64),
         num_sigma=np.ascontiguousarray(num_sigma, dtype=np.int64),
@@ -195,10 +195,10 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         p_zd_fixed=np.ascontiguousarray(p_zd_fixed, dtype=np.float64),
         mstar_grid=np.ascontiguousarray(mstar_grid, dtype=np.float64),
         mstar_shift11p4=np.ascontiguousarray(mstar_shift11p4, dtype=np.float64),
-        mstar_base=np.ascontiguousarray(mstar_base, dtype=np.float64),
+        mstar_integrand_base=np.ascontiguousarray(mstar_integrand_base, dtype=np.float64),
         delta_r_grid=np.ascontiguousarray(delta_r_grid, dtype=np.float64),
-        n_obs_for_model=np.ascontiguousarray(n_obs_for_model, dtype=np.float64),
         base_normals=random_basis.base_normals,
+        mass_radius_kpc=float(runtime_config.mass_definition.radius_kpc),
         use_sersic_index=1 if profile.uses_observed_n_in_likelihood else 0,
         n_fixed=profile.fixed_n if profile.fixed_n is not None else 4.0,
         mu_n0=profile.mu_n0 if profile.mu_n0 is not None else 0.0,

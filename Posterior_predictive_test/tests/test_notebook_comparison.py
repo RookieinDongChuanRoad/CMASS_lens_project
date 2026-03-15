@@ -233,3 +233,39 @@ def test_run_notebook_pipeline_comparison_generates_expected_artifacts(
     assert "notebook_baseline" in summary
     assert "pipeline_matched" in summary
     assert "paired_differences" in summary
+
+
+def test_run_notebook_pipeline_comparison_rejects_m10_pipeline_configs(
+    tmp_path: Path,
+    synthetic_m10_config_path: Path,
+    synthetic_cross_section_file: Path,
+) -> None:
+    """The notebook comparison should fail fast on `m10` because the notebook baseline is `m5`-only."""
+
+    from cmass_posterior_predictive.notebook_comparison import run_notebook_pipeline_comparison
+
+    sigma_table_path = _write_notebook_sigma_table(tmp_path / "jeans_sers_grid.h5")
+    population_model_path = _write_fake_population_model(tmp_path / "Population_model.py")
+    chain_path = _seed_chain_backend(
+        tmp_path / "full_0103.h5",
+        parameter_center=np.array([11.32, 0.59, -0.11, 0.06, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.9, 0.7]),
+    )
+
+    try:
+        run_notebook_pipeline_comparison(
+            chain_path=chain_path,
+            pipeline_config_path=synthetic_m10_config_path,
+            population_model_path=population_model_path,
+            sigma_table_path=sigma_table_path,
+            cross_section_path=synthetic_cross_section_file,
+            output_dir=tmp_path / "comparison_output",
+            discard=1,
+            max_samples=2,
+            num_parents=8,
+            theta_sample_size=6,
+            sigma_sample_size=4,
+        )
+    except ValueError as exc:
+        assert "m5-only" in str(exc)
+    else:
+        raise AssertionError("Expected notebook comparison to reject m10 pipeline configs.")

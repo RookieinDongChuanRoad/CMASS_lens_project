@@ -29,8 +29,7 @@ Main hierarchical Bayesian inference package for the CMASS strong-lens study.
 
 - Package source lives under `Bayesian_inference/src/cmass_lens_inference/`
 - Runtime configs live under `Bayesian_inference/configs/`
-- Provides CLI entrypoints for new runs, resume, posterior predictive tests,
-  posterior trends, and sigma-table monitoring
+- Provides CLI entrypoints for new runs and resume
 - Writes main run artifacts under `outputs/`
 - Scientific and modeling requirements are documented in
   [`Bayesian_inference/PROJECT_REQUIREMENTS.md`](Bayesian_inference/PROJECT_REQUIREMENTS.md)
@@ -50,9 +49,11 @@ the legacy reference implementation.
 
 ### `Posterior_predictive_test/`
 
-Research-side validation scripts for notebook-vs-pipeline comparisons.
+Standalone posterior-predictive, trend, monitor, and notebook-comparison package.
 
-- Contains a one-off comparison driver:
+- Package source lives under `Posterior_predictive_test/src/cmass_posterior_predictive/`
+- Provides the `cmass-posterior-predictive` CLI for PPC, trends, and monitor workflows
+- Keeps the one-off comparison driver:
   `Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
 - Writes its artifacts under `Posterior_predictive_test/results/`
 - Some defaults in this area point outside the repository to
@@ -177,13 +178,25 @@ conda run -n cmass_lens python -m interpolation_grids --build-sigma-unit-hdf5 --
 These commands populate or refresh:
 
 - `data/raw/*.updated.hdf5` or in-place replacements
-- `data/external/jeans_deV_grid.h5`
-- `data/external/jeans_sers_grid.h5`
+- `data/external/jeans_deV_m5_grid.h5`
+- `data/external/jeans_deV_m10_grid.h5`
+- `data/external/jeans_sers_m5_grid.h5`
+- `data/external/jeans_sers_m10_grid.h5`
 
 ### 3. Run the main inference
 
 After installing `Bayesian_inference` into `cmass_lens`, use the packaged CLI.
 The tracked configs already point at the canonical data paths and `outputs/`.
+Every inference config now must include:
+
+```yaml
+mass_definition:
+  enclosed_radius_kpc: 5  # or 10
+```
+
+The public hyper-parameter names follow that choice:
+- `5 kpc`: `mu5_0`, `beta5`, `xi5`, `sigma5`
+- `10 kpc`: `mu10_0`, `beta10`, `xi10`, `sigma10`
 
 Run the de Vaucouleurs branch:
 
@@ -208,31 +221,35 @@ conda run -n cmass_lens cmass-lens-inference resume --run-dir /Users/liurongfu/W
 
 ### 4. Run posterior predictive tests or posterior trends
 
-These commands also use the `cmass-lens-inference` CLI from
-`Bayesian_inference/`.
+These commands use the `cmass-posterior-predictive` CLI from
+`Posterior_predictive_test/` after that package has been installed into the
+same `cmass_lens` environment.
 
 Example devauc posterior predictive run:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-conda run -n cmass_lens cmass-lens-inference posterior-predictive \
+cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
+conda run -n cmass_lens cmass-posterior-predictive posterior-predictive \
   --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest \
-  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_grid.h5 \
+  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_m5_grid.h5 \
   --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/devauc
 ```
 
 Example sersic posterior-trend run:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-conda run -n cmass_lens cmass-lens-inference posterior-trends \
+cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
+conda run -n cmass_lens cmass-posterior-predictive posterior-trends \
   --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest \
-  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_grid.h5 \
+  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_m5_grid.h5 \
   --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/sersic
 ```
 
 The CLI also exposes `posterior-predictive-monitor` if you need to wait for
-fresh external sigma tables before running both profile branches.
+fresh external sigma tables before running both profile branches. The monitor
+now resolves the expected external filenames from each run's recorded mass
+definition, so an `m10` run waits for `jeans_*_m10_grid.h5` rather than the
+historical `m5` tables.
 
 ### 5. Run current-vs-reference comparison checks
 

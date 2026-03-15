@@ -102,6 +102,56 @@ def synthetic_devauc_observation_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def synthetic_namespaced_observation_file(tmp_path: Path) -> Path:
+    """
+    Create a one-lens observation file using only the new namespaced schema.
+
+    Why this fixture exists:
+    - the migration keeps the top-level lens grouping stable while moving the
+      mass-dependent grids under `mass_definitions/<label>/`
+    - the reader must support files that no longer carry legacy root-level
+      `m5_*` datasets once the transition is complete
+    - tests need one fixture that proves the reader prefers the selected
+      namespaced subgroup rather than silently falling back to old aliases
+    """
+
+    path = tmp_path / "synthetic_namespaced_observations.hdf5"
+    gamma_grid = np.linspace(1.3, 2.7, 17)
+    m5_grid = np.linspace(11.55, 10.75, 17)
+    m10_grid = np.linspace(11.75, 10.95, 17)
+    dmass_grid = np.linspace(-1.9, -1.1, 17)
+    s2_m5_grid = np.linspace(0.7, 1.0, 17)
+    s2_m10_grid = np.linspace(0.45, 0.75, 17)
+
+    with h5py.File(path, "w") as handle:
+        group = handle.create_group("lens-namespaced")
+        group.attrs["zd"] = 0.57
+        group.attrs["zs"] = 1.92
+        group.attrs["logmchab"] = 11.18
+        group.attrs["logmchab_err"] = 0.06
+        group.attrs["nser"] = 3.9
+        group.attrs["re_arcsec"] = 1.05
+        group.attrs["rein_arcsec"] = 1.22
+        group.attrs["num_sigma"] = 1
+        group.attrs["sigma"] = 290000.0
+        group.attrs["sigma_err"] = 18000.0
+        group.create_dataset("gamma_grid", data=gamma_grid)
+
+        mass_root = group.create_group("mass_definitions")
+        m5_group = mass_root.create_group("m5")
+        m5_group.create_dataset("mass_grid", data=m5_grid)
+        m5_group.create_dataset("dmass_dthetaein_grid", data=dmass_grid)
+        m5_group.create_dataset("s2_grid", data=s2_m5_grid)
+
+        m10_group = mass_root.create_group("m10")
+        m10_group.create_dataset("mass_grid", data=m10_grid)
+        m10_group.create_dataset("dmass_dthetaein_grid", data=dmass_grid)
+        m10_group.create_dataset("s2_grid", data=s2_m10_grid)
+
+    return path
+
+
+@pytest.fixture
 def synthetic_cross_section_file(tmp_path: Path) -> Path:
     """
     Create a cross-section HDF5 file using the alias field names observed in
@@ -133,6 +183,7 @@ def synthetic_config_path(
     path = tmp_path / "synthetic_sersic.yaml"
     config = {
         "profile": {"name": "sersic"},
+        "mass_definition": {"enclosed_radius_kpc": 5},
         "data": {
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
@@ -163,9 +214,11 @@ def synthetic_config_path(
             "mstar_points": 200,
             "normalization_samples": 128,
         },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
         "runtime": {
-            "distance_table_max_z": 5.0,
-            "distance_table_size": 8001,
             "checkpoint_every": 1,
             "parallel_strategy": "auto",
             "progress": False,
@@ -178,6 +231,77 @@ def synthetic_config_path(
         "output": {
             "root_dir": str(tmp_path / "outputs"),
             "run_label": "synthetic",
+            "overwrite_latest": True,
+        },
+    }
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_m10_config_path(
+    tmp_path: Path,
+    synthetic_observation_file: Path,
+    synthetic_cross_section_file: Path,
+) -> Path:
+    """
+    Create a YAML configuration file for the `m10` public naming surface.
+
+    This fixture intentionally uses the `mu10_*` family so tests can prove the
+    loader maps definition-specific public names onto the same internal model.
+    """
+
+    path = tmp_path / "synthetic_sersic_m10.yaml"
+    config = {
+        "profile": {"name": "sersic"},
+        "mass_definition": {"enclosed_radius_kpc": 10},
+        "data": {
+            "observation_path": str(synthetic_observation_file),
+            "cross_section_path": str(synthetic_cross_section_file),
+        },
+        "sampling": {
+            "n_walkers": 24,
+            "n_steps": 3,
+            "warmup": 1,
+            "random_seed": 7,
+            "initial_center": {
+                "mu10_0": 11.42,
+                "beta10": 0.49,
+                "xi10": -0.21,
+                "sigma10": 0.08,
+                "mu_gamma_0": 1.99,
+                "beta_gamma": 0.1,
+                "xi_gamma": -0.67,
+                "sigma_gamma": 0.149,
+                "mu_zs": 1.8,
+                "sigma_zs": 0.215,
+                "theta0": 0.93,
+                "loga": 1.0,
+            },
+            "initial_jitter_scale": 1.0e-3,
+        },
+        "integration": {
+            "gamma_points": 200,
+            "mstar_points": 200,
+            "normalization_samples": 128,
+        },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
+        "runtime": {
+            "checkpoint_every": 1,
+            "parallel_strategy": "auto",
+            "progress": False,
+            "progress_summary_every": 1,
+            "show_stage_timing": True,
+            "disable_hdf5_file_locking": False,
+            "num_threads": 0,
+            "reserve_cores": 2,
+        },
+        "output": {
+            "root_dir": str(tmp_path / "outputs"),
+            "run_label": "synthetic-m10",
             "overwrite_latest": True,
         },
     }

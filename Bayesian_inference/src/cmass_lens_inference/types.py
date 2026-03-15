@@ -15,6 +15,8 @@ from typing import Any
 
 import numpy as np
 
+from .mass_definition import MassDefinition, serialize_public_initial_center
+
 
 PARAMETER_NAMES: tuple[str, ...] = (
     "mu5_0",
@@ -67,6 +69,17 @@ class HyperParams:
 
         return {name: float(getattr(self, name)) for name in PARAMETER_NAMES}
 
+    def to_public_dict(self, mass_definition: MassDefinition) -> dict[str, float]:
+        """
+        Serialize the hyper-parameters using the selected public name family.
+
+        The first four internal slots always represent the active enclosed-mass
+        observable, even though the implementation keeps the historical field
+        names for vector-order compatibility with the existing sampler code.
+        """
+
+        return serialize_public_initial_center(self.to_dict(), mass_definition)
+
 
 @dataclass(frozen=True)
 class ProfileConfig:
@@ -105,11 +118,23 @@ class IntegrationConfig:
 
 
 @dataclass(frozen=True)
+class CosmologyConfig:
+    """
+    Physical cosmology parameters shared by every distance calculation.
+
+    These values describe the model's global background cosmology, so they are
+    kept separate from execution-only runtime knobs such as checkpoint cadence
+    or thread counts.
+    """
+
+    h0: float
+    omega_m: float
+
+
+@dataclass(frozen=True)
 class RuntimeOptions:
     """Execution-time controls that are not part of the statistical model."""
 
-    distance_table_max_z: float
-    distance_table_size: int
     checkpoint_every: int
     parallel_strategy: str
     progress: bool
@@ -134,9 +159,11 @@ class RuntimeConfig:
     """The fully parsed project configuration."""
 
     profile: ProfileConfig
+    mass_definition: MassDefinition
     data: DataConfig
     sampling: SamplingConfig
     integration: IntegrationConfig
+    cosmology: CosmologyConfig
     runtime: RuntimeOptions
     output: OutputConfig
 
@@ -182,8 +209,8 @@ class ObservationRecord:
     sigma_observed: np.ndarray
     sigma_error: np.ndarray
     gamma_grid_17: np.ndarray
-    m5_grid_17: np.ndarray
-    dm5_dthetaein_grid_17: np.ndarray
+    mass_grid_17: np.ndarray
+    dmass_dthetaein_grid_17: np.ndarray
     s2_grid_17: np.ndarray | None
 
 
@@ -211,7 +238,7 @@ class PreparedObservation:
     sigma_observed: np.ndarray
     sigma_error: np.ndarray
     gamma_dense: np.ndarray
-    m5_dense: np.ndarray
+    mass_dense: np.ndarray
     jacobian_dense: np.ndarray
     s2_dense: np.ndarray | None
     observed_log_effective_radius_kpc: float
@@ -248,9 +275,8 @@ class CompiledModelContext:
     cs_over_theta_grid: np.ndarray
     cs_over_theta_int: np.ndarray
     gamma_grid_int: np.ndarray
-    gamma_w: np.ndarray
-    m5_grid_int: np.ndarray
-    jac_grid_int: np.ndarray
+    mass_grid_int: np.ndarray
+    dmass_dthetaein_grid_int: np.ndarray
     s2_grid_int: np.ndarray
     has_s2: np.ndarray
     num_sigma: np.ndarray
@@ -261,10 +287,10 @@ class CompiledModelContext:
     p_zd_fixed: np.ndarray
     mstar_grid: np.ndarray
     mstar_shift11p4: np.ndarray
-    mstar_base: np.ndarray
+    mstar_integrand_base: np.ndarray
     delta_r_grid: np.ndarray
-    n_obs_for_model: np.ndarray
     base_normals: np.ndarray
+    mass_radius_kpc: float
     use_sersic_index: int
     n_fixed: float
     mu_n0: float

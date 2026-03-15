@@ -36,6 +36,8 @@ outputs/
 Posterior_predictive_test/results/
 Posterior_predictive_test/worktrees/
 key_tests/output/
+.worktrees/
+runtime/
 
 # Data caches and derived artifacts are not part of the code snapshot that
 # should be published to GitHub.

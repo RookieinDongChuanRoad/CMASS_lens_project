@@ -16,13 +16,16 @@ import math
 
 import numba as nb
 import numpy as np
+from astropy.constants import G, c
+import astropy.units as u
 
 
 SQRT2 = math.sqrt(2.0)
 SQRT2PI = math.sqrt(2.0 * math.pi)
 LOG10_4 = math.log10(4.0)
-C_KM_S = 299792.458
-G_KPC_KMS2_MSUN = 4.30091e-6
+C_KM_S = c.to("km/s").value
+G_KPC_KMS2_MSUN = G.to(u.kpc * u.km**2 / (u.s**2 * u.Msun)).value
+
 
 
 @nb.njit(cache=True)
@@ -202,12 +205,20 @@ def comoving_chi_kpc(z: float, z_grid: np.ndarray, chi_kpc_grid: np.ndarray) -> 
 def theta_ein_arcsec(
     zd: float,
     zs: float,
-    m5: float,
+    log_enclosed_mass: float,
     gamma: float,
     z_grid: np.ndarray,
     chi_kpc_grid: np.ndarray,
+    mass_radius_kpc: float = 5.0,
 ) -> float:
-    """Einstein radius in arcseconds from `(m5, gamma)` and distance tables."""
+    """
+    Einstein radius in arcseconds from `(m_R, gamma)` and distance tables.
+
+    The same power-law lens can be parameterized by `m5`, `m10`, or any other
+    supported enclosed projected mass definition. The only definition-specific
+    ingredient is the physical aperture radius `R` that enters the analytic
+    relation between `m_R` and `r_ein`.
+    """
 
     if zd <= 0.0 or zs <= zd or gamma <= 1.0:
         return 0.0
@@ -224,7 +235,9 @@ def theta_ein_arcsec(
         return 0.0
 
     sigma_crit = (C_KM_S * C_KM_S) / (4.0 * math.pi * G_KPC_KMS2_MSUN) * (ds / (dl * dls))
-    base = (10.0**m5) / (math.pi * sigma_crit * (5.0 ** (3.0 - gamma)))
+    base = (10.0**log_enclosed_mass) / (
+        math.pi * sigma_crit * (mass_radius_kpc ** (3.0 - gamma))
+    )
     if base <= 0.0:
         return 0.0
 

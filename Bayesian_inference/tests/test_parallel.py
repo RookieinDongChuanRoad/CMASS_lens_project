@@ -20,8 +20,6 @@ def test_resolve_parallelism_auto_uses_kernel_only_on_14_core_machine() -> None:
     """
 
     runtime_options = RuntimeOptions(
-        distance_table_max_z=5.0,
-        distance_table_size=8001,
         checkpoint_every=100,
         parallel_strategy="auto",
         progress=False,
@@ -47,8 +45,6 @@ def test_resolve_parallelism_kernel_only_keeps_work_in_one_process() -> None:
     """
 
     runtime_options = RuntimeOptions(
-        distance_table_max_z=5.0,
-        distance_table_size=8001,
         checkpoint_every=100,
         parallel_strategy="kernel_only",
         progress=False,

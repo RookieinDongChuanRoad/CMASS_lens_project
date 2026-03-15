@@ -69,6 +69,14 @@ def test_process_hdf5_file_writes_updated_grids_without_mutating_input(tmp_path:
         assert "s2_grid" not in handle["no_s2"]
         assert np.any(handle["with_s2"]["m5_grid"][:] != 0.0)
         assert np.any(handle["with_s2"][DERIVATIVE_DATASET_NAME][:] != 0.0)
+        assert "mass_definitions" in handle["with_s2"]
+        assert set(handle["with_s2"]["mass_definitions"].keys()) == {"m5", "m10"}
+        assert np.any(handle["with_s2"]["mass_definitions"]["m5"]["mass_grid"][:] != 0.0)
+        assert np.any(handle["with_s2"]["mass_definitions"]["m10"]["mass_grid"][:] != 0.0)
+        assert np.any(handle["with_s2"]["mass_definitions"]["m5"]["dmass_dthetaein_grid"][:] != 0.0)
+        assert np.any(handle["with_s2"]["mass_definitions"]["m10"]["dmass_dthetaein_grid"][:] != 0.0)
+        assert "s2_grid" in handle["with_s2"]["mass_definitions"]["m5"]
+        assert "s2_grid" in handle["with_s2"]["mass_definitions"]["m10"]
 
 
 def test_process_hdf5_file_can_limit_work_to_selected_groups(tmp_path: Path) -> None:
@@ -93,3 +101,5 @@ def test_process_hdf5_file_can_limit_work_to_selected_groups(tmp_path: Path) -> 
     with h5py.File(output_path, "r") as handle:
         assert np.all(handle["with_s2"]["m5_grid"][:] == 0.0)
         assert np.any(handle["no_s2"]["m5_grid"][:] != 0.0)
+        assert "mass_definitions" not in handle["with_s2"]
+        assert "mass_definitions" in handle["no_s2"]

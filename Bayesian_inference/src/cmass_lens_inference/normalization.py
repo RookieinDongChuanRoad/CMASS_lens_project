@@ -13,6 +13,7 @@ import numpy as np
 
 from .compiled_context import build_random_basis
 from .kernels.normalization import normalization_mc_numba
+from .mass_definition import MassDefinition, get_mass_definition
 from .types import HyperParams, ProfileSpec, RandomBasis
 
 
@@ -28,6 +29,7 @@ def estimate_normalization(
     random_basis: RandomBasis,
     cosmology,
     cross_section_grid,
+    mass_definition: MassDefinition | None = None,
 ) -> float:
     """
     Public wrapper around the production normalization kernel.
@@ -37,6 +39,7 @@ def estimate_normalization(
     model object first.
     """
 
+    selected_mass_definition = mass_definition or get_mass_definition(5)
     return float(
         normalization_mc_numba(
             theta=hyper_params.to_array(),
@@ -61,6 +64,7 @@ def estimate_normalization(
             sigma_n=profile_spec.sigma_n if profile_spec.sigma_n is not None else 0.0,
             gamma_trunc_low=1.2,
             gamma_trunc_high=2.8,
+            mass_radius_kpc=float(selected_mass_definition.radius_kpc),
         )
     )
 

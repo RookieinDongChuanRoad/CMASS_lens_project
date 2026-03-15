@@ -21,6 +21,7 @@ import numpy as np
 
 from interpolation_grids.config import (
     EXTERNAL_DATA_DIRECTORY,
+    MASS_DEFINITION_LABELS,
     SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS,
     SIGMA_UNIT_GAMMA_AXIS,
     SIGMA_UNIT_PROFILE_FILENAMES,
@@ -30,6 +31,8 @@ from interpolation_grids.config import (
     SIGMA_UNIT_SERSIC_N_AXIS,
     SIGMA_UNIT_UNITS,
     SIGMA_UNIT_ZD_AXIS,
+    SUPPORTED_MASS_RADII_KPC,
+    sigma_unit_units_for_radius,
 )
 from interpolation_grids.models import SigmaUnitTable
 from interpolation_grids.physics.jeans import compute_sigma_unit_grid
@@ -79,6 +82,22 @@ def _recommended_chunksize(task_count: int, workers: int) -> int:
     """Choose a coarse task chunksize to reduce process-pool overhead."""
 
     return max(1, task_count // max(1, workers * 8))
+
+
+def _normalize_mass_radii(mass_radii_kpc: tuple[float, ...] | list[float] | None) -> tuple[float, ...]:
+    """Validate and normalize requested enclosed-mass radii while preserving order."""
+
+    if mass_radii_kpc is None:
+        return tuple(float(value) for value in SUPPORTED_MASS_RADII_KPC)
+
+    normalized_radii: list[float] = []
+    for radius_kpc in mass_radii_kpc:
+        normalized_radius = float(radius_kpc)
+        if normalized_radius not in SUPPORTED_MASS_RADII_KPC:
+            raise ValueError(f"Unsupported sigma-unit mass radius: {radius_kpc}")
+        if normalized_radius not in normalized_radii:
+            normalized_radii.append(normalized_radius)
+    return tuple(normalized_radii)
 
 
 def _devauc_task(task: tuple[int, int, float, float, tuple[float, ...]]) -> tuple[int, int, np.ndarray]:
@@ -187,6 +206,7 @@ def _build_sersic_values(
 
 def build_sigma_unit_table(
     profile_name: str,
+    mass_radius_kpc: float = 5.0,
     gamma_axis: np.ndarray | None = None,
     zd_axis: np.ndarray | None = None,
     log_re_kpc_axis: np.ndarray | None = None,
@@ -218,10 +238,12 @@ def build_sigma_unit_table(
         )
         return SigmaUnitTable(
             profile_name=normalized_profile,
+            mass_definition_label=MASS_DEFINITION_LABELS[float(mass_radius_kpc)],
+            mass_radius_kpc=float(mass_radius_kpc),
             gamma_axis=gamma_axis,
             zd_axis=zd_axis,
             log_re_kpc_axis=log_re_axis,
-            values=values,
+            values=values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None],
         )
 
     if normalized_profile == "sersic":
@@ -239,11 +261,13 @@ def build_sigma_unit_table(
         )
         return SigmaUnitTable(
             profile_name=normalized_profile,
+            mass_definition_label=MASS_DEFINITION_LABELS[float(mass_radius_kpc)],
+            mass_radius_kpc=float(mass_radius_kpc),
             gamma_axis=gamma_axis,
             zd_axis=zd_axis,
             log_re_kpc_axis=log_re_axis,
             n_axis=n_axis,
-            values=values,
+            values=values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None, None],
         )
 
     raise ValueError(f"Unsupported sigma-unit table profile: {profile_name}")
@@ -267,7 +291,9 @@ def write_sigma_unit_table_hdf5(table: SigmaUnitTable, output_path: Path | str) 
         with h5py.File(working_path, "w") as handle:
             handle.attrs["schema_version"] = SIGMA_UNIT_SCHEMA_VERSION
             handle.attrs["quantity_name"] = SIGMA_UNIT_QUANTITY_NAME
-            handle.attrs["units"] = SIGMA_UNIT_UNITS
+            handle.attrs["mass_definition_label"] = table.mass_definition_label
+            handle.attrs["mass_radius_kpc"] = table.mass_radius_kpc
+            handle.attrs["units"] = sigma_unit_units_for_radius(table.mass_radius_kpc)
             handle.create_dataset("profile_name", data=np.bytes_(table.profile_name))
             handle.create_dataset("gamma_axis", data=np.asarray(table.gamma_axis, dtype=float))
             handle.create_dataset("zd_axis", data=np.asarray(table.zd_axis, dtype=float))
@@ -293,6 +319,7 @@ def build_default_sigma_unit_hdf5_tables(
     sersic_log_re_kpc_axis: np.ndarray | None = None,
     sersic_n_axis: np.ndarray | None = None,
     profiles: tuple[str, ...] | list[str] | None = None,
+    mass_radii_kpc: tuple[float, ...] | list[float] | None = None,
     workers: int | None = None,
 ) -> dict[str, Path]:
     """Build and write the standard devauc and sersic sigma-unit HDF5 tables."""
@@ -300,33 +327,26 @@ def build_default_sigma_unit_hdf5_tables(
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
     normalized_profiles = _normalize_profile_names(profiles)
+    normalized_mass_radii = _normalize_mass_radii(mass_radii_kpc)
     output_paths: dict[str, Path] = {}
 
-    if "devauc" in normalized_profiles:
-        devauc_table = build_sigma_unit_table(
-            profile_name="devauc",
-            gamma_axis=gamma_axis,
-            zd_axis=zd_axis,
-            log_re_kpc_axis=devauc_log_re_kpc_axis,
-            workers=workers,
-        )
-        output_paths["devauc"] = write_sigma_unit_table_hdf5(
-            table=devauc_table,
-            output_path=output_directory / SIGMA_UNIT_PROFILE_FILENAMES["devauc"],
-        )
-
-    if "sersic" in normalized_profiles:
-        sersic_table = build_sigma_unit_table(
-            profile_name="sersic",
-            gamma_axis=gamma_axis,
-            zd_axis=zd_axis,
-            log_re_kpc_axis=sersic_log_re_kpc_axis,
-            n_axis=sersic_n_axis,
-            workers=workers,
-        )
-        output_paths["sersic"] = write_sigma_unit_table_hdf5(
-            table=sersic_table,
-            output_path=output_directory / SIGMA_UNIT_PROFILE_FILENAMES["sersic"],
-        )
+    for normalized_profile in normalized_profiles:
+        for mass_radius_kpc in normalized_mass_radii:
+            table = build_sigma_unit_table(
+                profile_name=normalized_profile,
+                mass_radius_kpc=mass_radius_kpc,
+                gamma_axis=gamma_axis,
+                zd_axis=zd_axis,
+                log_re_kpc_axis=(
+                    devauc_log_re_kpc_axis if normalized_profile == "devauc" else sersic_log_re_kpc_axis
+                ),
+                n_axis=None if normalized_profile == "devauc" else sersic_n_axis,
+                workers=workers,
+            )
+            output_key = f"{normalized_profile}_{MASS_DEFINITION_LABELS[float(mass_radius_kpc)]}"
+            output_paths[output_key] = write_sigma_unit_table_hdf5(
+                table=table,
+                output_path=output_directory / SIGMA_UNIT_PROFILE_FILENAMES[(normalized_profile, float(mass_radius_kpc))],
+            )
 
     return output_paths

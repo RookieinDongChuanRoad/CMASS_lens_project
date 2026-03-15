@@ -74,17 +74,25 @@ class SigmaUnitTable:
     ----------
     profile_name:
         Tracer profile branch. Supported values are `devauc` and `sersic`.
+    mass_definition_label:
+        Public label for the enclosed-mass definition used by this table, for
+        example `m5` or `m10`.
+    mass_radius_kpc:
+        Physical radius in kpc at which the enclosed mass is defined.
     gamma_axis, zd_axis, log_re_kpc_axis:
         Explicit interpolation axes consumed downstream by PPC.
     values:
-        Tabulated `S_unit = sigma^2 / 10**m5` values. The axis order is fixed
-        to `(gamma, zd, log_re_kpc)` for deV and `(gamma, zd, log_re_kpc, n)`
-        for Sersic so downstream code can build one unambiguous interpolator.
+        Tabulated `S_unit = sigma^2 / 10**m_R` values for the selected mass
+        definition. The axis order is fixed to `(gamma, zd, log_re_kpc)` for
+        deV and `(gamma, zd, log_re_kpc, n)` for Sersic so downstream code can
+        build one unambiguous interpolator.
     n_axis:
         Optional Sersic-index axis. It must be absent for the deV table.
     """
 
     profile_name: str
+    mass_definition_label: str
+    mass_radius_kpc: float
     gamma_axis: np.ndarray
     zd_axis: np.ndarray
     log_re_kpc_axis: np.ndarray

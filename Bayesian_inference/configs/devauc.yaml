@@ -1,6 +1,9 @@
 profile:
   name: devauc
 
+mass_definition:
+  enclosed_radius_kpc: 5
+
 data:
   observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_m5_grids.hdf5
   cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
@@ -30,9 +33,11 @@ integration:
   mstar_points: 200
   normalization_samples: 100000
 
+cosmology:
+  h0: 70.0
+  omega_m: 0.3
+
 runtime:
-  distance_table_max_z: 5.0
-  distance_table_size: 8001
   checkpoint_every: 100
   parallel_strategy: auto
   progress: true

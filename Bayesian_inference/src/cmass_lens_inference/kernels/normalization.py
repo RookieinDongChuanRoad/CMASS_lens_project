@@ -49,6 +49,7 @@ def normalization_mc_numba(
     sigma_n: float,
     gamma_trunc_low: float,
     gamma_trunc_high: float,
+    mass_radius_kpc: float,
 ) -> float:
     """
     Estimate the selection normalization for one hyper-parameter vector.
@@ -102,7 +103,7 @@ def normalization_mc_numba(
             mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r)
             re_draw = mu_r_draw + sigma_r * nrm[5]
             delta_r = re_draw - mu_r_draw
-            m5 = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[6]
+            log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[6]
             mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
             gamma = truncnorm_sample(
                 mu_gamma,
@@ -116,7 +117,7 @@ def normalization_mc_numba(
             mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r)
             re_draw = mu_r_draw + sigma_r * nrm[4]
             delta_r = re_draw - mu_r_draw
-            m5 = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[5]
+            log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[5]
             mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
             gamma = truncnorm_sample(
                 mu_gamma,
@@ -129,7 +130,15 @@ def normalization_mc_numba(
         if not math.isfinite(gamma):
             continue
 
-        theta_e = theta_ein_arcsec(zd, zs, m5, gamma, z_grid, chi_kpc_grid)
+        theta_e = theta_ein_arcsec(
+            zd,
+            zs,
+            log_enclosed_mass,
+            gamma,
+            z_grid,
+            chi_kpc_grid,
+            mass_radius_kpc,
+        )
         if theta_e <= 0.0:
             continue
 

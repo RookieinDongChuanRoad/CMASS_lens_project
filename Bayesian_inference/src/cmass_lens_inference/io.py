@@ -13,6 +13,19 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from .mass_definition import (
+    LEGACY_M5_DERIVATIVE_DATASET_NAME,
+    LEGACY_M5_GRID_DATASET_NAME,
+    LEGACY_M5_SIGMA_DATASET_NAME,
+    MASS_DERIVATIVE_DATASET_NAME,
+    MASS_GRID_DATASET_NAME,
+    MASS_GROUP_ROOT_NAME,
+    MASS_SIGMA_DATASET_NAME,
+    MassDefinition,
+    convert_log_enclosed_mass,
+    convert_sigma_unit_grid,
+    get_mass_definition,
+)
 from .types import CrossSectionGrid, ObservationRecord, ProfileSpec
 
 
@@ -45,7 +58,69 @@ def load_cross_section_grid(file_path: str | Path) -> CrossSectionGrid:
         )
 
 
-def load_observations(file_path: str | Path, profile_spec: ProfileSpec) -> list[ObservationRecord]:
+def _load_mass_dependent_grids(
+    group: h5py.Group,
+    gamma_grid: np.ndarray,
+    mass_definition: MassDefinition,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """
+    Resolve the mass-dependent grids for the selected definition.
+
+    The migration needs to support two physical layouts:
+    - new files storing data under `<lens>/mass_definitions/<label>/`
+    - legacy files exposing only root-level `m5_*` datasets
+    """
+
+    if MASS_GROUP_ROOT_NAME in group and mass_definition.subgroup_name in group[MASS_GROUP_ROOT_NAME]:
+        selected_group = group[MASS_GROUP_ROOT_NAME][mass_definition.subgroup_name]
+        mass_grid = np.asarray(selected_group[MASS_GRID_DATASET_NAME][()], dtype=float)
+        dmass_grid = np.asarray(selected_group[MASS_DERIVATIVE_DATASET_NAME][()], dtype=float)
+        s2_grid = (
+            np.asarray(selected_group[MASS_SIGMA_DATASET_NAME][()], dtype=float)
+            if MASS_SIGMA_DATASET_NAME in selected_group
+            else None
+        )
+        return mass_grid, dmass_grid, s2_grid
+
+    legacy_m5 = get_mass_definition(5)
+    if LEGACY_M5_GRID_DATASET_NAME not in group or LEGACY_M5_DERIVATIVE_DATASET_NAME not in group:
+        raise KeyError(
+            "Observation group is missing both the new mass-definition subgroup "
+            "schema and the legacy root-level m5 datasets."
+        )
+
+    legacy_mass_grid = np.asarray(group[LEGACY_M5_GRID_DATASET_NAME][()], dtype=float)
+    legacy_dmass_grid = np.asarray(group[LEGACY_M5_DERIVATIVE_DATASET_NAME][()], dtype=float)
+    legacy_s2_grid = (
+        np.asarray(group[LEGACY_M5_SIGMA_DATASET_NAME][()], dtype=float)
+        if LEGACY_M5_SIGMA_DATASET_NAME in group
+        else None
+    )
+    if mass_definition.radius_kpc == legacy_m5.radius_kpc:
+        return legacy_mass_grid, legacy_dmass_grid, legacy_s2_grid
+
+    converted_mass_grid = convert_log_enclosed_mass(
+        log_mass=legacy_mass_grid,
+        gamma=gamma_grid,
+        from_radius_kpc=legacy_m5.radius_kpc,
+        to_radius_kpc=mass_definition.radius_kpc,
+    )
+    converted_s2_grid = None
+    if legacy_s2_grid is not None:
+        converted_s2_grid = convert_sigma_unit_grid(
+            sigma_unit_grid=legacy_s2_grid,
+            gamma=gamma_grid,
+            from_radius_kpc=legacy_m5.radius_kpc,
+            to_radius_kpc=mass_definition.radius_kpc,
+        )
+    return converted_mass_grid, legacy_dmass_grid, converted_s2_grid
+
+
+def load_observations(
+    file_path: str | Path,
+    profile_spec: ProfileSpec,
+    mass_definition: MassDefinition,
+) -> list[ObservationRecord]:
     """
     Read the observation HDF5 file and normalize profile-specific aliases.
 
@@ -79,6 +154,12 @@ def load_observations(file_path: str | Path, profile_spec: ProfileSpec) -> list[
                 if profile_spec.fixed_n is not None
                 else _resolve_attribute(group, profile_spec.observation_field_aliases["nser"])
             )
+            gamma_grid = np.asarray(group["gamma_grid"][()], dtype=float)
+            mass_grid, dmass_grid, s2_grid = _load_mass_dependent_grids(
+                group=group,
+                gamma_grid=gamma_grid,
+                mass_definition=mass_definition,
+            )
 
             observations.append(
                 ObservationRecord(
@@ -97,10 +178,10 @@ def load_observations(file_path: str | Path, profile_spec: ProfileSpec) -> list[
                     num_sigma=num_sigma,
                     sigma_observed=sigma_observed,
                     sigma_error=sigma_error,
-                    gamma_grid_17=np.asarray(group["gamma_grid"][()], dtype=float),
-                    m5_grid_17=np.asarray(group["m5_grid"][()], dtype=float),
-                    dm5_dthetaein_grid_17=np.asarray(group["dm5_dthetaein_grid"][()], dtype=float),
-                    s2_grid_17=np.asarray(group["s2_grid"][()], dtype=float) if "s2_grid" in group else None,
+                    gamma_grid_17=gamma_grid,
+                    mass_grid_17=mass_grid,
+                    dmass_dthetaein_grid_17=dmass_grid,
+                    s2_grid_17=s2_grid,
                 )
             )
 

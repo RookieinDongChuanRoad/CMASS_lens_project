@@ -38,6 +38,7 @@ from scipy.special import ndtr, ndtri
 
 from cmass_lens_inference.compiled_context import build_compiled_context
 from cmass_lens_inference.config import load_runtime_config
+from cmass_lens_inference.mass_definition import MassDefinition, get_mass_definition, mass_definition_metadata
 from cmass_lens_inference.parallel import apply_thread_limits
 from cmass_lens_inference.types import (
     ObservationRecord,
@@ -64,8 +65,6 @@ STD_PANEL_LEFT_PADDING_FRACTION = 0.025
 SIGMA_STD_UPPER_PERCENTILE = 99.5
 SIGMA_STD_UPPER_PADDING_FACTOR = 1.03
 DEFAULT_EXTERNAL_SIGMA_DIR = Path("/Users/liurongfu/Work/CMASS_lens_project/data/external")
-DEFAULT_DEVAUC_EXTERNAL_TABLE_NAME = "jeans_deV_grid.h5"
-DEFAULT_SERSIC_EXTERNAL_TABLE_NAME = "jeans_sers_grid.h5"
 DEFAULT_MONITOR_NOT_BEFORE = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
 _MAX_ALLOWED_NEGATIVE_FRACTION = 0.05
 _MAX_ALLOWED_NEGATIVE_ABSOLUTE_VALUE = 1.0e-4
@@ -74,8 +73,19 @@ DEFAULT_TREND_PARENT_SAMPLE_SIZE = 100000
 DEFAULT_TREND_MASS_BIN_COUNT = 19
 DEFAULT_TREND_MASS_BIN_MIN = 10.15
 DEFAULT_TREND_MASS_BIN_MAX = 12.05
-TREND_QUANTITY_NAMES = ("m5", "gamma", "sigma_ap")
 TREND_CATEGORY_NAMES = ("parent", "detectable", "selected")
+
+
+def _trend_quantity_names(mass_definition: MassDefinition) -> tuple[str, str, str]:
+    """Return the public quantity names for one trend run."""
+
+    return (mass_definition.label, "gamma", "sigma_ap")
+
+
+def _sigma_table_metadata_defaults() -> MassDefinition:
+    """Return the legacy sigma-table definition used when metadata is absent."""
+
+    return get_mass_definition(5)
 
 
 @dataclass(frozen=True)
@@ -83,13 +93,15 @@ class SigmaUnitTable:
     """
     Interpolation table for the unit-mass Jeans response.
 
-    The table stores `S_unit = sigma^2 / 10**m5`. This keeps the interpolation
-    problem focused on the variables that genuinely affect the Jeans solution
-    and lets the PPC code restore the physical velocity dispersion with a final
-    multiplication by the replicated lens mass normalization.
+    The table stores `S_unit = sigma^2 / 10**m_R` for one explicit mass
+    definition. Keeping that metadata on the table object lets PPC validate
+    that a run using `m5` never silently consumes an `m10` table or vice versa.
     """
 
     profile_name: str
+    mass_definition_label: str
+    mass_radius_kpc: float
+    units: str
     gamma_axis: np.ndarray
     zd_axis: np.ndarray
     log_re_kpc_axis: np.ndarray
@@ -137,9 +149,24 @@ class SigmaUnitTable:
 
         with np.load(path) as payload:
             profile_name = payload["profile_name"].item()
+            default_mass_definition = _sigma_table_metadata_defaults()
+            raw_mass_label = payload["mass_definition_label"].item() if "mass_definition_label" in payload.files else default_mass_definition.label
+            raw_mass_radius = (
+                payload["mass_radius_kpc"].item()
+                if "mass_radius_kpc" in payload.files
+                else float(default_mass_definition.radius_kpc)
+            )
+            raw_units = (
+                payload["units"].item()
+                if "units" in payload.files
+                else default_mass_definition.sigma_unit_units
+            )
             n_axis = payload["n_axis"] if "n_axis" in payload.files else None
             return cls(
                 profile_name=str(profile_name),
+                mass_definition_label=str(raw_mass_label),
+                mass_radius_kpc=float(raw_mass_radius),
+                units=str(raw_units),
                 gamma_axis=np.asarray(payload["gamma_axis"], dtype=float),
                 zd_axis=np.asarray(payload["zd_axis"], dtype=float),
                 log_re_kpc_axis=np.asarray(payload["log_re_kpc_axis"], dtype=float),
@@ -163,9 +190,16 @@ class SigmaUnitTable:
 
             raw_profile_name = handle["profile_name"][()]
             profile_name = _decode_hdf5_string(raw_profile_name)
+            default_mass_definition = _sigma_table_metadata_defaults()
+            raw_mass_label = handle.attrs.get("mass_definition_label", default_mass_definition.label)
+            raw_mass_radius = handle.attrs.get("mass_radius_kpc", float(default_mass_definition.radius_kpc))
+            raw_units = handle.attrs.get("units", default_mass_definition.sigma_unit_units)
             n_axis = np.asarray(handle["n_axis"], dtype=float) if "n_axis" in handle else None
             return cls(
                 profile_name=profile_name,
+                mass_definition_label=_decode_hdf5_string(raw_mass_label),
+                mass_radius_kpc=float(raw_mass_radius),
+                units=_decode_hdf5_string(raw_units),
                 gamma_axis=np.asarray(handle["gamma_axis"], dtype=float),
                 zd_axis=np.asarray(handle["zd_axis"], dtype=float),
                 log_re_kpc_axis=np.asarray(handle["log_re_kpc_axis"], dtype=float),
@@ -201,6 +235,27 @@ class SigmaUnitTable:
             query_points = np.column_stack((gamma_clipped, zd_clipped, log_re_clipped, n_clipped))
 
         return np.asarray(self._interpolator(query_points), dtype=float)
+
+
+def _assert_sigma_table_matches_run(
+    sigma_table: SigmaUnitTable,
+    profile_name: str,
+    mass_definition: MassDefinition,
+) -> None:
+    """Fail fast when the loaded sigma table does not match the active run."""
+
+    if sigma_table.profile_name != profile_name:
+        raise ValueError(
+            f"Sigma table profile '{sigma_table.profile_name}' does not match run profile '{profile_name}'."
+        )
+    if sigma_table.mass_definition_label != mass_definition.label or not np.isclose(
+        sigma_table.mass_radius_kpc,
+        float(mass_definition.radius_kpc),
+    ):
+        raise ValueError(
+            f"Sigma table mass definition '{sigma_table.mass_definition_label}' ({sigma_table.mass_radius_kpc:g} kpc) "
+            f"does not match run mass definition '{mass_definition.label}' ({mass_definition.radius_kpc:g} kpc)."
+        )
 
 
 def _decode_hdf5_string(raw_value: Any) -> str:
@@ -257,17 +312,26 @@ def _parse_not_before(not_before: datetime | str | None) -> datetime:
     return parsed
 
 
-def _resolve_external_sigma_table_paths(external_dir: str | Path) -> dict[str, Path]:
-    """Return the two fixed table paths monitored by the external-table workflow."""
+def _resolve_external_sigma_table_paths(
+    external_dir: str | Path,
+    devauc_mass_definition: MassDefinition,
+    sersic_mass_definition: MassDefinition,
+) -> dict[str, Path]:
+    """Return the monitored table paths implied by the two run definitions."""
 
     resolved_dir = Path(external_dir).expanduser().resolve()
     return {
-        "devauc": resolved_dir / DEFAULT_DEVAUC_EXTERNAL_TABLE_NAME,
-        "sersic": resolved_dir / DEFAULT_SERSIC_EXTERNAL_TABLE_NAME,
+        "devauc": resolved_dir / devauc_mass_definition.sigma_table_filename("devauc"),
+        "sersic": resolved_dir / sersic_mass_definition.sigma_table_filename("sersic"),
     }
 
 
-def _inspect_sigma_table_candidate(table_path: Path, expected_profile: str, not_before: datetime) -> dict[str, Any]:
+def _inspect_sigma_table_candidate(
+    table_path: Path,
+    expected_profile: str,
+    expected_mass_definition: MassDefinition,
+    not_before: datetime,
+) -> dict[str, Any]:
     """
     Validate one monitored table candidate without launching the PPC pipeline.
 
@@ -287,11 +351,11 @@ def _inspect_sigma_table_candidate(table_path: Path, expected_profile: str, not_
         )
 
     table = SigmaUnitTable.from_path(table_path)
-    if table.profile_name != expected_profile:
-        raise ValueError(
-            f"Sigma table '{table_path}' resolved to profile '{table.profile_name}', "
-            f"expected '{expected_profile}'."
-        )
+    _assert_sigma_table_matches_run(
+        sigma_table=table,
+        profile_name=expected_profile,
+        mass_definition=expected_mass_definition,
+    )
 
     axis_summary = {
         "gamma_length": int(table.gamma_axis.size),
@@ -301,6 +365,7 @@ def _inspect_sigma_table_candidate(table_path: Path, expected_profile: str, not_
         "grid_shape": tuple(int(size) for size in table.values.shape),
         "min_value": float(np.min(table.values)),
         "max_value": float(np.max(table.values)),
+        "mass_definition": mass_definition_metadata(expected_mass_definition),
     }
     return {
         "path": table_path.resolve(),
@@ -335,7 +400,13 @@ def wait_for_external_sigma_tables_and_run(
     """
 
     resolved_not_before = _parse_not_before(not_before)
-    table_paths = _resolve_external_sigma_table_paths(external_dir)
+    devauc_runtime_config = load_runtime_config(Path(devauc_run_dir).expanduser().resolve() / "config_snapshot.yaml")
+    sersic_runtime_config = load_runtime_config(Path(sersic_run_dir).expanduser().resolve() / "config_snapshot.yaml")
+    table_paths = _resolve_external_sigma_table_paths(
+        external_dir,
+        devauc_mass_definition=devauc_runtime_config.mass_definition,
+        sersic_mass_definition=sersic_runtime_config.mass_definition,
+    )
     started_at = time.monotonic()
     last_error_message = "monitor has not inspected any candidate tables yet"
 
@@ -344,11 +415,13 @@ def wait_for_external_sigma_tables_and_run(
             devauc_candidate = _inspect_sigma_table_candidate(
                 table_path=table_paths["devauc"],
                 expected_profile="devauc",
+                expected_mass_definition=devauc_runtime_config.mass_definition,
                 not_before=resolved_not_before,
             )
             sersic_candidate = _inspect_sigma_table_candidate(
                 table_path=table_paths["sersic"],
                 expected_profile="sersic",
+                expected_mass_definition=sersic_runtime_config.mass_definition,
                 not_before=resolved_not_before,
             )
             break
@@ -362,8 +435,6 @@ def wait_for_external_sigma_tables_and_run(
     aligned_n_replicates = n_replicates
     effective_tail_cap = DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP
     if aligned_n_replicates is None:
-        devauc_runtime_config = load_runtime_config(Path(devauc_run_dir).expanduser().resolve() / "config_snapshot.yaml")
-        sersic_runtime_config = load_runtime_config(Path(sersic_run_dir).expanduser().resolve() / "config_snapshot.yaml")
         devauc_burn_in = _resolve_burn_in(burn_in, devauc_runtime_config.sampling.warmup)
         sersic_burn_in = _resolve_burn_in(burn_in, sersic_runtime_config.sampling.warmup)
         devauc_available = _load_flattened_posterior_chain(
@@ -669,10 +740,11 @@ def _vectorized_mu_r(mstar: np.ndarray, n_value: np.ndarray, profile: ProfileSpe
 def _vectorized_theta_ein_arcsec(
     zd: np.ndarray,
     zs: np.ndarray,
-    m5: np.ndarray,
+    log_enclosed_mass: np.ndarray,
     gamma: np.ndarray,
     z_grid: np.ndarray,
     chi_kpc_grid: np.ndarray,
+    mass_radius_kpc: float,
 ) -> np.ndarray:
     """
     Vectorized Einstein-radius calculation copied from the scalar primitive.
@@ -701,7 +773,9 @@ def _vectorized_theta_ein_arcsec(
 
     inner_indices = np.flatnonzero(valid)[geometry_ok]
     sigma_crit = (c_km_s * c_km_s) / (4.0 * math.pi * g_kpc_kms2_msun) * (ds[geometry_ok] / (dl[geometry_ok] * dls[geometry_ok]))
-    base = (10.0 ** m5[inner_indices]) / (math.pi * sigma_crit * (5.0 ** (3.0 - gamma[inner_indices])))
+    base = (10.0 ** log_enclosed_mass[inner_indices]) / (
+        math.pi * sigma_crit * (mass_radius_kpc ** (3.0 - gamma[inner_indices]))
+    )
     physical_ok = base > 0.0
     if np.any(physical_ok):
         chosen = inner_indices[physical_ok]
@@ -768,14 +842,14 @@ def _draw_candidate_population(
         mu_r = _vectorized_mu_r(mstar, n_value, profile)
         re_log_kpc = mu_r + profile.sigma_r * normals[:, 5]
         delta_r = re_log_kpc - mu_r
-        m5 = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * normals[:, 6]
+        log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * normals[:, 6]
         mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
     else:
         n_value = np.full(candidate_pool_size, profile.fixed_n, dtype=float)
         mu_r = _vectorized_mu_r(mstar, n_value, profile)
         re_log_kpc = mu_r + profile.sigma_r * normals[:, 4]
         delta_r = re_log_kpc - mu_r
-        m5 = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * normals[:, 5]
+        log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * normals[:, 5]
         mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
 
     gamma = _vectorized_truncnorm_sample(
@@ -790,10 +864,11 @@ def _draw_candidate_population(
     theta_ein = _vectorized_theta_ein_arcsec(
         zd=zd,
         zs=zs,
-        m5=m5,
+        log_enclosed_mass=log_enclosed_mass,
         gamma=gamma,
         z_grid=context.z_grid,
         chi_kpc_grid=context.chi_kpc_grid,
+        mass_radius_kpc=float(context.mass_radius_kpc),
     )
     cs_over_theta = np.interp(
         gamma,
@@ -807,7 +882,7 @@ def _draw_candidate_population(
 
     valid_geometry = (
         np.isfinite(gamma)
-        & np.isfinite(m5)
+        & np.isfinite(log_enclosed_mass)
         & np.isfinite(re_kpc)
         & (theta_ein > 0.0)
         & (zs > zd)
@@ -827,7 +902,7 @@ def _draw_candidate_population(
         "gamma": gamma,
         "zd": zd,
         "zs": zs,
-        "m5": m5,
+        "mass": log_enclosed_mass,
         "log_re_kpc": re_log_kpc,
         "re_kpc": re_kpc,
         "n": n_value,
@@ -873,7 +948,7 @@ def _draw_trend_parent_population(
         log_re_kpc=population["log_re_kpc"],
         n_values=None if profile.fixed_n is not None else population["n"],
     )
-    sigma_ap = np.sqrt(np.maximum(sigma_unit * np.power(10.0, population["m5"]), 1.0e-30))
+    sigma_ap = np.sqrt(np.maximum(sigma_unit * np.power(10.0, population["mass"]), 1.0e-30))
 
     return {
         "log_mstar": population["log_mstar"],
@@ -882,7 +957,7 @@ def _draw_trend_parent_population(
         "n": population["n"],
         "log_re_kpc": population["log_re_kpc"],
         "re_kpc": population["re_kpc"],
-        "m5": population["m5"],
+        "mass": population["mass"],
         "gamma": population["gamma"],
         "theta_ein": population["theta_ein"],
         "sigma_ap": sigma_ap,
@@ -894,6 +969,7 @@ def _draw_trend_parent_population(
 def _allocate_trend_arrays(
     n_draws: int,
     n_mass_bins: int,
+    mass_definition: MassDefinition,
 ) -> tuple[dict[str, dict[str, np.ndarray]], np.ndarray, np.ndarray, np.ndarray]:
     """
     Allocate the full set of trend buffers for one run or one worker chunk.
@@ -905,12 +981,13 @@ def _allocate_trend_arrays(
       shape or dtype as the trend result payload evolves
     """
 
+    quantity_names = _trend_quantity_names(mass_definition)
     trend_draws = {
         quantity_name: {
             category_name: np.full((n_draws, n_mass_bins), np.nan, dtype=float)
             for category_name in TREND_CATEGORY_NAMES
         }
-        for quantity_name in TREND_QUANTITY_NAMES
+        for quantity_name in quantity_names
     }
     parent_bin_counts_draws = np.zeros((n_draws, n_mass_bins), dtype=int)
     detectable_weight_sums_draws = np.zeros((n_draws, n_mass_bins), dtype=float)
@@ -923,6 +1000,7 @@ def _simulate_trend_chunk(
     start_index: int,
     profile: ProfileSpec,
     context,
+    mass_definition: MassDefinition,
     sigma_table_path: str,
     mass_bin_edges: np.ndarray,
     n_parent_sample: int,
@@ -942,8 +1020,9 @@ def _simulate_trend_chunk(
     sigma_table = SigmaUnitTable.from_path(sigma_table_path)
     chunk_draw_count = int(posterior_draws.shape[0])
     n_mass_bins = int(mass_bin_edges.size - 1)
+    quantity_names = _trend_quantity_names(mass_definition)
     trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws = (
-        _allocate_trend_arrays(chunk_draw_count, n_mass_bins)
+        _allocate_trend_arrays(chunk_draw_count, n_mass_bins, mass_definition)
     )
 
     for local_index, theta in enumerate(posterior_draws):
@@ -958,10 +1037,14 @@ def _simulate_trend_chunk(
             n_parent_sample=n_parent_sample,
         )
 
-        for quantity_name in TREND_QUANTITY_NAMES:
+        for quantity_name in quantity_names:
+            if quantity_name == mass_definition.label:
+                values = parent_population["mass"]
+            else:
+                values = parent_population[quantity_name]
             reduced = _reduce_population_to_mass_bins(
                 log_mstar=parent_population["log_mstar"],
-                values=parent_population[quantity_name],
+                values=values,
                 mass_bin_edges=mass_bin_edges,
                 detectable_weights=parent_population["detectable_weights"],
                 selected_weights=parent_population["selected_weights"],
@@ -969,7 +1052,7 @@ def _simulate_trend_chunk(
             for category_name in TREND_CATEGORY_NAMES:
                 trend_draws[quantity_name][category_name][local_index] = reduced[category_name]
 
-            if quantity_name == TREND_QUANTITY_NAMES[0]:
+            if quantity_name == quantity_names[0]:
                 parent_bin_counts_draws[local_index] = reduced["parent_bin_counts"]
                 detectable_weight_sums_draws[local_index] = reduced["detectable_weight_sums"]
                 selected_weight_sums_draws[local_index] = reduced["selected_weight_sums"]
@@ -988,16 +1071,18 @@ def _merge_trend_chunk_results(
     chunk_results: list[dict[str, Any]],
     n_draws: int,
     n_mass_bins: int,
+    mass_definition: MassDefinition,
 ) -> tuple[dict[str, dict[str, np.ndarray]], np.ndarray, np.ndarray, np.ndarray]:
     """Merge chunk-level trend arrays back into full-run buffers in draw order."""
 
+    quantity_names = _trend_quantity_names(mass_definition)
     trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws = (
-        _allocate_trend_arrays(n_draws, n_mass_bins)
+        _allocate_trend_arrays(n_draws, n_mass_bins, mass_definition)
     )
     for chunk_result in chunk_results:
         start = int(chunk_result["start_index"])
         stop = start + int(chunk_result["draw_count"])
-        for quantity_name in TREND_QUANTITY_NAMES:
+        for quantity_name in quantity_names:
             for category_name in TREND_CATEGORY_NAMES:
                 trend_draws[quantity_name][category_name][start:stop] = chunk_result["trend_draws"][quantity_name][
                     category_name
@@ -1012,6 +1097,7 @@ def _run_trend_draws(
     posterior_draws: np.ndarray,
     profile: ProfileSpec,
     context,
+    mass_definition: MassDefinition,
     sigma_table_path: str,
     mass_bin_edges: np.ndarray,
     n_parent_sample: int,
@@ -1040,6 +1126,7 @@ def _run_trend_draws(
                     start_index=work_slice.start,
                     profile=profile,
                     context=context,
+                    mass_definition=mass_definition,
                     sigma_table_path=sigma_table_path,
                     mass_bin_edges=mass_bin_edges,
                     n_parent_sample=n_parent_sample,
@@ -1049,6 +1136,7 @@ def _run_trend_draws(
             ],
             n_draws=n_draws,
             n_mass_bins=n_mass_bins,
+            mass_definition=mass_definition,
         )
 
     spawn_context = multiprocessing.get_context("spawn")
@@ -1064,6 +1152,7 @@ def _run_trend_draws(
                 work_slice.start,
                 profile,
                 context,
+                mass_definition,
                 sigma_table_path,
                 mass_bin_edges,
                 n_parent_sample,
@@ -1078,6 +1167,7 @@ def _run_trend_draws(
         chunk_results,
         n_draws=n_draws,
         n_mass_bins=n_mass_bins,
+        mass_definition=mass_definition,
     )
 
 
@@ -1101,7 +1191,7 @@ def _draw_replicated_lenses(
         "gamma": candidates["gamma"][chosen],
         "zd": candidates["zd"][chosen],
         "zs": candidates["zs"][chosen],
-        "m5": candidates["m5"][chosen],
+        "mass": candidates["mass"][chosen],
         "re_kpc": candidates["re_kpc"][chosen],
         "n": candidates["n"][chosen],
     }
@@ -1146,7 +1236,10 @@ def _build_seed_sequence(base_seed: int, draw_index: int) -> np.random.SeedSeque
     return np.random.SeedSequence([int(base_seed), int(draw_index)])
 
 
-def _allocate_replicated_arrays(n_draws: int) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+def _allocate_replicated_arrays(
+    n_draws: int,
+    mass_definition: MassDefinition,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
     """
     Allocate the PPC latent arrays and replicate-level statistic vectors.
 
@@ -1154,12 +1247,13 @@ def _allocate_replicated_arrays(n_draws: int) -> tuple[dict[str, np.ndarray], di
     avoids diverging serial vs parallel buffer layouts.
     """
 
+    mass_label = mass_definition.label
     theta_latent = {
         "theta_ein": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
         "gamma": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
         "zd": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
         "zs": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-        "m5": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
+        mass_label: np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
         "re_kpc": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
         "n": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
     }
@@ -1168,7 +1262,7 @@ def _allocate_replicated_arrays(n_draws: int) -> tuple[dict[str, np.ndarray], di
         "gamma": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
         "zd": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
         "zs": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        "m5": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
+        mass_label: np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
         "re_kpc": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
         "n": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
         "theta_ein": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
@@ -1183,6 +1277,7 @@ def _simulate_ppc_chunk(
     start_index: int,
     profile: ProfileSpec,
     context,
+    mass_definition: MassDefinition,
     sigma_table_path: str,
     candidate_pool_size: int,
     random_seed: int,
@@ -1199,8 +1294,10 @@ def _simulate_ppc_chunk(
     sigma_table = SigmaUnitTable.from_path(sigma_table_path)
     chunk_draw_count = int(posterior_draws.shape[0])
     theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats = _allocate_replicated_arrays(
-        chunk_draw_count
+        chunk_draw_count,
+        mass_definition,
     )
+    mass_label = mass_definition.label
 
     for local_index, theta in enumerate(posterior_draws):
         global_index = start_index + local_index
@@ -1219,7 +1316,7 @@ def _simulate_ppc_chunk(
         theta_latent["gamma"][local_index] = theta_sample["gamma"]
         theta_latent["zd"][local_index] = theta_sample["zd"]
         theta_latent["zs"][local_index] = theta_sample["zs"]
-        theta_latent["m5"][local_index] = theta_sample["m5"]
+        theta_latent[mass_label][local_index] = theta_sample["mass"]
         theta_latent["re_kpc"][local_index] = theta_sample["re_kpc"]
         theta_latent["n"][local_index] = theta_sample["n"]
 
@@ -1233,14 +1330,14 @@ def _simulate_ppc_chunk(
             log_re_kpc=np.log10(np.maximum(sigma_sample["re_kpc"], 1.0e-12)),
             n_values=None if profile.fixed_n is not None else sigma_sample["n"],
         )
-        sigma_model = np.sqrt(np.maximum(sigma_unit * (10.0 ** sigma_sample["m5"]), 1.0e-30))
+        sigma_model = np.sqrt(np.maximum(sigma_unit * (10.0 ** sigma_sample["mass"]), 1.0e-30))
         sigma_rep = rng.normal(loc=sigma_model, scale=SIGMA_RELATIVE_NOISE * sigma_model)
 
         sigma_latent["sigma"][local_index] = sigma_rep
         sigma_latent["gamma"][local_index] = sigma_sample["gamma"]
         sigma_latent["zd"][local_index] = sigma_sample["zd"]
         sigma_latent["zs"][local_index] = sigma_sample["zs"]
-        sigma_latent["m5"][local_index] = sigma_sample["m5"]
+        sigma_latent[mass_label][local_index] = sigma_sample["mass"]
         sigma_latent["re_kpc"][local_index] = sigma_sample["re_kpc"]
         sigma_latent["n"][local_index] = sigma_sample["n"]
         sigma_latent["theta_ein"][local_index] = sigma_sample["theta_ein"]
@@ -1271,10 +1368,14 @@ def _chunk_slices(n_items: int, n_chunks: int) -> list[slice]:
 def _merge_ppc_chunk_results(
     chunk_results: list[dict[str, Any]],
     n_draws: int,
+    mass_definition: MassDefinition,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Merge chunk-level PPC arrays back into full-run buffers in draw order."""
 
-    theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats = _allocate_replicated_arrays(n_draws)
+    theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats = _allocate_replicated_arrays(
+        n_draws,
+        mass_definition,
+    )
     for chunk_result in chunk_results:
         start = int(chunk_result["start_index"])
         stop = start + int(chunk_result["draw_count"])
@@ -1293,6 +1394,7 @@ def _run_ppc_replicates(
     posterior_draws: np.ndarray,
     profile: ProfileSpec,
     context,
+    mass_definition: MassDefinition,
     sigma_table_path: str,
     candidate_pool_size: int,
     random_seed: int,
@@ -1318,6 +1420,7 @@ def _run_ppc_replicates(
                     start_index=work_slice.start,
                     profile=profile,
                     context=context,
+                    mass_definition=mass_definition,
                     sigma_table_path=sigma_table_path,
                     candidate_pool_size=candidate_pool_size,
                     random_seed=random_seed,
@@ -1325,6 +1428,7 @@ def _run_ppc_replicates(
                 for work_slice in slices
             ],
             n_draws=n_draws,
+            mass_definition=mass_definition,
         )
 
     spawn_context = multiprocessing.get_context("spawn")
@@ -1340,6 +1444,7 @@ def _run_ppc_replicates(
                 work_slice.start,
                 profile,
                 context,
+                mass_definition,
                 sigma_table_path,
                 candidate_pool_size,
                 random_seed,
@@ -1349,7 +1454,7 @@ def _run_ppc_replicates(
         for future in futures:
             chunk_results.append(future.result())
 
-    return _merge_ppc_chunk_results(chunk_results, n_draws=n_draws)
+    return _merge_ppc_chunk_results(chunk_results, n_draws=n_draws, mass_definition=mass_definition)
 
 
 def _observed_theta_ein_values(observations: list[ObservationRecord]) -> np.ndarray:
@@ -1611,12 +1716,13 @@ def _write_fig8_like_figure(
     figure_path: Path,
     mass_grid: np.ndarray,
     summary_payload: dict[str, dict[str, dict[str, np.ndarray]]],
+    mass_definition: MassDefinition,
 ) -> None:
     """Render the three-panel Fig. 8-like trend figure."""
 
     figure, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
     panel_specs = (
-        ("m5", "m5"),
+        (mass_definition.label, mass_definition.label),
         ("gamma", "gamma"),
         ("sigma_ap", "sigma_ap [km/s]"),
     )
@@ -1799,6 +1905,8 @@ def run_posterior_trends(
     config_snapshot_path = resolved_run_dir / "config_snapshot.yaml"
     chain_path = resolved_run_dir / "chain.h5"
     runtime_config = load_runtime_config(config_snapshot_path)
+    mass_definition = runtime_config.mass_definition
+    trend_quantity_names = _trend_quantity_names(mass_definition)
     burn_in_steps = _resolve_burn_in(burn_in, runtime_config.sampling.warmup)
     selection_rng = np.random.default_rng(random_seed)
     posterior_draws, posterior_draw_mode = _load_posterior_draws(
@@ -1812,10 +1920,11 @@ def run_posterior_trends(
 
     compiled_context, profile_spec, _, _, _, _ = build_compiled_context(runtime_config)
     sigma_table = SigmaUnitTable.from_path(sigma_table_path)
-    if sigma_table.profile_name != profile_spec.name:
-        raise ValueError(
-            f"Sigma table profile '{sigma_table.profile_name}' does not match run profile '{profile_spec.name}'."
-        )
+    _assert_sigma_table_matches_run(
+        sigma_table=sigma_table,
+        profile_name=profile_spec.name,
+        mass_definition=mass_definition,
+    )
 
     mass_bin_edges = np.linspace(mass_bin_min, mass_bin_max, n_mass_bins + 1, dtype=float)
     mass_bin_centers = 0.5 * (mass_bin_edges[:-1] + mass_bin_edges[1:])
@@ -1829,6 +1938,7 @@ def run_posterior_trends(
         posterior_draws=posterior_draws,
         profile=profile_spec,
         context=compiled_context,
+        mass_definition=mass_definition,
         sigma_table_path=str(Path(sigma_table_path).expanduser().resolve()),
         mass_bin_edges=mass_bin_edges,
         n_parent_sample=n_parent_sample,
@@ -1841,7 +1951,7 @@ def run_posterior_trends(
             category_name: _summarize_trend_draws(trend_draws[quantity_name][category_name])
             for category_name in TREND_CATEGORY_NAMES
         }
-        for quantity_name in TREND_QUANTITY_NAMES
+        for quantity_name in trend_quantity_names
     }
 
     result_dir = _materialize_result_dir(Path(output_root_dir), runtime_config.profile.name, resolved_run_dir.name)
@@ -1853,7 +1963,7 @@ def run_posterior_trends(
             }
             for category_name in TREND_CATEGORY_NAMES
         }
-        for quantity_name in TREND_QUANTITY_NAMES
+        for quantity_name in trend_quantity_names
     }
     summary_payload = {
         "run_id": resolved_run_dir.name,
@@ -1873,10 +1983,11 @@ def run_posterior_trends(
         "mass_bin_edges": mass_bin_edges.tolist(),
         "mass_bin_centers": mass_bin_centers.tolist(),
         "generator_mode": "sampled_population_binned",
+        "mass_definition": mass_definition_metadata(mass_definition),
         "parallel_strategy": parallelism.strategy,
         "worker_processes": int(parallelism.worker_processes),
         "parallelism": parallelism.to_dict(),
-        "quantities": {name: {"label": name} for name in TREND_QUANTITY_NAMES},
+        "quantities": {name: {"label": name} for name in trend_quantity_names},
         "categories": {
             "parent": {"label": "Parent population"},
             "detectable": {"label": "Detectable lenses"},
@@ -1896,7 +2007,7 @@ def run_posterior_trends(
         "detectable_weight_sums_draws": detectable_weight_sums_draws,
         "selected_weight_sums_draws": selected_weight_sums_draws,
     }
-    for quantity_name in TREND_QUANTITY_NAMES:
+    for quantity_name in trend_quantity_names:
         for category_name in TREND_CATEGORY_NAMES:
             np_save_payload[f"{category_name}_{quantity_name}_draws"] = trend_draws[quantity_name][category_name]
     np.savez(result_dir / "fig8_like_curves.npz", **np_save_payload)
@@ -1905,6 +2016,7 @@ def run_posterior_trends(
         figure_path=result_dir / "fig8_like.png",
         mass_grid=mass_bin_centers,
         summary_payload=trend_summary,
+        mass_definition=mass_definition,
     )
 
     return PosteriorTrendResult(
@@ -1927,6 +2039,7 @@ def run_posterior_trends(
             "mass_bin_max": float(mass_bin_max),
             "n_mass_bins": int(n_mass_bins),
             "generator_mode": "sampled_population_binned",
+            "mass_definition": mass_definition_metadata(mass_definition),
             "parallel_strategy": parallelism.strategy,
             "worker_processes": int(parallelism.worker_processes),
             "parallelism": parallelism.to_dict(),
@@ -1985,6 +2098,8 @@ def run_posterior_predictive(
     config_snapshot_path = resolved_run_dir / "config_snapshot.yaml"
     chain_path = resolved_run_dir / "chain.h5"
     runtime_config = load_runtime_config(config_snapshot_path)
+    mass_definition = runtime_config.mass_definition
+    mass_label = mass_definition.label
     burn_in_steps = _resolve_burn_in(burn_in, runtime_config.sampling.warmup)
     selection_rng = np.random.default_rng(random_seed)
     posterior_draws, posterior_draw_mode = _load_posterior_draws(
@@ -1998,10 +2113,11 @@ def run_posterior_predictive(
 
     compiled_context, profile_spec, _, _, _, observations = build_compiled_context(runtime_config)
     sigma_table = SigmaUnitTable.from_path(sigma_table_path)
-    if sigma_table.profile_name != profile_spec.name:
-        raise ValueError(
-            f"Sigma table profile '{sigma_table.profile_name}' does not match run profile '{profile_spec.name}'."
-        )
+    _assert_sigma_table_matches_run(
+        sigma_table=sigma_table,
+        profile_name=profile_spec.name,
+        mass_definition=mass_definition,
+    )
 
     effective_candidate_pool_size = _resolve_candidate_pool_size(
         candidate_pool_size=candidate_pool_size,
@@ -2016,6 +2132,7 @@ def run_posterior_predictive(
         posterior_draws=posterior_draws,
         profile=profile_spec,
         context=compiled_context,
+        mass_definition=mass_definition,
         sigma_table_path=str(Path(sigma_table_path).expanduser().resolve()),
         candidate_pool_size=effective_candidate_pool_size,
         random_seed=random_seed,
@@ -2037,6 +2154,7 @@ def run_posterior_predictive(
         "requested_n_replicates": None if n_replicates is None else int(n_replicates),
         "n_posterior_draws_used": n_posterior_draws_used,
         "posterior_draw_mode": posterior_draw_mode,
+        "mass_definition": mass_definition_metadata(mass_definition),
         "sample_sizes": {"theta_ein": THETA_SAMPLE_SIZE, "sigma": SIGMA_SAMPLE_SIZE},
         "statistics": {"theta_ein": theta_summary, "sigma": sigma_summary},
         "parallelism": parallelism.to_dict(),
@@ -2056,6 +2174,7 @@ def run_posterior_predictive(
         "requested_n_replicates": None if n_replicates is None else int(n_replicates),
         "n_posterior_draws_used": n_posterior_draws_used,
         "posterior_draw_mode": posterior_draw_mode,
+        "mass_definition": mass_definition_metadata(mass_definition),
         "parallelism": parallelism.to_dict(),
     }
     (result_dir / "run_manifest.json").write_text(json.dumps(manifest_payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -2066,7 +2185,7 @@ def run_posterior_predictive(
         theta_sample_gamma=theta_latent["gamma"],
         theta_sample_zd=theta_latent["zd"],
         theta_sample_zs=theta_latent["zs"],
-        theta_sample_m5=theta_latent["m5"],
+        **{f"theta_sample_{mass_label}": theta_latent[mass_label]},
         theta_sample_re_kpc=theta_latent["re_kpc"],
         theta_sample_n=theta_latent["n"],
         sigma_sample_sigma=sigma_latent["sigma"],
@@ -2074,7 +2193,7 @@ def run_posterior_predictive(
         sigma_sample_gamma=sigma_latent["gamma"],
         sigma_sample_zd=sigma_latent["zd"],
         sigma_sample_zs=sigma_latent["zs"],
-        sigma_sample_m5=sigma_latent["m5"],
+        **{f"sigma_sample_{mass_label}": sigma_latent[mass_label]},
         sigma_sample_re_kpc=sigma_latent["re_kpc"],
         sigma_sample_n=sigma_latent["n"],
         theta_stat_median=theta_replicated_stats["median"],
@@ -2111,6 +2230,7 @@ def run_posterior_predictive(
             "posterior_draw_mode": posterior_draw_mode,
             "candidate_pool_size": effective_candidate_pool_size,
             "normalization_samples": runtime_config.integration.normalization_samples,
+            "mass_definition": mass_definition_metadata(mass_definition),
             "parallelism": parallelism.to_dict(),
             "statistics": summary_payload["statistics"],
         },

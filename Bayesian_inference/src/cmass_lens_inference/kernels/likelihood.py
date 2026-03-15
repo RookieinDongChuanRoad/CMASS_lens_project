@@ -22,8 +22,8 @@ def log_likelihood_lenses_numba(
     z_grid: np.ndarray,
     chi_kpc_grid: np.ndarray,
     cs_over_theta_int: np.ndarray,
-    m5_grid_int: np.ndarray,
-    jac_grid_int: np.ndarray,
+    mass_grid_int: np.ndarray,
+    dmass_dthetaein_grid_int: np.ndarray,
     s2_grid_int: np.ndarray,
     has_s2: np.ndarray,
     num_sigma: np.ndarray,
@@ -32,18 +32,20 @@ def log_likelihood_lenses_numba(
     zd: np.ndarray,
     zs: np.ndarray,
     p_zd_fixed: np.ndarray,
+    mstar_grid: np.ndarray,
     mstar_shift11p4: np.ndarray,
-    mstar_base: np.ndarray,
+    mstar_integrand_base: np.ndarray,
     delta_r_grid: np.ndarray,
     gamma_grid_int: np.ndarray,
-    gamma_w: np.ndarray,
+    mass_radius_kpc: float,
 ) -> float:
     """
     Evaluate the full sample log-likelihood in one `numba` kernel.
 
-    All parameter-independent factors are precomputed into the compiled context.
-    The kernel therefore only needs to evaluate the hyper-parameter-dependent
-    Gaussian terms and multiply them into the fixed bases.
+    The compiled context precomputes the parameter-independent pieces of the
+    inner `m*` integrand once. This kernel then rebuilds the two-stage discrete
+    quadrature explicitly so the code mirrors the mathematical likelihood:
+    first integrate over `m*`, then integrate those results over `gamma`.
     """
 
     mu5_0 = theta[0]
@@ -64,7 +66,7 @@ def log_likelihood_lenses_numba(
 
     n_lens = zd.shape[0]
     n_gamma = gamma_grid_int.shape[0]
-    n_mstar = mstar_base.shape[1]
+    n_mstar = mstar_integrand_base.shape[1]
     ll_terms = np.zeros(n_lens, dtype=np.float64)
     valid = np.ones(n_lens, dtype=np.int64)
 
@@ -79,15 +81,23 @@ def log_likelihood_lenses_numba(
             valid[i] = 0
             continue
 
-        int_gamma = 0.0
+        gamma_integrand = np.zeros(n_gamma, dtype=np.float64)
         for kg in range(n_gamma):
             gamma = gamma_grid_int[kg]
-            m5 = m5_grid_int[i, kg]
-            jac = jac_grid_int[i, kg]
+            log_enclosed_mass = mass_grid_int[i, kg]
+            jac = abs(dmass_dthetaein_grid_int[i, kg])
             if jac <= 0.0:
                 continue
 
-            theta_e = theta_ein_arcsec(zd[i], zs[i], m5, gamma, z_grid, chi_kpc_grid)
+            theta_e = theta_ein_arcsec(
+                zd[i],
+                zs[i],
+                log_enclosed_mass,
+                gamma,
+                z_grid,
+                chi_kpc_grid,
+                mass_radius_kpc,
+            )
             if theta_e <= 0.0:
                 continue
 
@@ -101,22 +111,29 @@ def log_likelihood_lenses_numba(
                 if has_s2[i] == 0:
                     p_sigma = 0.0
                 else:
-                    sigma_model = math.sqrt(max(s2_grid_int[i, kg] * (10.0**m5), 1.0e-30))
+                    sigma_model = math.sqrt(max(s2_grid_int[i, kg] * (10.0**log_enclosed_mass), 1.0e-30))
                     for ks in range(num_sigma[i]):
                         p_sigma *= normal_pdf(sigma_obs[i, ks], sigma_model, sigma_err[i, ks])
             if p_sigma <= 0.0:
                 continue
 
-            int_mstar = 0.0
+            mstar_integrand = np.zeros(n_mstar, dtype=np.float64)
             for km in range(n_mstar):
-                base = mstar_base[i, km]
-                if base <= 0.0:
+                fixed_base = mstar_integrand_base[i, km]
+                if fixed_base <= 0.0:
                     continue
                 mu5 = mu5_0 + beta5 * mstar_shift11p4[i, km] + xi5 * delta_r_grid[i, km]
                 mu_gamma = mu_gamma_0 + beta_gamma * mstar_shift11p4[i, km] + xi_gamma * delta_r_grid[i, km]
-                int_mstar += base * normal_pdf(m5, mu5, sigma5) * normal_pdf(gamma, mu_gamma, sigma_gamma)
+                mstar_integrand[km] = (
+                    fixed_base
+                    * normal_pdf(log_enclosed_mass, mu5, sigma5)
+                    * normal_pdf(gamma, mu_gamma, sigma_gamma)
+                )
 
-            int_gamma += gamma_w[kg] * int_mstar * p_zd * p_zs * pf * area * jac * p_sigma
+            integrated_mstar = np.trapezoid(mstar_integrand, mstar_grid[i])
+            gamma_integrand[kg] = integrated_mstar * p_zd * p_zs * pf * area * jac * p_sigma
+
+        int_gamma = np.trapezoid(gamma_integrand, gamma_grid_int)
 
         if int_gamma <= 0.0:
             valid[i] = 0

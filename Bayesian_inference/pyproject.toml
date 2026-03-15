@@ -9,6 +9,7 @@ description = "Hierarchical Bayesian inference framework for CMASS strong-lens p
 readme = "PROJECT_REQUIREMENTS.md"
 requires-python = ">=3.11"
 dependencies = [
+  "astropy>=7.2",
   "emcee>=3.1",
   "h5py>=3.10",
   "numba>=0.60",

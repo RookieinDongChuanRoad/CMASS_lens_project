@@ -26,7 +26,7 @@
 - 选择修正的层次模型框架（单镜头似然与样本归一化相除的形式）。
 - `P_find`（透镜被找到的效率函数）逻辑和函数形式。
 - `P_s^{eff}(z_s)` 作为 source redshift 的有效分布项（高斯 + 非负截断）。
-- 在给定 `theta_E, z_d, z_s` 下使用 `m5(gamma)` 轨迹，并在积分中使用雅可比项。
+- 在给定 `theta_E, z_d, z_s` 下使用 `m_R(gamma)` 轨迹，并在积分中使用雅可比项。
 
 本项目对 2024 框架的明确修改:
 
@@ -73,20 +73,28 @@
 
 - `H0 = 70.0 km/s/Mpc`
 - `Omega_m = 0.3`
-- 距离插值表:
+- 距离插值表（内部实现常量，不作为用户运行时配置项暴露）:
 - `z_table_max = 5.0`
 - `z_table_size = 8001`
 
 Einstein 半径计算（线性幂律质量模型，与你给定代码一致）:
 
+- 质量定义记作 `m_R = log10 M_2D(<R)`。
+- 当前实现仅支持 `R = 5 kpc` 和 `R = 10 kpc`。
+
 - `Sigma_c = c^2/(4*pi*G) * Ds/(Dl*Dls)`
-- `r_ein = (10**m5 / (pi*Sigma_c*5**(3-gamma)))**(1/(gamma-1))`
+- `r_ein = (10**m_R / (pi*Sigma_c*R**(3-gamma)))**(1/(gamma-1))`
 - `theta_ein = r_ein/Dl * 206265 (arcsec)`
 - 当 `z_d >= z_s` 时，`theta_ein = 0`
 
 ## 4. 模型变量与超参数
 
 群体超参数共 12 个（两分支共用）:
+
+- 内部实现使用一组通用 mass hyper-parameters。
+- 外部公共命名随质量定义切换:
+- `R=5 kpc`: `mu5_0, beta5, xi5, sigma5`
+- `R=10 kpc`: `mu10_0, beta10, xi10, sigma10`
 
 1. `mu5_0`
 2. `beta5`
@@ -171,7 +179,7 @@ Einstein 半径计算（线性幂律质量模型，与你给定代码一致）:
 你确认的核心约束:
 
 - 仅在 `mu_R(m*, n)` 中引入 `n` 依赖。
-- `P(m5,gamma | m*,r_e)` 不再额外显式加 `n` 项。
+- `P(m_R,gamma | m*,r_e)` 不再额外显式加 `n` 项。
 
 ## 6.2 `n` 的使用策略
 
@@ -180,36 +188,42 @@ Einstein 半径计算（线性幂律质量模型，与你给定代码一致）:
 - 单镜头似然使用每个镜头观测 `n_ser`。
 - 样本归一化中从 `log n | m*` 正态关系采样 `n`。
 
-## 6.3 `m5` 与 `gamma` 的条件高斯模型（两分支共用）
+## 6.3 `m_R` 与 `gamma` 的条件高斯模型（两分支共用）
 
 定义:
 
-- `mu_R = muR0 + betaR*(m* - 11.4)`（sersic 再加 `nuR*(log10(n)-log10(4))`）
-- `Delta_R = log10(r_e[kpc]) - mu_R`
+- `mu_R,struct = muR0 + betaR*(m* - 11.4)`（sersic 再加 `nuR*(log10(n)-log10(4))`）
+- `Delta_R = log10(r_e[kpc]) - mu_R,struct`
 
 则:
 
-- `mu_5(m*,r_e,n) = mu5_0 + beta5*(m* - 11.4) + xi5*Delta_R`
+- `mu_mass(m*,r_e,n) = mu_mass_0 + beta_mass*(m* - 11.4) + xi_mass*Delta_R`
 - `mu_gamma(m*,r_e,n) = mu_gamma_0 + beta_gamma*(m* - 11.4) + xi_gamma*Delta_R`
-- `m5 | m*,r_e,n ~ N(mu_5, sigma5^2)`
+- `m_R | m*,r_e,n ~ N(mu_mass, sigma_mass^2)`
 - `gamma | m*,r_e,n ~ N(mu_gamma, sigma_gamma^2)`
+
+说明:
+
+- 当 `R=5 kpc` 时，公共参数名对应 `mu5_0/beta5/xi5/sigma5`。
+- 当 `R=10 kpc` 时，公共参数名对应 `mu10_0/beta10/xi10/sigma10`。
+- 两个定义之间满足精确关系 `m10 = m5 + (3-gamma) log10(2)`。
 
 ## 7. 单镜头似然定义（核心可执行版）
 
-每个 lens 的被积变量为 `gamma` 与 `m*`（二维积分），其中 `m5` 不再独立积分，而是通过观测条件约束为 `m5(gamma)`。
+每个 lens 的被积变量为 `gamma` 与 `m*`（二维积分），其中 `m_R` 不再独立积分，而是通过观测条件约束为 `m_R(gamma)`。
 
 输入数据给出每个 lens 的 17 点网格:
 
 - `gamma_grid_17`
-- `m5_grid_17`
-- `dm5_dthetaein_grid_17`
+- `mass_grid_17`
+- `dmass_dthetaein_grid_17`
 - 可选 `s2_grid_17`
 
 实现要求:
 
 - 在积分时将 `gamma` 从 17 点提升到 200 点细网格（线性插值，clip）。
-- 使用雅可比 `|dm5/dthetaein|`（绝对值）。
-- **不要**因为 `m5_grid` 单调递减而重新排序；这是可物理出现的结果。
+- 使用雅可比 `|dm_R/dthetaein|`（绝对值）。
+- **不要**因为 `mass_grid` 单调递减而重新排序；这是可物理出现的结果。
 
 单镜头被积项包含:
 
@@ -217,19 +231,19 @@ Einstein 半径计算（线性幂律质量模型，与你给定代码一致）:
 - 观测恒星质量项 `P(logm_obs | m*)`
 - 恒星质量函数 `S(m*)`
 - 尺度关系项 `P(log r_e | m*, n)`
-- `P(m5 | m*, r_e, eta)`
+- `P(m_R | m*, r_e, eta)`
 - `P(gamma | m*, r_e, eta)`
 - `P_s^{eff}(z_s | eta)`
 - `P_find(theta_E | eta)`
 - 截面项 `g(theta_E,gamma)`
-- 雅可比 `|dm5/dthetaein|`
+- 雅可比 `|dm_R/dthetaein|`
 - 若有速度弥散观测，再乘速度弥散项
 
 可直接实现的单镜头积分形式:
 
 - `L_i(eta) = integral_{gamma} integral_{m*} W_i(gamma,m*|eta) dm* dgamma`
-- `W_i = P(logm_obs|m*) * S(m*) * P(logr_e|m*,n_i) * P(m5(gamma)|m*,r_e,eta) * P(gamma|m*,r_e,eta) * P_s^{eff}(z_{s,i}|eta) * P_find(theta_E(gamma)|eta) * g(gamma) * |dm5/dthetaein| * P_sigma`
-- `W_i = P(z_{d,i}) * P(logm_obs|m*) * S(m*) * P(logr_e|m*,n_i) * P(m5(gamma)|m*,r_e,eta) * P(gamma|m*,r_e,eta) * P_s^{eff}(z_{s,i}|eta) * P_find(theta_E(gamma)|eta) * g(gamma) * |dm5/dthetaein| * P_sigma`
+- `W_i = P(logm_obs|m*) * S(m*) * P(logr_e|m*,n_i) * P(m_R(gamma)|m*,r_e,eta) * P(gamma|m*,r_e,eta) * P_s^{eff}(z_{s,i}|eta) * P_find(theta_E(gamma)|eta) * g(gamma) * |dm_R/dthetaein| * P_sigma`
+- `W_i = P(z_{d,i}) * P(logm_obs|m*) * S(m*) * P(logr_e|m*,n_i) * P(m_R(gamma)|m*,r_e,eta) * P(gamma|m*,r_e,eta) * P_s^{eff}(z_{s,i}|eta) * P_find(theta_E(gamma)|eta) * g(gamma) * |dm_R/dthetaein| * P_sigma`
 - 其中 `P_sigma` 按 `num_sigma` 分支处理（见第 8 节）。
 
 ## 8. 速度弥散 likelihood 分支
@@ -242,9 +256,9 @@ Einstein 半径计算（线性幂律质量模型，与你给定代码一致）:
 
 `s2` 的定义与你确认一致:
 
-- `s2 = sigma^2 / 10**m5`
-- 因此 `sigma_model = sqrt(s2 * 10**m5)`
-- 先对 `s2_grid(gamma)` 插值，再乘 `10**m5(gamma)` 开方
+- `s2 = sigma^2 / 10**m_R`
+- 因此 `sigma_model = sqrt(s2 * 10**m_R)`
+- 先对 `s2_grid(gamma)` 插值，再乘 `10**m_R(gamma)` 开方
 
 速度弥散项采用线性空间高斯:
 
@@ -300,9 +314,12 @@ MC 抽样变量:
 - 可选 `aperture_width`
 - datasets:
 - `gamma_grid`
-- `m5_grid`
-- `dm5_dthetaein_grid`
-- 可选 `s2_grid`
+- `mass_definitions/m5/mass_grid`
+- `mass_definitions/m5/dmass_dthetaein_grid`
+- `mass_definitions/m10/mass_grid`
+- `mass_definitions/m10/dmass_dthetaein_grid`
+- 可选 `mass_definitions/<label>/s2_grid`
+- 过渡期兼容旧 root-level `m5_grid/dm5_dthetaein_grid/s2_grid`
 
 数据现状:
 
@@ -335,6 +352,8 @@ MC 抽样变量:
 
 - 使用高斯抖动初始化（围绕给定中心）
 - 当前中心值:
+- 质量定义必须显式写入配置:
+- `mass_definition.enclosed_radius_kpc = 5` 或 `10`
 - `mu5_0 = 11.32`
 - `beta5 = 0.59`
 - `xi5 = -0.11`
@@ -378,7 +397,7 @@ MC 抽样变量:
 - `N_norm = 1e5`。
 - 每步都重算归一化。
 - `gamma` 和 `m*` 积分均用 200 点。
-- 使用 `|dm5/dthetaein|`。
+- 使用 `|dm_R/dthetaein|`。
 - 不引入 source brightness。
 - 删除 Fundamental Plane 先验。
 
@@ -387,4 +406,4 @@ MC 抽样变量:
 - `d` = deflector（前景透镜）
 - `s` = source（背景源）
 - `eta` = 12 维群体超参数向量
-- `m5` = 幂律模型质量归一参数（通过 `theta_E` 约束成 `m5(gamma)`）
+- `m_R` = 幂律模型质量归一参数（通过 `theta_E` 约束成 `m_R(gamma)`，当前支持 `m5` 与 `m10`）

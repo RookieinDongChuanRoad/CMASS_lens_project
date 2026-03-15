@@ -12,8 +12,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pytest
+import yaml
+
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.io import load_cross_section_grid, load_observations
+from cmass_lens_inference.mass_definition import convert_log_enclosed_mass, get_mass_definition
 from cmass_lens_inference.profiles import build_profile_spec
 
 
@@ -30,6 +35,9 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     runtime_config = load_runtime_config(synthetic_config_path)
 
     assert runtime_config.profile.name == "sersic"
+    assert runtime_config.mass_definition == get_mass_definition(5)
+    assert runtime_config.cosmology.h0 == 70.0
+    assert runtime_config.cosmology.omega_m == 0.3
     assert runtime_config.sampling.n_walkers == 24
     assert runtime_config.integration.normalization_samples == 128
     assert runtime_config.output.run_label == "synthetic"
@@ -39,6 +47,91 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     assert runtime_config.runtime.reserve_cores == 2
     assert runtime_config.runtime.progress_summary_every == 1
     assert runtime_config.runtime.show_stage_timing is True
+
+
+def test_load_runtime_config_requires_explicit_cosmology_section(tmp_path: Path) -> None:
+    """
+    The astropy migration introduces a dedicated top-level `cosmology` section.
+
+    Legacy configs that only provide the removed distance-table runtime knobs
+    must fail fast so users do not unknowingly keep depending on deleted schema.
+    """
+
+    legacy_style_path = tmp_path / "legacy_runtime_only.yaml"
+    legacy_style_path.write_text(
+        yaml.safe_dump(
+            {
+                "profile": {"name": "sersic"},
+                "mass_definition": {"enclosed_radius_kpc": 5},
+                "data": {
+                    "observation_path": str(tmp_path / "observations.hdf5"),
+                    "cross_section_path": str(tmp_path / "cross_section.h5"),
+                },
+                "sampling": {
+                    "n_walkers": 24,
+                    "n_steps": 3,
+                    "warmup": 1,
+                    "random_seed": 7,
+                    "initial_center": {
+                        "mu5_0": 11.32,
+                        "beta5": 0.59,
+                        "xi5": -0.11,
+                        "sigma5": 0.06,
+                        "mu_gamma_0": 1.99,
+                        "beta_gamma": 0.1,
+                        "xi_gamma": -0.67,
+                        "sigma_gamma": 0.149,
+                        "mu_zs": 1.8,
+                        "sigma_zs": 0.215,
+                        "theta0": 0.93,
+                        "loga": 1.0,
+                    },
+                },
+                "integration": {
+                    "gamma_points": 200,
+                    "mstar_points": 200,
+                    "normalization_samples": 128,
+                },
+                "runtime": {
+                    "distance_table_max_z": 5.0,
+                    "distance_table_size": 8001,
+                    "checkpoint_every": 1,
+                    "parallel_strategy": "auto",
+                    "progress": False,
+                    "progress_summary_every": 1,
+                    "show_stage_timing": True,
+                    "disable_hdf5_file_locking": False,
+                    "num_threads": 0,
+                    "reserve_cores": 2,
+                },
+                "output": {
+                    "root_dir": str(tmp_path / "outputs"),
+                    "run_label": "synthetic",
+                    "overwrite_latest": True,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(KeyError, match="Missing required config section: cosmology"):
+        load_runtime_config(legacy_style_path)
+
+
+def test_load_runtime_config_maps_m10_public_parameter_names_to_internal_vector(
+    synthetic_m10_config_path: Path,
+) -> None:
+    """The config loader should accept the `mu10_*` public naming surface."""
+
+    runtime_config = load_runtime_config(synthetic_m10_config_path)
+
+    assert runtime_config.mass_definition == get_mass_definition(10)
+    np_values = runtime_config.sampling.initial_center.to_array()
+    assert np_values[0] == pytest.approx(11.42)
+    assert np_values[1] == pytest.approx(0.49)
+    assert np_values[2] == pytest.approx(-0.21)
+    assert np_values[3] == pytest.approx(0.08)
 
 
 def test_build_profile_spec_exposes_profile_specific_rules() -> None:
@@ -74,7 +167,11 @@ def test_load_observations_uses_devauc_aliases(
     """
 
     profile_spec = build_profile_spec("devauc")
-    observations = load_observations(synthetic_devauc_observation_file, profile_spec)
+    observations = load_observations(
+        synthetic_devauc_observation_file,
+        profile_spec,
+        get_mass_definition(5),
+    )
 
     assert len(observations) == 1
     observation = observations[0]
@@ -85,6 +182,64 @@ def test_load_observations_uses_devauc_aliases(
     assert observation.effective_radius_arcsec == 1.4
     assert observation.n_observed == 4.0
     assert observation.num_sigma == 0
+
+
+def test_load_observations_converts_legacy_m5_grid_to_selected_mass_definition(
+    synthetic_observation_file: Path,
+) -> None:
+    """
+    Legacy observation files still store only root-level `m5` datasets.
+
+    The loader must preserve backward compatibility by converting those
+    datasets analytically when a run requests `m10`.
+    """
+
+    profile_spec = build_profile_spec("sersic")
+    observations = load_observations(
+        synthetic_observation_file,
+        profile_spec,
+        get_mass_definition(10),
+    )
+
+    assert len(observations) == 1
+    observation = observations[0]
+    expected_mass_grid = convert_log_enclosed_mass(
+        log_mass=np.linspace(11.6, 10.8, 17),
+        gamma=np.linspace(1.3, 2.7, 17),
+        from_radius_kpc=5,
+        to_radius_kpc=10,
+    )
+
+    np.testing.assert_allclose(observation.mass_grid_17, expected_mass_grid)
+    np.testing.assert_allclose(observation.dmass_dthetaein_grid_17, np.linspace(-2.0, -1.0, 17))
+    assert observation.s2_grid_17 is not None
+
+
+def test_load_observations_reads_namespaced_mass_definition_subgroup_when_available(
+    synthetic_namespaced_observation_file: Path,
+) -> None:
+    """
+    The new HDF5 schema stores one subgroup per mass definition under each lens.
+
+    The reader must select the subgroup matching the active run rather than
+    assuming the historical root-level `m5` datasets exist.
+    """
+
+    profile_spec = build_profile_spec("sersic")
+    observations = load_observations(
+        synthetic_namespaced_observation_file,
+        profile_spec,
+        get_mass_definition(10),
+    )
+
+    assert len(observations) == 1
+    observation = observations[0]
+
+    assert observation.lens_id == "lens-namespaced"
+    np.testing.assert_allclose(observation.mass_grid_17, np.linspace(11.75, 10.95, 17))
+    np.testing.assert_allclose(observation.dmass_dthetaein_grid_17, np.linspace(-1.9, -1.1, 17))
+    assert observation.s2_grid_17 is not None
+    np.testing.assert_allclose(observation.s2_grid_17, np.linspace(0.45, 0.75, 17))
 
 
 def test_load_cross_section_grid_supports_real_world_alias_names(

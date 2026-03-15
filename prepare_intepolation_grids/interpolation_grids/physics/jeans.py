@@ -35,6 +35,21 @@ COSMOLOGY = FlatLambdaCDM(H0=70, Om0=0.3)
 SIGMA2_TO_KM2_PER_S2 = (G * M_sun / kpc).to("km2 / s2").value
 
 
+def _sigma_unit_mass_scale_factor(gamma_grid: np.ndarray, mass_radius_kpc: float) -> np.ndarray:
+    """
+    Convert the legacy `S_unit(m5)` normalization into `S_unit(m_R)`.
+
+    The current Jeans kernel normalizes the projected power-law mass at 5 kpc.
+    For another radius `R`, the enclosed mass rescales by `(R / 5) ** (3-gamma)`,
+    so `sigma^2 / 10**m_R = sigma^2 / 10**m5 * (5 / R) ** (3-gamma)`.
+    """
+
+    gamma_array = np.asarray(gamma_grid, dtype=float)
+    if float(mass_radius_kpc) == 5.0:
+        return np.ones_like(gamma_array, dtype=float)
+    return np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_array)
+
+
 def kpc_per_arcsec(zd: float) -> float:
     """Convert one arcsec at lens redshift `zd` into physical kpc."""
 
@@ -131,6 +146,7 @@ def compute_sigma_unit(
     zd: float,
     re_kpc: float,
     n_value: float | None = None,
+    mass_radius_kpc: float = 5.0,
 ) -> float:
     """Evaluate the unit-mass Jeans response for one physical lens coordinate.
 
@@ -160,7 +176,7 @@ def compute_sigma_unit(
         tracer_profile=tracer_profile,
         radial_grid=radial_grid,
     )
-    return float(values[0])
+    return float(values[0] * _sigma_unit_mass_scale_factor(np.asarray([gamma], dtype=float), mass_radius_kpc)[0])
 
 
 def compute_sigma_unit_grid(
@@ -169,6 +185,7 @@ def compute_sigma_unit_grid(
     zd: float,
     re_kpc: float,
     n_value: float | None = None,
+    mass_radius_kpc: float = 5.0,
 ) -> np.ndarray:
     """Evaluate `S_unit` over one gamma axis for fixed non-gamma lens inputs."""
 
@@ -178,7 +195,7 @@ def compute_sigma_unit_grid(
         re_kpc=re_kpc,
         n_value=n_value,
     )
-    return _compute_sigma_unit_values_for_prepared_inputs(
+    base_values = _compute_sigma_unit_values_for_prepared_inputs(
         gamma_grid=np.asarray(gamma_grid, dtype=float),
         aperture_kpc=aperture_kpc,
         seeing_kpc=seeing_kpc,
@@ -186,10 +203,15 @@ def compute_sigma_unit_grid(
         tracer_profile=tracer_profile,
         radial_grid=radial_grid,
     )
+    return base_values * _sigma_unit_mass_scale_factor(np.asarray(gamma_grid, dtype=float), mass_radius_kpc)
 
 
-def compute_s2_grid(galaxy: GalaxyInputs, gamma_grid: np.ndarray) -> np.ndarray:
-    """Compute the legacy per-galaxy `s2_grid` from the shared sigma-unit kernel.
+def compute_s2_grid(
+    galaxy: GalaxyInputs,
+    gamma_grid: np.ndarray,
+    mass_radius_kpc: float = 5.0,
+) -> np.ndarray:
+    """Compute the per-galaxy `s2_grid` for the requested mass definition.
 
     Parameters
     ----------
@@ -217,6 +239,7 @@ def compute_s2_grid(galaxy: GalaxyInputs, gamma_grid: np.ndarray) -> np.ndarray:
             gamma_grid=np.asarray(gamma_grid, dtype=float),
             zd=galaxy.zd,
             re_kpc=galaxy.reff_dev_arcsec * physical_kpc_per_arcsec,
+            mass_radius_kpc=mass_radius_kpc,
         )
     else:
         if galaxy.re_arcsec is None or galaxy.nser is None:
@@ -227,4 +250,5 @@ def compute_s2_grid(galaxy: GalaxyInputs, gamma_grid: np.ndarray) -> np.ndarray:
             zd=galaxy.zd,
             re_kpc=galaxy.re_arcsec * physical_kpc_per_arcsec,
             n_value=galaxy.nser,
+            mass_radius_kpc=mass_radius_kpc,
         )

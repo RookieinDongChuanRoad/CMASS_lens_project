@@ -21,10 +21,15 @@ from cmass_lens_inference.model import build_compiled_model, log_prob
 from cmass_lens_inference.kernels.likelihood import log_likelihood_lenses_numba
 from cmass_lens_inference.kernels.normalization import normalization_mc_numba
 from cmass_lens_inference.kernels.primitives import (
+    normal_pdf,
+    p_find,
+    theta_ein_arcsec,
+    truncated_normal_pdf_nonneg,
+)
+from cmass_lens_inference.kernels.primitives import (
     interp1d_clip,
     normal_ppf,
     skewnorm_sample,
-    theta_ein_arcsec,
     truncnorm_sample,
 )
 
@@ -40,13 +45,39 @@ def test_compiled_model_builds_contiguous_array_context(synthetic_config_path) -
     compiled_model = build_compiled_model(runtime_config)
 
     assert compiled_model.context.zd.ndim == 1
-    assert compiled_model.context.m5_grid_int.ndim == 2
-    assert compiled_model.context.mstar_base.ndim == 2
+    assert compiled_model.context.mass_grid_int.ndim == 2
+    assert compiled_model.context.dmass_dthetaein_grid_int.ndim == 2
+    assert compiled_model.context.mstar_integrand_base.ndim == 2
     assert compiled_model.context.base_normals.ndim == 2
+    assert compiled_model.context.mass_radius_kpc == 5.0
     assert compiled_model.context.zd.flags.c_contiguous
-    assert compiled_model.context.m5_grid_int.flags.c_contiguous
-    assert compiled_model.context.mstar_base.flags.c_contiguous
+    assert compiled_model.context.mass_grid_int.flags.c_contiguous
+    assert compiled_model.context.dmass_dthetaein_grid_int.flags.c_contiguous
+    assert compiled_model.context.mstar_integrand_base.flags.c_contiguous
     assert compiled_model.context.base_normals.flags.c_contiguous
+    assert compiled_model.context.mstar_integrand_base.dtype == np.float64
+    assert compiled_model.context.z_grid.dtype == np.float64
+    assert compiled_model.context.chi_kpc_grid.dtype == np.float64
+    assert not hasattr(compiled_model.context.z_grid, "unit")
+    assert not hasattr(compiled_model.context.chi_kpc_grid, "unit")
+    assert not hasattr(compiled_model.context, "gamma_w")
+    assert not hasattr(compiled_model.context, "n_obs_for_model")
+
+
+def test_compiled_model_tracks_selected_mass_definition_in_context(synthetic_m10_config_path) -> None:
+    """
+    The compiled context must carry the chosen mass definition into the hot path.
+
+    This keeps the kernels generic: they receive one mass grid and one radius
+    value instead of a special-case `m5` implementation.
+    """
+
+    runtime_config = load_runtime_config(synthetic_m10_config_path)
+    compiled_model = build_compiled_model(runtime_config)
+
+    assert compiled_model.context.mass_radius_kpc == 10.0
+    assert compiled_model.context.mass_grid_int.shape[0] == 1
+    assert compiled_model.context.dmass_dthetaein_grid_int.shape == compiled_model.context.mass_grid_int.shape
 
 
 def test_model_log_prob_runs_through_monolithic_numba_kernels(synthetic_config_path) -> None:
@@ -77,6 +108,138 @@ def test_model_log_prob_runs_through_monolithic_numba_kernels(synthetic_config_p
         "parallel_strategy",
     }
     assert blob["parallel_strategy"].decode("utf-8").rstrip("\x00") == compiled_model.parallelism.strategy
+
+
+def test_likelihood_kernel_matches_numpy_trapezoid_reference(synthetic_config_path) -> None:
+    """
+    The production likelihood kernel should now mirror the mathematical
+    two-stage trapezoid quadrature exactly: one explicit integral over `m*`
+    nested inside one explicit integral over `gamma`.
+
+    This test recomputes the same one-lens likelihood in plain NumPy so future
+    refactors cannot silently reintroduce pre-weighted bases or double-apply
+    quadrature weights.
+    """
+
+    runtime_config = load_runtime_config(synthetic_config_path)
+    compiled_model = build_compiled_model(runtime_config)
+    context = compiled_model.context
+    theta = runtime_config.sampling.initial_center.to_array()
+
+    mu5_0 = float(theta[0])
+    beta5 = float(theta[1])
+    xi5 = float(theta[2])
+    sigma5 = float(theta[3])
+    mu_gamma_0 = float(theta[4])
+    beta_gamma = float(theta[5])
+    xi_gamma = float(theta[6])
+    sigma_gamma = float(theta[7])
+    mu_zs = float(theta[8])
+    sigma_zs = float(theta[9])
+    theta0 = float(theta[10])
+    loga = float(theta[11])
+
+    gamma_integrand = np.zeros_like(context.gamma_grid_int)
+    lens_index = 0
+    p_zd = float(context.p_zd_fixed[lens_index])
+    p_zs = float(truncated_normal_pdf_nonneg(context.zs[lens_index], mu_zs, sigma_zs))
+
+    for gamma_index, gamma_value in enumerate(context.gamma_grid_int):
+        log_enclosed_mass = float(context.mass_grid_int[lens_index, gamma_index])
+        jacobian = abs(float(context.dmass_dthetaein_grid_int[lens_index, gamma_index]))
+        if jacobian <= 0.0:
+            continue
+
+        theta_ein = float(
+            theta_ein_arcsec(
+                float(context.zd[lens_index]),
+                float(context.zs[lens_index]),
+                log_enclosed_mass,
+                float(gamma_value),
+                context.z_grid,
+                context.chi_kpc_grid,
+                float(context.mass_radius_kpc),
+            )
+        )
+        if theta_ein <= 0.0:
+            continue
+
+        cross_section_area = np.pi * (float(context.cs_over_theta_int[gamma_index]) * theta_ein) ** 2
+        find_probability = float(p_find(theta_ein, theta0, loga))
+        if cross_section_area <= 0.0 or find_probability <= 0.0:
+            continue
+
+        sigma_likelihood = 1.0
+        if int(context.num_sigma[lens_index]) > 0:
+            if int(context.has_s2[lens_index]) == 0:
+                sigma_likelihood = 0.0
+            else:
+                sigma_model = np.sqrt(
+                    max(float(context.s2_grid_int[lens_index, gamma_index]) * (10.0**log_enclosed_mass), 1.0e-30)
+                )
+                for sigma_index in range(int(context.num_sigma[lens_index])):
+                    sigma_likelihood *= float(
+                        normal_pdf(
+                            float(context.sigma_obs[lens_index, sigma_index]),
+                            sigma_model,
+                            float(context.sigma_err[lens_index, sigma_index]),
+                        )
+                    )
+        if sigma_likelihood <= 0.0:
+            continue
+
+        mstar_integrand = np.zeros_like(context.mstar_grid[lens_index])
+        for mstar_index, _ in enumerate(context.mstar_grid[lens_index]):
+            mu5 = (
+                mu5_0
+                + beta5 * float(context.mstar_shift11p4[lens_index, mstar_index])
+                + xi5 * float(context.delta_r_grid[lens_index, mstar_index])
+            )
+            mu_gamma = (
+                mu_gamma_0
+                + beta_gamma * float(context.mstar_shift11p4[lens_index, mstar_index])
+                + xi_gamma * float(context.delta_r_grid[lens_index, mstar_index])
+            )
+            mstar_integrand[mstar_index] = (
+                float(context.mstar_integrand_base[lens_index, mstar_index])
+                * float(normal_pdf(log_enclosed_mass, mu5, sigma5))
+                * float(normal_pdf(float(gamma_value), mu_gamma, sigma_gamma))
+            )
+
+        integrated_mstar = float(np.trapezoid(mstar_integrand, context.mstar_grid[lens_index]))
+        gamma_integrand[gamma_index] = (
+            integrated_mstar * p_zd * p_zs * find_probability * cross_section_area * jacobian * sigma_likelihood
+        )
+
+    reference_value = float(np.log(np.trapezoid(gamma_integrand, context.gamma_grid_int)))
+    kernel_value = float(
+        log_likelihood_lenses_numba(
+            theta=theta,
+            z_grid=context.z_grid,
+            chi_kpc_grid=context.chi_kpc_grid,
+            cs_over_theta_int=context.cs_over_theta_int,
+            mass_grid_int=context.mass_grid_int,
+            dmass_dthetaein_grid_int=context.dmass_dthetaein_grid_int,
+            s2_grid_int=context.s2_grid_int,
+            has_s2=context.has_s2,
+            num_sigma=context.num_sigma,
+            sigma_obs=context.sigma_obs,
+            sigma_err=context.sigma_err,
+            zd=context.zd,
+            zs=context.zs,
+            p_zd_fixed=context.p_zd_fixed,
+            mstar_grid=context.mstar_grid,
+            mstar_shift11p4=context.mstar_shift11p4,
+            mstar_integrand_base=context.mstar_integrand_base,
+            delta_r_grid=context.delta_r_grid,
+            gamma_grid_int=context.gamma_grid_int,
+            mass_radius_kpc=context.mass_radius_kpc,
+        )
+    )
+
+    assert np.isfinite(reference_value)
+    assert np.isfinite(kernel_value)
+    np.testing.assert_allclose(reference_value, kernel_value, rtol=1.0e-12, atol=1.0e-12)
 
 
 def test_kernel_primitives_live_in_shared_module_and_compile() -> None:

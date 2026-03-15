@@ -20,12 +20,17 @@ from interpolation_grids.config import (
     GAMMA_DATASET_NAME,
     GAMMA_GRID,
     LEGACY_DERIVATIVE_DATASET_NAME,
+    MASS_DEFINITIONS_GROUP_NAME,
+    MASS_DEFINITION_LABELS,
+    MASS_DERIVATIVE_DATASET_NAME,
+    MASS_GRID_DATASET_NAME,
     M5_DATASET_NAME,
     S2_DATASET_NAME,
+    SUPPORTED_MASS_RADII_KPC,
 )
 from interpolation_grids.models import GalaxyInputs, ProcessingSummary
 from interpolation_grids.physics.jeans import kpc_per_arcsec, compute_s2_grid
-from interpolation_grids.physics.m5 import compute_dm5_dthetaein_grid, compute_m5_grid
+from interpolation_grids.physics.m5 import compute_dmass_dthetaein_grid, compute_mass_grid
 
 
 def _read_attr_or_dataset(group_handle: h5py.Group, key: str) -> float | None:
@@ -90,21 +95,34 @@ def _process_group(group_name: str, group_handle: h5py.Group, source_filename: s
     )
     gamma_grid = group_handle[GAMMA_DATASET_NAME][:] if GAMMA_DATASET_NAME in group_handle else GAMMA_GRID
 
-    m5_grid = compute_m5_grid(
-        gamma_grid=gamma_grid,
-        sigma_crit=galaxy.sigma_crit,
-        rein_kpc=galaxy.r_ein_kpc,
-    )
-    derivative_grid = compute_dm5_dthetaein_grid(
-        gamma_grid=gamma_grid,
-        sigma_crit=galaxy.sigma_crit,
-        theta_ein_arcsec=galaxy.rein_arcsec,
-        kpc_per_arcsec=galaxy.r_ein_kpc / galaxy.rein_arcsec,
-        theta_samples=DEFAULT_DERIVATIVE_THETA_SAMPLES,
-    )
+    mass_definitions_handle = group_handle.require_group(MASS_DEFINITIONS_GROUP_NAME)
+    mass_grids_by_radius: dict[float, np.ndarray] = {}
+    derivative_grids_by_radius: dict[float, np.ndarray] = {}
+    theta_scale_kpc_per_arcsec = galaxy.r_ein_kpc / galaxy.rein_arcsec
 
-    _write_or_replace_dataset(group_handle, M5_DATASET_NAME, m5_grid)
-    _write_or_replace_dataset(group_handle, DERIVATIVE_DATASET_NAME, derivative_grid)
+    for mass_radius_kpc in SUPPORTED_MASS_RADII_KPC:
+        mass_grid = compute_mass_grid(
+            gamma_grid=gamma_grid,
+            sigma_crit=galaxy.sigma_crit,
+            rein_kpc=galaxy.r_ein_kpc,
+            mass_radius_kpc=mass_radius_kpc,
+        )
+        derivative_grid = compute_dmass_dthetaein_grid(
+            gamma_grid=gamma_grid,
+            sigma_crit=galaxy.sigma_crit,
+            theta_ein_arcsec=galaxy.rein_arcsec,
+            kpc_per_arcsec=theta_scale_kpc_per_arcsec,
+            theta_samples=DEFAULT_DERIVATIVE_THETA_SAMPLES,
+            mass_radius_kpc=mass_radius_kpc,
+        )
+        subgroup = mass_definitions_handle.require_group(MASS_DEFINITION_LABELS[float(mass_radius_kpc)])
+        _write_or_replace_dataset(subgroup, MASS_GRID_DATASET_NAME, mass_grid)
+        _write_or_replace_dataset(subgroup, MASS_DERIVATIVE_DATASET_NAME, derivative_grid)
+        mass_grids_by_radius[float(mass_radius_kpc)] = mass_grid
+        derivative_grids_by_radius[float(mass_radius_kpc)] = derivative_grid
+
+    _write_or_replace_dataset(group_handle, M5_DATASET_NAME, mass_grids_by_radius[5.0])
+    _write_or_replace_dataset(group_handle, DERIVATIVE_DATASET_NAME, derivative_grids_by_radius[5.0])
 
     # If the old alternate spelling exists, keep the schema clean by removing it
     # after writing the canonical dataset name used by the real files.
@@ -115,8 +133,20 @@ def _process_group(group_name: str, group_handle: h5py.Group, source_filename: s
     summary.updated_dm5 += 1
 
     if galaxy.has_s2_grid:
-        s2_grid = compute_s2_grid(galaxy=galaxy, gamma_grid=np.asarray(gamma_grid, dtype=float))
-        _write_or_replace_dataset(group_handle, S2_DATASET_NAME, s2_grid)
+        for mass_radius_kpc in SUPPORTED_MASS_RADII_KPC:
+            s2_grid = compute_s2_grid(
+                galaxy=galaxy,
+                gamma_grid=np.asarray(gamma_grid, dtype=float),
+                mass_radius_kpc=mass_radius_kpc,
+            )
+            subgroup = mass_definitions_handle[MASS_DEFINITION_LABELS[float(mass_radius_kpc)]]
+            _write_or_replace_dataset(subgroup, S2_DATASET_NAME, s2_grid)
+
+        _write_or_replace_dataset(
+            group_handle,
+            S2_DATASET_NAME,
+            compute_s2_grid(galaxy=galaxy, gamma_grid=np.asarray(gamma_grid, dtype=float), mass_radius_kpc=5.0),
+        )
         summary.updated_s2 += 1
 
 

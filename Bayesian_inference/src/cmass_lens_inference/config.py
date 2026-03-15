@@ -11,7 +11,9 @@ from pathlib import Path
 
 import yaml
 
+from .mass_definition import get_mass_definition, normalize_public_initial_center
 from .types import (
+    CosmologyConfig,
     DataConfig,
     HyperParams,
     IntegrationConfig,
@@ -53,17 +55,26 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
         raise TypeError("Top-level configuration must be a YAML mapping.")
 
     profile_raw = _require_section(raw_data, "profile")
+    mass_definition_raw = _require_section(raw_data, "mass_definition")
     data_raw = _require_section(raw_data, "data")
     sampling_raw = _require_section(raw_data, "sampling")
     integration_raw = _require_section(raw_data, "integration")
+    cosmology_raw = _require_section(raw_data, "cosmology")
     runtime_raw = _require_section(raw_data, "runtime")
     output_raw = _require_section(raw_data, "output")
 
+    mass_definition = get_mass_definition(mass_definition_raw["enclosed_radius_kpc"])
     initial_center_raw = _require_section(sampling_raw, "initial_center")
-    initial_center = HyperParams(**{name: float(initial_center_raw[name]) for name in initial_center_raw})
+    initial_center = HyperParams(
+        **normalize_public_initial_center(
+            initial_center_raw=initial_center_raw,
+            mass_definition=mass_definition,
+        )
+    )
 
     return RuntimeConfig(
         profile=ProfileConfig(name=str(profile_raw["name"])),
+        mass_definition=mass_definition,
         data=DataConfig(
             observation_path=Path(data_raw["observation_path"]).expanduser().resolve(),
             cross_section_path=Path(data_raw["cross_section_path"]).expanduser().resolve(),
@@ -81,9 +92,11 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
             mstar_points=int(integration_raw["mstar_points"]),
             normalization_samples=int(integration_raw["normalization_samples"]),
         ),
+        cosmology=CosmologyConfig(
+            h0=float(cosmology_raw["h0"]),
+            omega_m=float(cosmology_raw["omega_m"]),
+        ),
         runtime=RuntimeOptions(
-            distance_table_max_z=float(runtime_raw["distance_table_max_z"]),
-            distance_table_size=int(runtime_raw["distance_table_size"]),
             checkpoint_every=int(runtime_raw["checkpoint_every"]),
             parallel_strategy=str(runtime_raw.get("parallel_strategy", "auto")),
             progress=bool(runtime_raw["progress"]),

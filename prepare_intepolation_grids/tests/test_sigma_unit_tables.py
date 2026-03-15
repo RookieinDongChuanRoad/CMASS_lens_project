@@ -93,7 +93,7 @@ def test_build_sigma_unit_table_matches_direct_jeans_values_on_selected_grid_nod
 
 
 def test_build_default_sigma_unit_hdf5_tables_writes_new_schema_and_expected_filenames(tmp_path: Path) -> None:
-    """Default writer should emit the new explicit HDF5 schema for both profiles."""
+    """Default writer should emit the new explicit HDF5 schema for all four tables."""
 
     output_paths = build_default_sigma_unit_hdf5_tables(
         output_directory=tmp_path,
@@ -104,8 +104,10 @@ def test_build_default_sigma_unit_hdf5_tables_writes_new_schema_and_expected_fil
         sersic_n_axis=np.array([2.5, 10.5]),
     )
 
-    assert output_paths["devauc"] == tmp_path / "jeans_deV_grid.h5"
-    assert output_paths["sersic"] == tmp_path / "jeans_sers_grid.h5"
+    assert output_paths["devauc_m5"] == tmp_path / "jeans_deV_m5_grid.h5"
+    assert output_paths["devauc_m10"] == tmp_path / "jeans_deV_m10_grid.h5"
+    assert output_paths["sersic_m5"] == tmp_path / "jeans_sers_m5_grid.h5"
+    assert output_paths["sersic_m10"] == tmp_path / "jeans_sers_m10_grid.h5"
 
     assert np.array_equal(SIGMA_UNIT_GAMMA_AXIS, np.linspace(1.2, 2.8, 17))
     assert np.array_equal(SIGMA_UNIT_ZD_AXIS, np.linspace(0.43, 0.82, 21))
@@ -113,18 +115,22 @@ def test_build_default_sigma_unit_hdf5_tables_writes_new_schema_and_expected_fil
     assert np.array_equal(SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS, np.linspace(0.50, 1.40, 21))
     assert np.array_equal(SIGMA_UNIT_SERSIC_N_AXIS, np.linspace(2.5, 10.5, 21))
 
-    with h5py.File(output_paths["devauc"], "r") as handle:
+    with h5py.File(output_paths["devauc_m10"], "r") as handle:
         assert set(handle.keys()) == {"profile_name", "gamma_axis", "zd_axis", "log_re_kpc_axis", "s_unit_grid"}
         assert handle["profile_name"][()].decode("utf-8") == "devauc"
         assert handle["s_unit_grid"].shape == (2, 2, 2)
         assert handle.attrs["schema_version"] == "sigma_unit_hdf5_v1"
         assert handle.attrs["quantity_name"] == "S_unit"
-        assert handle.attrs["units"] == "km2 s-2 per 10**m5"
+        assert handle.attrs["mass_definition_label"] == "m10"
+        assert handle.attrs["mass_radius_kpc"] == 10.0
+        assert handle.attrs["units"] == "km2 s-2 per 10**m10"
 
-    with h5py.File(output_paths["sersic"], "r") as handle:
+    with h5py.File(output_paths["sersic_m5"], "r") as handle:
         assert set(handle.keys()) == {"profile_name", "gamma_axis", "zd_axis", "log_re_kpc_axis", "n_axis", "s_unit_grid"}
         assert handle["profile_name"][()].decode("utf-8") == "sersic"
         assert handle["s_unit_grid"].shape == (2, 2, 2, 2)
+        assert handle.attrs["mass_definition_label"] == "m5"
+        assert handle.attrs["mass_radius_kpc"] == 5.0
         assert np.all(np.diff(handle["n_axis"][:]) > 0.0)
 
 
@@ -137,9 +143,12 @@ def test_build_default_sigma_unit_hdf5_tables_can_limit_work_to_one_profile(tmp_
         zd_axis=np.array([0.43, 0.82]),
         devauc_log_re_kpc_axis=np.array([0.45, 1.20]),
         profiles=("devauc",),
+        mass_radii_kpc=(10,),
         workers=1,
     )
 
-    assert set(output_paths) == {"devauc"}
-    assert output_paths["devauc"].exists()
-    assert not (tmp_path / "jeans_sers_grid.h5").exists()
+    assert set(output_paths) == {"devauc_m10"}
+    assert output_paths["devauc_m10"].exists()
+    assert not (tmp_path / "jeans_deV_m5_grid.h5").exists()
+    assert not (tmp_path / "jeans_sers_m5_grid.h5").exists()
+    assert not (tmp_path / "jeans_sers_m10_grid.h5").exists()

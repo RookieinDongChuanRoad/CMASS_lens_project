@@ -8,6 +8,7 @@ and output serialization.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 
@@ -75,10 +76,17 @@ def _run_with_layout(
 
     config_summary = {
         "profile": runtime_context.config.profile.name,
+        "mass_definition": {
+            "label": runtime_context.config.mass_definition.label,
+            "enclosed_radius_kpc": float(runtime_context.config.mass_definition.radius_kpc),
+        },
         "sampling": {
             "n_walkers": runtime_context.config.sampling.n_walkers,
             "n_steps": runtime_context.config.sampling.n_steps,
             "warmup": runtime_context.config.sampling.warmup,
+            "initial_center": runtime_context.config.sampling.initial_center.to_public_dict(
+                runtime_context.config.mass_definition
+            ),
         },
         "integration": {
             "gamma_points": runtime_context.config.integration.gamma_points,
@@ -141,16 +149,11 @@ def run_inference(config_path: str, label: str | None = None) -> RunResult:
     resolved_config_path = Path(config_path).expanduser().resolve()
     runtime_config = load_runtime_config(resolved_config_path)
     if label is not None:
-        runtime_config = runtime_config.__class__(
-            profile=runtime_config.profile,
-            data=runtime_config.data,
-            sampling=runtime_config.sampling,
-            integration=runtime_config.integration,
-            runtime=runtime_config.runtime,
-            output=runtime_config.output.__class__(
-                root_dir=runtime_config.output.root_dir,
+        runtime_config = replace(
+            runtime_config,
+            output=replace(
+                runtime_config.output,
                 run_label=label,
-                overwrite_latest=runtime_config.output.overwrite_latest,
             ),
         )
 

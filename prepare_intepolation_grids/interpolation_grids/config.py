@@ -38,6 +38,14 @@ M5_DATASET_NAME = "m5_grid"
 DERIVATIVE_DATASET_NAME = "dm5_dthetaein_grid"
 LEGACY_DERIVATIVE_DATASET_NAME = "dm5_dtheta_ein_grid"
 S2_DATASET_NAME = "s2_grid"
+MASS_DEFINITIONS_GROUP_NAME = "mass_definitions"
+MASS_GRID_DATASET_NAME = "mass_grid"
+MASS_DERIVATIVE_DATASET_NAME = "dmass_dthetaein_grid"
+SUPPORTED_MASS_RADII_KPC = (5.0, 10.0)
+MASS_DEFINITION_LABELS = {
+    5.0: "m5",
+    10.0: "m10",
+}
 
 # Aperture and seeing are expressed in arcsec first and converted per galaxy to
 # physical kpc using the lens redshift. Production `s2_grid` generation now
@@ -63,11 +71,25 @@ SIGMA_UNIT_SCHEMA_VERSION = "sigma_unit_hdf5_v1"
 SIGMA_UNIT_QUANTITY_NAME = "S_unit"
 SIGMA_UNIT_UNITS = "km2 s-2 per 10**m5"
 SIGMA_UNIT_PROFILE_FILENAMES = {
-    "devauc": "jeans_deV_grid.h5",
-    "sersic": "jeans_sers_grid.h5",
+    ("devauc", 5.0): "jeans_deV_m5_grid.h5",
+    ("devauc", 10.0): "jeans_deV_m10_grid.h5",
+    ("sersic", 5.0): "jeans_sers_m5_grid.h5",
+    ("sersic", 10.0): "jeans_sers_m10_grid.h5",
 }
 SIGMA_UNIT_GAMMA_AXIS = GAMMA_GRID.copy()
 SIGMA_UNIT_ZD_AXIS = np.linspace(0.43, 0.82, 21, dtype=float)
 SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS = np.linspace(0.45, 1.20, 21, dtype=float)
 SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS = np.linspace(0.50, 1.40, 21, dtype=float)
 SIGMA_UNIT_SERSIC_N_AXIS = np.linspace(2.5, 10.5, 21, dtype=float)
+
+
+def mass_definition_label(radius_kpc: float) -> str:
+    """Return the canonical public label for one supported mass radius."""
+
+    return MASS_DEFINITION_LABELS[float(radius_kpc)]
+
+
+def sigma_unit_units_for_radius(radius_kpc: float) -> str:
+    """Return the sigma-unit table units string for one mass definition."""
+
+    return f"km2 s-2 per 10**{mass_definition_label(radius_kpc)}"

@@ -162,6 +162,7 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         sigma_n=context.sigma_n,
         gamma_trunc_low=context.gamma_trunc_low,
         gamma_trunc_high=context.gamma_trunc_high,
+        mass_radius_kpc=context.mass_radius_kpc,
     )
     normalization_seconds = perf_counter() - normalization_start
     if (not np.isfinite(z_norm)) or z_norm <= context.normalization_min_value:
@@ -173,8 +174,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         z_grid=context.z_grid,
         chi_kpc_grid=context.chi_kpc_grid,
         cs_over_theta_int=context.cs_over_theta_int,
-        m5_grid_int=context.m5_grid_int,
-        jac_grid_int=context.jac_grid_int,
+        mass_grid_int=context.mass_grid_int,
+        dmass_dthetaein_grid_int=context.dmass_dthetaein_grid_int,
         s2_grid_int=context.s2_grid_int,
         has_s2=context.has_s2,
         num_sigma=context.num_sigma,
@@ -183,11 +184,12 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         zd=context.zd,
         zs=context.zs,
         p_zd_fixed=context.p_zd_fixed,
+        mstar_grid=context.mstar_grid,
         mstar_shift11p4=context.mstar_shift11p4,
-        mstar_base=context.mstar_base,
+        mstar_integrand_base=context.mstar_integrand_base,
         delta_r_grid=context.delta_r_grid,
         gamma_grid_int=context.gamma_grid_int,
-        gamma_w=context.gamma_w,
+        mass_radius_kpc=context.mass_radius_kpc,
     )
     likelihood_seconds = perf_counter() - likelihood_start
     total_seconds = perf_counter() - total_start

@@ -117,11 +117,30 @@ def _write_config(
     observation_path: Path,
     cross_section_path: Path,
     output_root: Path,
+    mass_radius_kpc: int = 5,
 ) -> Path:
     """Create a YAML config snapshot that mirrors a completed run."""
 
+    if int(mass_radius_kpc) == 5:
+        initial_center = {
+            "mu5_0": 11.32,
+            "beta5": 0.59,
+            "xi5": -0.11,
+            "sigma5": 0.06,
+        }
+    elif int(mass_radius_kpc) == 10:
+        initial_center = {
+            "mu10_0": 11.42,
+            "beta10": 0.49,
+            "xi10": -0.21,
+            "sigma10": 0.08,
+        }
+    else:
+        raise ValueError("Synthetic PPC fixtures only support 5 or 10 kpc mass definitions.")
+
     config = {
         "profile": {"name": profile_name},
+        "mass_definition": {"enclosed_radius_kpc": int(mass_radius_kpc)},
         "data": {
             "observation_path": str(observation_path),
             "cross_section_path": str(cross_section_path),
@@ -132,10 +151,7 @@ def _write_config(
             "warmup": 2,
             "random_seed": 7,
             "initial_center": {
-                "mu5_0": 11.32,
-                "beta5": 0.59,
-                "xi5": -0.11,
-                "sigma5": 0.06,
+                **initial_center,
                 "mu_gamma_0": 1.99,
                 "beta_gamma": 0.10,
                 "xi_gamma": -0.67,
@@ -193,8 +209,11 @@ def _seed_backend(chain_path: Path, base_theta: np.ndarray, n_steps: int = 5, n_
         backend.save_step(state, np.ones(n_walkers, dtype=bool))
 
 
-def _write_sigma_table(path: Path, profile_name: str) -> Path:
+def _write_sigma_table(path: Path, profile_name: str, mass_radius_kpc: int = 5) -> Path:
     """Create a synthetic sigma-unit interpolation table for one profile."""
+
+    mass_label = f"m{int(mass_radius_kpc)}"
+    units = f"km2 s-2 per 10**{mass_label}"
 
     gamma_axis = np.linspace(1.2, 2.8, 9)
     zd_axis = np.linspace(0.43, 0.82, 7)
@@ -211,6 +230,9 @@ def _write_sigma_table(path: Path, profile_name: str) -> Path:
         np.savez(
             path,
             profile_name=profile_name,
+            mass_definition_label=mass_label,
+            mass_radius_kpc=float(mass_radius_kpc),
+            units=units,
             gamma_axis=gamma_axis,
             zd_axis=zd_axis,
             log_re_kpc_axis=log_re_axis,
@@ -230,6 +252,9 @@ def _write_sigma_table(path: Path, profile_name: str) -> Path:
     np.savez(
         path,
         profile_name=profile_name,
+        mass_definition_label=mass_label,
+        mass_radius_kpc=float(mass_radius_kpc),
+        units=units,
         gamma_axis=gamma_axis,
         zd_axis=zd_axis,
         log_re_kpc_axis=log_re_axis,
@@ -239,8 +264,10 @@ def _write_sigma_table(path: Path, profile_name: str) -> Path:
     return path
 
 
-def _write_sigma_table_hdf5(path: Path, profile_name: str) -> Path:
+def _write_sigma_table_hdf5(path: Path, profile_name: str, mass_radius_kpc: int = 5) -> Path:
     """Create a synthetic HDF5 sigma-unit interpolation table for one profile."""
+
+    mass_label = f"m{int(mass_radius_kpc)}"
 
     gamma_axis = np.linspace(1.2, 2.8, 9)
     zd_axis = np.linspace(0.43, 0.82, 7)
@@ -249,7 +276,9 @@ def _write_sigma_table_hdf5(path: Path, profile_name: str) -> Path:
     with h5py.File(path, "w") as handle:
         handle.attrs["schema_version"] = "sigma_unit_hdf5_v1"
         handle.attrs["quantity_name"] = "S_unit"
-        handle.attrs["units"] = "km2 s-2 per 10**m5"
+        handle.attrs["mass_definition_label"] = mass_label
+        handle.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
+        handle.attrs["units"] = f"km2 s-2 per 10**{mass_label}"
         handle.create_dataset("profile_name", data=np.bytes_(profile_name))
         handle.create_dataset("gamma_axis", data=gamma_axis)
         handle.create_dataset("zd_axis", data=zd_axis)
@@ -280,7 +309,7 @@ def _write_sigma_table_hdf5(path: Path, profile_name: str) -> Path:
     return path
 
 
-def _write_external_sigma_table_hdf5(path: Path, profile_name: str) -> Path:
+def _write_external_sigma_table_hdf5(path: Path, profile_name: str, mass_radius_kpc: int = 5) -> Path:
     """
     Create an HDF5 sigma table under the fixed external filenames.
 
@@ -293,6 +322,8 @@ def _write_external_sigma_table_hdf5(path: Path, profile_name: str) -> Path:
       for the production watcher
     """
 
+    mass_label = f"m{int(mass_radius_kpc)}"
+
     gamma_axis = np.linspace(1.2, 2.8, 9)
     zd_axis = np.linspace(0.43, 0.82, 7)
     log_re_axis = np.linspace(0.45, 1.40, 8)
@@ -300,7 +331,9 @@ def _write_external_sigma_table_hdf5(path: Path, profile_name: str) -> Path:
     with h5py.File(path, "w") as handle:
         handle.attrs["schema_version"] = "sigma_unit_hdf5_v1"
         handle.attrs["quantity_name"] = "S_unit"
-        handle.attrs["units"] = "km2 s-2 per 10**m5"
+        handle.attrs["mass_definition_label"] = mass_label
+        handle.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
+        handle.attrs["units"] = f"km2 s-2 per 10**{mass_label}"
         handle.create_dataset("profile_name", data=np.bytes_(profile_name))
         handle.create_dataset("gamma_axis", data=gamma_axis)
         handle.create_dataset("zd_axis", data=zd_axis)
@@ -343,7 +376,12 @@ def _touch_with_mtime(path: Path, timestamp: datetime) -> None:
     os.utime(path, (unix_time, unix_time))
 
 
-def _build_completed_run(tmp_path: Path, profile_name: str, n_steps: int = 5) -> tuple[Path, Path]:
+def _build_completed_run(
+    tmp_path: Path,
+    profile_name: str,
+    n_steps: int = 5,
+    mass_radius_kpc: int = 5,
+) -> tuple[Path, Path]:
     """Build a minimal completed run directory plus its sigma table."""
 
     data_dir = tmp_path / "data"
@@ -359,10 +397,20 @@ def _build_completed_run(tmp_path: Path, profile_name: str, n_steps: int = 5) ->
         observation_path=observation_path,
         cross_section_path=cross_section_path,
         output_root=tmp_path / "outputs",
+        mass_radius_kpc=mass_radius_kpc,
     )
-    base_theta = np.array([11.32, 0.59, -0.11, 0.06, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    if int(mass_radius_kpc) == 5:
+        base_theta = np.array([11.32, 0.59, -0.11, 0.06, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    elif int(mass_radius_kpc) == 10:
+        base_theta = np.array([11.42, 0.49, -0.21, 0.08, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    else:
+        raise ValueError("Synthetic PPC fixtures only support 5 or 10 kpc mass definitions.")
     _seed_backend(run_dir / "chain.h5", base_theta=base_theta, n_steps=n_steps)
-    sigma_table_path = _write_sigma_table(tmp_path / f"{profile_name}_sigma_table.npz", profile_name=profile_name)
+    sigma_table_path = _write_sigma_table(
+        tmp_path / f"{profile_name}_sigma_table.npz",
+        profile_name=profile_name,
+        mass_radius_kpc=mass_radius_kpc,
+    )
     return run_dir, sigma_table_path
 
 
@@ -497,6 +545,23 @@ def test_sigma_unit_table_from_hdf5_supports_clipped_sersic_queries(tmp_path: Pa
     assert table.profile_name == "sersic"
     assert table.n_axis is not None
     assert np.isfinite(actual).all()
+
+
+def test_sigma_unit_table_from_hdf5_preserves_mass_definition_metadata(tmp_path: Path) -> None:
+    """The loader should expose the stored mass-definition metadata to PPC callers."""
+
+    from cmass_posterior_predictive.predictive import SigmaUnitTable
+
+    table_path = _write_sigma_table_hdf5(
+        tmp_path / "sersic_sigma_table_m10.h5",
+        profile_name="sersic",
+        mass_radius_kpc=10,
+    )
+    table = SigmaUnitTable.from_path(table_path)
+
+    assert table.mass_definition_label == "m10"
+    assert table.mass_radius_kpc == 10.0
+    assert table.units == "km2 s-2 per 10**m10"
 
 
 def test_histogram_panel_writes_left_and_right_tail_labels() -> None:
@@ -760,6 +825,67 @@ def test_run_posterior_predictive_supports_hdf5_sigma_tables(tmp_path: Path) -> 
     assert arrays["sigma_sample_sigma"].shape == (3, 7)
 
 
+def test_run_posterior_predictive_uses_dynamic_m10_latent_keys_and_metadata(tmp_path: Path) -> None:
+    """`m10` runs should serialize public labels and latent array keys as `m10`."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        mass_radius_kpc=10,
+    )
+    result = run_posterior_predictive(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "ppc_output"),
+        n_replicates=3,
+        burn_in=1,
+        random_seed=59,
+        candidate_pool_size=64,
+    )
+
+    payload = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    arrays = np.load(result.result_dir / "replicated_statistics.npz")
+
+    assert payload["mass_definition"]["label"] == "m10"
+    assert payload["mass_definition"]["enclosed_radius_kpc"] == 10.0
+    assert manifest["mass_definition"]["label"] == "m10"
+    assert arrays["theta_sample_m10"].shape == (3, 23)
+    assert arrays["sigma_sample_m10"].shape == (3, 7)
+    assert "theta_sample_m5" not in arrays.files
+    assert "sigma_sample_m5" not in arrays.files
+
+
+def test_run_posterior_predictive_rejects_sigma_tables_with_wrong_mass_definition(tmp_path: Path) -> None:
+    """PPC should fail fast if the sigma table metadata does not match the run definition."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, _ = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        mass_radius_kpc=10,
+    )
+    wrong_sigma_table_path = _write_sigma_table_hdf5(
+        tmp_path / "sersic_sigma_table_m5.h5",
+        profile_name="sersic",
+        mass_radius_kpc=5,
+    )
+
+    with pytest.raises(ValueError, match="mass definition"):
+        run_posterior_predictive(
+            run_dir=str(run_dir),
+            sigma_table_path=str(wrong_sigma_table_path),
+            output_root_dir=str(tmp_path / "ppc_output"),
+            n_replicates=2,
+            burn_in=1,
+            random_seed=61,
+            candidate_pool_size=64,
+        )
+
+
 def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tables_are_ready(tmp_path: Path) -> None:
     """The monitor entrypoint should wait on fixed paths, then launch both PPC runs."""
 
@@ -769,8 +895,16 @@ def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tabl
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_deV_grid.h5", profile_name="devauc")
-    sersic_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_sers_grid.h5", profile_name="sersic")
+    devauc_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_deV_m5_grid.h5",
+        profile_name="devauc",
+        mass_radius_kpc=5,
+    )
+    sersic_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_sers_m5_grid.h5",
+        profile_name="sersic",
+        mass_radius_kpc=5,
+    )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
     _touch_with_mtime(devauc_table_path, not_before + timedelta(seconds=5))
@@ -808,8 +942,16 @@ def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> 
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_deV_grid.h5", profile_name="devauc")
-    sersic_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_sers_grid.h5", profile_name="sersic")
+    devauc_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_deV_m5_grid.h5",
+        profile_name="devauc",
+        mass_radius_kpc=5,
+    )
+    sersic_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_sers_m5_grid.h5",
+        profile_name="sersic",
+        mass_radius_kpc=5,
+    )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
     _touch_with_mtime(devauc_table_path, not_before - timedelta(seconds=5))
@@ -984,8 +1126,16 @@ def test_monitor_defaults_to_tail_capped_common_draw_count(tmp_path: Path) -> No
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic", n_steps=5)
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_deV_grid.h5", profile_name="devauc")
-    sersic_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_sers_grid.h5", profile_name="sersic")
+    devauc_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_deV_m5_grid.h5",
+        profile_name="devauc",
+        mass_radius_kpc=5,
+    )
+    sersic_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_sers_m5_grid.h5",
+        profile_name="sersic",
+        mass_radius_kpc=5,
+    )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
     _touch_with_mtime(devauc_table_path, not_before + timedelta(seconds=5))
@@ -1021,8 +1171,16 @@ def test_cli_posterior_predictive_monitor_command_waits_and_runs_both_profiles(t
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_deV_grid.h5", profile_name="devauc")
-    sersic_table_path = _write_external_sigma_table_hdf5(external_dir / "jeans_sers_grid.h5", profile_name="sersic")
+    devauc_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_deV_m5_grid.h5",
+        profile_name="devauc",
+        mass_radius_kpc=5,
+    )
+    sersic_table_path = _write_external_sigma_table_hdf5(
+        external_dir / "jeans_sers_m5_grid.h5",
+        profile_name="sersic",
+        mass_radius_kpc=5,
+    )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
     _touch_with_mtime(devauc_table_path, not_before + timedelta(seconds=5))
@@ -1284,6 +1442,39 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert result.metadata["posterior_draw_tail_cap"] == 192000
     assert result.metadata["parallel_strategy"] == "off"
     assert result.metadata["worker_processes"] == 0
+
+
+def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) -> None:
+    """Trend summaries and NPZ payloads should rename the mass axis to `m10` for `m10` runs."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        mass_radius_kpc=10,
+    )
+    result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "trend_output"),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=107,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
+    arrays = np.load(result.result_dir / "fig8_like_curves.npz")
+
+    assert payload["mass_definition"]["label"] == "m10"
+    assert set(payload["quantities"].keys()) == {"m10", "gamma", "sigma_ap"}
+    assert arrays["parent_m10_draws"].shape == (3, 5)
+    assert "parent_m5_draws" not in arrays.files
 
 
 def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:

@@ -62,10 +62,12 @@ the original input remains untouched.
 
 ## Build PPT Sigma HDF5 Tables
 
-The posterior predictive test consumes two externally generated HDF5 tables:
+The posterior predictive test consumes four externally generated HDF5 tables:
 
-- `/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_grid.h5`
-- `/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_grid.h5`
+- `/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_m5_grid.h5`
+- `/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_m10_grid.h5`
+- `/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_m5_grid.h5`
+- `/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_m10_grid.h5`
 
 These tables are not derived from the raw observation HDF5 files above. They
 are full Jeans interpolation tables for arbitrary replicated lenses and must be
@@ -127,13 +129,19 @@ Each output table uses the explicit schema consumed by the PPC code:
 - dataset `s_unit_grid`
 - root attr `schema_version`
 - root attr `quantity_name`
+- root attr `mass_definition_label`
+- root attr `mass_radius_kpc`
 - root attr `units`
 
 The tabulated quantity is:
 
 ```text
-S_unit = sigma^2 / 10**m5
+S_unit = sigma^2 / 10**m_R
 ```
+
+The current supported enclosed-mass radii are `R = 5 kpc` and `R = 10 kpc`.
+The `units` attribute therefore becomes either `km2 s-2 per 10**m5` or
+`km2 s-2 per 10**m10`.
 
 The axis order is fixed:
 
@@ -151,7 +159,7 @@ conda run -n cmass_lens pytest -q tests/test_jeans_regression.py tests/test_hdf5
 Verify the downstream PPC loader and consumer:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
+cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
 conda run -n cmass_lens pytest -q tests/test_posterior_predictive.py
 ```
 
@@ -159,10 +167,10 @@ Smoke-check that the real external files can be loaded by PPC:
 
 ```bash
 cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-conda run -n cmass_lens python -c "from cmass_lens_inference.posterior_predictive import SigmaUnitTable; paths=['/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_grid.h5','/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_grid.h5']; \
+conda run -n cmass_lens python -c "from cmass_posterior_predictive.predictive import SigmaUnitTable; paths=['/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_m5_grid.h5','/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_m5_grid.h5']; \
 for path in paths: \
     table = SigmaUnitTable.from_path(path); \
-    print(path, table.profile_name, table.values.shape, float(table.values.min()), float(table.values.max()))"
+    print(path, table.profile_name, table.mass_definition_label, table.values.shape, float(table.values.min()), float(table.values.max()))"
 ```
 
 ## Testing
