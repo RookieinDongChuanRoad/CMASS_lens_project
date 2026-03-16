@@ -65,6 +65,7 @@ def estimate_normalization(
             gamma_trunc_low=1.2,
             gamma_trunc_high=2.8,
             mass_radius_kpc=float(selected_mass_definition.radius_kpc),
+            gamma_mode_code=hyper_params.parameter_schema.gamma_mode_code,
         )
     )
 

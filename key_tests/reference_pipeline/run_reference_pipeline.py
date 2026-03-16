@@ -18,6 +18,7 @@ import emcee
 import numpy as np
 
 from workspace_support import (
+    CURRENT_GAMMA_MODE,
     MODE_SETTINGS,
     NOTEBOOK_PARAMETER_LABELS,
     REFERENCE_PARAMETER_ORDER,
@@ -132,6 +133,7 @@ def run_reference_pipeline(profile_name: str, mode_name: str) -> dict[str, objec
         "requested_steps": spec.n_steps,
         "warmup": mode.warmup,
         "discard": mode.discard,
+        "gamma_mode": CURRENT_GAMMA_MODE,
         "parameter_order": list(REFERENCE_PARAMETER_ORDER),
         "parameter_labels": NOTEBOOK_PARAMETER_LABELS,
         "module_name": spec.module_name,

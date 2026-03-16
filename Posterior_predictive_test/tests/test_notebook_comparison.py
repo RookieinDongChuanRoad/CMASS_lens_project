@@ -16,6 +16,7 @@ from pathlib import Path
 import emcee
 import h5py
 import numpy as np
+import pytest
 
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 
@@ -227,12 +228,29 @@ def test_run_notebook_pipeline_comparison_generates_expected_artifacts(
     assert (result.result_dir / "run_manifest.json").exists()
 
     summary = json.loads((result.result_dir / "comparison_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert summary["posterior_sample_count"] == 3
+    assert summary["gamma_mode"] == "dependent"
     assert summary["sample_sizes"]["theta_ein"] == 22
     assert summary["sample_sizes"]["sigma"] == 7
     assert "notebook_baseline" in summary
     assert "pipeline_matched" in summary
     assert "paired_differences" in summary
+    assert manifest["gamma_mode"] == "dependent"
+    assert manifest["pipeline_parameter_order"] == [
+        "mu5_0",
+        "beta5",
+        "xi5",
+        "sigma5",
+        "mu_gamma_0",
+        "beta_gamma",
+        "xi_gamma",
+        "sigma_gamma",
+        "mu_zs",
+        "sigma_zs",
+        "theta0",
+        "loga",
+    ]
 
 
 def test_run_notebook_pipeline_comparison_rejects_m10_pipeline_configs(
@@ -269,3 +287,35 @@ def test_run_notebook_pipeline_comparison_rejects_m10_pipeline_configs(
         assert "m5-only" in str(exc)
     else:
         raise AssertionError("Expected notebook comparison to reject m10 pipeline configs.")
+
+
+def test_run_notebook_pipeline_comparison_rejects_independent_gamma_mode(
+    tmp_path: Path,
+    synthetic_independent_config_path: Path,
+    synthetic_cross_section_file: Path,
+) -> None:
+    """The notebook bridge must fail fast because it only supports dependent gamma runs."""
+
+    from cmass_posterior_predictive.notebook_comparison import run_notebook_pipeline_comparison
+
+    sigma_table_path = _write_notebook_sigma_table(tmp_path / "jeans_sers_grid.h5")
+    population_model_path = _write_fake_population_model(tmp_path / "Population_model.py")
+    chain_path = _seed_chain_backend(
+        tmp_path / "full_0103.h5",
+        parameter_center=np.array([11.32, 0.59, -0.11, 0.06, 1.99, 0.149, 1.8, 0.215, 0.9, 0.7]),
+    )
+
+    with pytest.raises(ValueError, match="only supports dependent gamma mode"):
+        run_notebook_pipeline_comparison(
+            chain_path=chain_path,
+            pipeline_config_path=synthetic_independent_config_path,
+            population_model_path=population_model_path,
+            sigma_table_path=sigma_table_path,
+            cross_section_path=synthetic_cross_section_file,
+            output_dir=tmp_path / "comparison_output",
+            discard=1,
+            max_samples=2,
+            num_parents=8,
+            theta_sample_size=6,
+            sigma_sample_size=4,
+        )

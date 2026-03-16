@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 from .model import LOG_PROB_BLOB_DTYPE, log_prob as compiled_model_log_prob
 from .outputs import append_run_log
 from .parallel import apply_thread_limits
-from .types import HyperParams, PARAMETER_NAMES, RuntimeContext
+from .types import HyperParams, RuntimeContext
 
 
 _PROCESS_LOCAL_EVALUATOR = None
@@ -77,7 +77,7 @@ def build_log_prob_fn(runtime_context: RuntimeContext):
     Build the log-posterior function expected by `emcee`.
 
     The closure captures the fixed runtime context so each log-probability
-    evaluation only receives the 12-dimensional parameter vector.
+    evaluation only receives the mode-aware sampled parameter vector.
     """
 
     return LogProbEvaluator(runtime_context)
@@ -200,7 +200,7 @@ def run_ensemble_sampler(
 
     sampler = emcee.EnsembleSampler(
         runtime_context.config.sampling.n_walkers,
-        len(PARAMETER_NAMES),
+        runtime_context.config.parameter_schema.n_dim,
         sampler_log_prob_fn,
         pool=process_pool,
         backend=chain_backend,

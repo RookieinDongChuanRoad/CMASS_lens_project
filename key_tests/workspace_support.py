@@ -101,6 +101,8 @@ CURRENT_INITIAL_CENTER: Final[dict[str, float]] = {
     "loga": 1.0,
 }
 
+CURRENT_GAMMA_MODE: Final[str] = "dependent"
+
 CURRENT_PARAMETER_ORDER: Final[tuple[str, ...]] = (
     "mu5_0",
     "beta5",
@@ -233,6 +235,9 @@ def build_current_config_payload(profile_name: str, mode_name: str, output_root:
     return {
         "profile": {
             "name": profile.name,
+        },
+        "gamma_model": {
+            "mode": CURRENT_GAMMA_MODE,
         },
         "data": {
             "observation_path": str(profile.observation_path),

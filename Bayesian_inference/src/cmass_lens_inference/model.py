@@ -17,23 +17,7 @@ from .compiled_context import build_compiled_context
 from .kernels.likelihood import log_likelihood_lenses_numba
 from .kernels.normalization import normalization_mc_numba
 from .parallel import resolve_parallelism
-from .types import CompiledModel, PARAMETER_NAMES, RuntimeConfig
-
-
-BOX_PRIOR_BOUNDS = {
-    "mu5_0": (9.0, 12.0),
-    "beta5": (-3.0, 3.0),
-    "xi5": (-3.0, 3.0),
-    "sigma5": (1.0e-2, 0.2),
-    "mu_gamma_0": (1.5, 2.5),
-    "beta_gamma": (-3.0, 3.0),
-    "xi_gamma": (-3.0, 3.0),
-    "sigma_gamma": (0.0, 0.5),
-    "mu_zs": (1.0, 3.0),
-    "sigma_zs": (0.0, 2.0),
-    "theta0": (0.0, 3.0),
-    "loga": (-1.0, 3.0),
-}
+from .types import CompiledModel, RuntimeConfig
 
 # `emcee.backends.HDFBackend` can persist structured numeric blobs, but it is
 # not a safe place to store arbitrary Python dictionaries. The timing blob is
@@ -127,11 +111,16 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
 
     total_start = perf_counter()
     theta = np.asarray(theta, dtype=np.float64)
-    if theta.shape != (len(PARAMETER_NAMES),):
-        raise ValueError("Hyper-parameter vector must contain exactly 12 values.")
+    parameter_schema = compiled_model.config.parameter_schema
+    parameter_schema.validate_theta_shape(theta)
 
-    for index, name in enumerate(PARAMETER_NAMES):
-        lower, upper = BOX_PRIOR_BOUNDS[name]
+    for index, (name, (lower, upper)) in enumerate(
+        zip(
+            parameter_schema.internal_parameter_names,
+            parameter_schema.prior_bounds,
+            strict=True,
+        )
+    ):
         value = float(theta[index])
         if value < lower or value > upper:
             return _reject_blob(total_start, compiled_model.parallelism.strategy)
@@ -163,6 +152,7 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         gamma_trunc_low=context.gamma_trunc_low,
         gamma_trunc_high=context.gamma_trunc_high,
         mass_radius_kpc=context.mass_radius_kpc,
+        gamma_mode_code=context.gamma_mode_code,
     )
     normalization_seconds = perf_counter() - normalization_start
     if (not np.isfinite(z_norm)) or z_norm <= context.normalization_min_value:
@@ -190,6 +180,7 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         delta_r_grid=context.delta_r_grid,
         gamma_grid_int=context.gamma_grid_int,
         mass_radius_kpc=context.mass_radius_kpc,
+        gamma_mode_code=context.gamma_mode_code,
     )
     likelihood_seconds = perf_counter() - likelihood_start
     total_seconds = perf_counter() - total_start

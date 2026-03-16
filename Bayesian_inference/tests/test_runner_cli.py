@@ -18,12 +18,16 @@ import emcee
 import h5py
 import numpy as np
 import pytest
+import yaml
 
 from cmass_lens_inference.cli import build_argument_parser
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 from cmass_lens_inference.outputs import create_run_layout, save_checkpoint
 from cmass_lens_inference.runner import resume_inference, run_inference
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _seed_backend_with_steps(chain_path: Path, n_walkers: int, n_dim: int, n_steps: int) -> None:
@@ -80,6 +84,7 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
     assert serialized["metadata"]["parallelism"]["strategy"] in {"off", "kernel_only", "process_pool"}
     metadata = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["chain_storage"] == "emcee_hdf_backend"
+    assert metadata["config_summary"]["gamma_mode"] == "dependent"
     assert metadata["parallelism"]["compute_budget"] >= 1
     assert metadata["parallelism"]["cpu_count"] >= metadata["parallelism"]["compute_budget"]
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
@@ -112,6 +117,35 @@ def test_chain_h5_is_readable_by_emcee_hdf_backend(synthetic_config_path: Path) 
     assert log_prob.shape == (3 * 24,)
 
 
+def test_run_inference_uses_independent_gamma_parameter_dimension(
+    synthetic_independent_config_path: Path,
+) -> None:
+    """
+    Independent gamma mode should shrink the persisted chain dimension to 10.
+
+    This test locks the public sampler/backend contract so downstream tooling
+    reads the exact parameter vector implied by the chosen gamma mode.
+    """
+
+    run_result = run_inference(str(synthetic_independent_config_path))
+
+    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"))
+    assert backend.get_chain().shape == (3, 24, 10)
+    assert run_result.metadata["gamma_mode"] == "independent"
+    assert run_result.metadata["sampling"]["parameter_order"] == [
+        "mu5_0",
+        "beta5",
+        "xi5",
+        "sigma5",
+        "mu_gamma_0",
+        "sigma_gamma",
+        "mu_zs",
+        "sigma_zs",
+        "theta0",
+        "loga",
+    ]
+
+
 def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path) -> None:
     """
     Resume should use the previous run directory and advance from the stored
@@ -128,12 +162,12 @@ def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path)
     _seed_backend_with_steps(
         run_layout.run_dir / "chain.h5",
         runtime_config.sampling.n_walkers,
-        12,
+        runtime_config.parameter_schema.n_dim,
         5,
     )
     save_checkpoint(
         run_layout.checkpoints_dir,
-        coords=np.ones((runtime_config.sampling.n_walkers, 12)),
+        coords=np.ones((runtime_config.sampling.n_walkers, runtime_config.parameter_schema.n_dim)),
         log_prob=np.zeros(runtime_config.sampling.n_walkers),
         step=5,
     )
@@ -150,6 +184,49 @@ def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path)
     assert run_result.status == "completed"
     backend = emcee.backends.HDFBackend(str(run_layout.run_dir / "chain.h5"))
     assert backend.iteration == 8
+
+
+def test_resume_inference_migrates_legacy_run_snapshot_missing_gamma_mode(
+    synthetic_config_path: Path,
+) -> None:
+    """
+    Resume should auto-migrate historical run snapshots that predate gamma mode.
+
+    The migration is intentionally limited to the run-local snapshot so users
+    can continue to resume older runs without mutating their source configs.
+    """
+
+    runtime_config = load_runtime_config(synthetic_config_path)
+    run_layout = create_run_layout(
+        root_dir=runtime_config.output.root_dir,
+        profile_name=runtime_config.profile.name,
+        run_label=runtime_config.output.run_label,
+        timestamp_text="20260308_181500",
+    )
+    _seed_backend_with_steps(
+        run_layout.run_dir / "chain.h5",
+        runtime_config.sampling.n_walkers,
+        runtime_config.parameter_schema.n_dim,
+        5,
+    )
+    save_checkpoint(
+        run_layout.checkpoints_dir,
+        coords=np.ones((runtime_config.sampling.n_walkers, runtime_config.parameter_schema.n_dim)),
+        log_prob=np.zeros(runtime_config.sampling.n_walkers),
+        step=5,
+    )
+    legacy_config_payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    legacy_config_payload.pop("gamma_model")
+    (run_layout.run_dir / "config_snapshot.yaml").write_text(
+        yaml.safe_dump(legacy_config_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    run_result = resume_inference(str(run_layout.run_dir))
+
+    assert run_result.status == "completed"
+    migrated_snapshot = yaml.safe_load((run_layout.run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
+    assert migrated_snapshot["gamma_model"]["mode"] == "dependent"
 
 
 def test_cli_run_command_executes_minimal_pipeline(synthetic_config_path: Path) -> None:
@@ -172,6 +249,7 @@ def test_cli_run_command_executes_minimal_pipeline(synthetic_config_path: Path) 
         check=True,
         capture_output=True,
         text=True,
+        cwd=PROJECT_ROOT,
     )
 
     payload = json.loads(completed.stdout)

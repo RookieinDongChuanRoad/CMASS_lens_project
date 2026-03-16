@@ -10,10 +10,18 @@ from __future__ import annotations
 
 import math
 
-import numba as nb
 import numpy as np
+import numba as nb
 
-from .primitives import normal_pdf, p_find, theta_ein_arcsec, truncated_normal_pdf_nonneg
+from .primitives import (
+    gamma_population_mean,
+    normal_pdf,
+    p_find,
+    theta_dimension_for_gamma_mode,
+    theta_ein_arcsec,
+    truncated_normal_pdf_nonneg,
+    unpack_model_theta,
+)
 
 
 @nb.njit(cache=True, parallel=True, fastmath=True)
@@ -38,6 +46,7 @@ def log_likelihood_lenses_numba(
     delta_r_grid: np.ndarray,
     gamma_grid_int: np.ndarray,
     mass_radius_kpc: float,
+    gamma_mode_code: int,
 ) -> float:
     """
     Evaluate the full sample log-likelihood in one `numba` kernel.
@@ -48,18 +57,23 @@ def log_likelihood_lenses_numba(
     first integrate over `m*`, then integrate those results over `gamma`.
     """
 
-    mu5_0 = theta[0]
-    beta5 = theta[1]
-    xi5 = theta[2]
-    sigma5 = theta[3]
-    mu_gamma_0 = theta[4]
-    beta_gamma = theta[5]
-    xi_gamma = theta[6]
-    sigma_gamma = theta[7]
-    mu_zs = theta[8]
-    sigma_zs = theta[9]
-    theta0 = theta[10]
-    loga = theta[11]
+    if theta.shape[0] != theta_dimension_for_gamma_mode(gamma_mode_code):
+        return -np.inf
+
+    (
+        mu5_0,
+        beta5,
+        xi5,
+        sigma5,
+        mu_gamma_0,
+        beta_gamma,
+        xi_gamma,
+        sigma_gamma,
+        mu_zs,
+        sigma_zs,
+        theta0,
+        loga,
+    ) = unpack_model_theta(theta, gamma_mode_code)
 
     if sigma5 <= 0.0 or sigma_gamma <= 0.0 or sigma_zs <= 0.0:
         return -np.inf
@@ -123,7 +137,14 @@ def log_likelihood_lenses_numba(
                 if fixed_base <= 0.0:
                     continue
                 mu5 = mu5_0 + beta5 * mstar_shift11p4[i, km] + xi5 * delta_r_grid[i, km]
-                mu_gamma = mu_gamma_0 + beta_gamma * mstar_shift11p4[i, km] + xi_gamma * delta_r_grid[i, km]
+                mu_gamma = gamma_population_mean(
+                    mu_gamma_0,
+                    beta_gamma,
+                    xi_gamma,
+                    mstar_shift11p4[i, km],
+                    delta_r_grid[i, km],
+                    gamma_mode_code,
+                )
                 mstar_integrand[km] = (
                     fixed_base
                     * normal_pdf(log_enclosed_mass, mu5, sigma5)

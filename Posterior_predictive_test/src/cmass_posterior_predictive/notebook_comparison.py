@@ -47,6 +47,7 @@ from scipy.interpolate import RegularGridInterpolator
 from cmass_lens_inference.compiled_context import build_compiled_context
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.io import load_cross_section_grid
+from cmass_lens_inference.parameter_schema import GAMMA_MODE_DEPENDENT
 from cmass_lens_inference.types import DataConfig
 
 from .predictive import _draw_candidate_population, _draw_replicated_lenses
@@ -267,7 +268,7 @@ def _build_pipeline_context(
     pipeline_config_path: Path,
     cross_section_path: Path,
     observation_path: Path | None,
-) -> tuple[Any, Any]:
+) -> tuple[Any, Any, Any]:
     """
     Build the local pipeline context used by the notebook-matched engine.
 
@@ -277,6 +278,11 @@ def _build_pipeline_context(
     """
 
     runtime_config = load_runtime_config(pipeline_config_path)
+    if runtime_config.gamma_model.mode != GAMMA_MODE_DEPENDENT:
+        raise ValueError(
+            "Notebook comparison only supports dependent gamma mode. "
+            "The historical notebook baseline is not defined for independent runs."
+        )
     if runtime_config.mass_definition.label != "m5":
         raise ValueError(
             "Notebook comparison is m5-only: the external notebook population model and sigma definition "
@@ -288,7 +294,7 @@ def _build_pipeline_context(
     )
     runtime_config = replace(runtime_config, data=overridden_data)
     compiled_context, profile_spec, _, _, _, _ = build_compiled_context(runtime_config)
-    return compiled_context, profile_spec
+    return compiled_context, profile_spec, runtime_config
 
 
 def _draw_notebook_candidates(
@@ -612,7 +618,7 @@ def run_notebook_pipeline_comparison(
     notebook_sigma_interpolator = load_notebook_sigma_interpolator(resolved_sigma_table_path)
     population_model = _load_population_model_module(resolved_population_model_path)
     cross_section_grid = load_cross_section_grid(resolved_cross_section_path)
-    compiled_context, profile_spec = _build_pipeline_context(
+    compiled_context, profile_spec, runtime_config = _build_pipeline_context(
         resolved_config_path,
         resolved_cross_section_path,
         resolved_observation_path,
@@ -658,6 +664,7 @@ def run_notebook_pipeline_comparison(
     summary_payload = {
         "chain_path": str(resolved_chain_path),
         "pipeline_config_path": str(resolved_config_path),
+        "gamma_mode": runtime_config.gamma_model.mode,
         "population_model_path": str(resolved_population_model_path),
         "sigma_table_path": str(resolved_sigma_table_path),
         "cross_section_path": str(resolved_cross_section_path),
@@ -682,6 +689,7 @@ def run_notebook_pipeline_comparison(
 
     manifest_payload = {
         "chain_path": str(resolved_chain_path),
+        "gamma_mode": runtime_config.gamma_model.mode,
         "posterior_sample_count": int(posterior_chain.shape[0]),
         "discard": int(discard),
         "random_seed_base": int(random_seed),
@@ -708,20 +716,7 @@ def run_notebook_pipeline_comparison(
             "loga",
             "theta0",
         ],
-        "pipeline_parameter_order": [
-            "mu5_0",
-            "beta5",
-            "xi5",
-            "sigma5",
-            "mu_gamma_0",
-            "beta_gamma",
-            "xi_gamma",
-            "sigma_gamma",
-            "mu_zs",
-            "sigma_zs",
-            "theta0",
-            "loga",
-        ],
+        "pipeline_parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
     }
     (resolved_output_dir / "run_manifest.json").write_text(
         json.dumps(manifest_payload, indent=2, sort_keys=True),
@@ -754,5 +749,7 @@ def run_notebook_pipeline_comparison(
             "pipeline_config_path": str(resolved_config_path),
             "cross_section_path": str(resolved_cross_section_path),
             "observation_path": None if resolved_observation_path is None else str(resolved_observation_path),
+            "gamma_mode": runtime_config.gamma_model.mode,
+            "pipeline_parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
         },
     )

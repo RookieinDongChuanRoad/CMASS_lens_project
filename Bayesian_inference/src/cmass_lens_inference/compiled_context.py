@@ -216,5 +216,6 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         gamma_trunc_low=1.2,
         gamma_trunc_high=2.8,
         normalization_min_value=1.0e-10,
+        gamma_mode_code=runtime_config.parameter_schema.gamma_mode_code,
     )
     return context, profile, cross_section_grid, cosmology, random_basis, observations

@@ -36,6 +36,7 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
 
     assert runtime_config.profile.name == "sersic"
     assert runtime_config.mass_definition == get_mass_definition(5)
+    assert runtime_config.gamma_model.mode == "dependent"
     assert runtime_config.cosmology.h0 == 70.0
     assert runtime_config.cosmology.omega_m == 0.3
     assert runtime_config.sampling.n_walkers == 24
@@ -47,6 +48,79 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     assert runtime_config.runtime.reserve_cores == 2
     assert runtime_config.runtime.progress_summary_every == 1
     assert runtime_config.runtime.show_stage_timing is True
+
+
+def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Path) -> None:
+    """
+    New source configurations must declare the gamma parameterization mode.
+
+    The implementation is allowed to auto-migrate legacy run snapshots during
+    resume/PPC entrypoints, but fresh source YAML should fail fast if the
+    model mode is omitted.
+    """
+
+    missing_gamma_model_path = tmp_path / "missing_gamma_model.yaml"
+    missing_gamma_model_path.write_text(
+        yaml.safe_dump(
+            {
+                "profile": {"name": "sersic"},
+                "mass_definition": {"enclosed_radius_kpc": 5},
+                "data": {
+                    "observation_path": str(tmp_path / "observations.hdf5"),
+                    "cross_section_path": str(tmp_path / "cross_section.h5"),
+                },
+                "sampling": {
+                    "n_walkers": 24,
+                    "n_steps": 3,
+                    "warmup": 1,
+                    "random_seed": 7,
+                    "initial_center": {
+                        "mu5_0": 11.32,
+                        "beta5": 0.59,
+                        "xi5": -0.11,
+                        "sigma5": 0.06,
+                        "mu_gamma_0": 1.99,
+                        "beta_gamma": 0.1,
+                        "xi_gamma": -0.67,
+                        "sigma_gamma": 0.149,
+                        "mu_zs": 1.8,
+                        "sigma_zs": 0.215,
+                        "theta0": 0.93,
+                        "loga": 1.0,
+                    },
+                },
+                "integration": {
+                    "gamma_points": 200,
+                    "mstar_points": 200,
+                    "normalization_samples": 128,
+                },
+                "cosmology": {
+                    "h0": 70.0,
+                    "omega_m": 0.3,
+                },
+                "runtime": {
+                    "checkpoint_every": 1,
+                    "parallel_strategy": "auto",
+                    "progress": False,
+                    "progress_summary_every": 1,
+                    "show_stage_timing": True,
+                    "disable_hdf5_file_locking": False,
+                    "num_threads": 0,
+                    "reserve_cores": 2,
+                },
+                "output": {
+                    "root_dir": str(tmp_path / "outputs"),
+                    "run_label": "synthetic",
+                    "overwrite_latest": True,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(KeyError, match="Missing required config section: gamma_model"):
+        load_runtime_config(missing_gamma_model_path)
 
 
 def test_load_runtime_config_requires_explicit_cosmology_section(tmp_path: Path) -> None:
@@ -132,6 +206,113 @@ def test_load_runtime_config_maps_m10_public_parameter_names_to_internal_vector(
     assert np_values[1] == pytest.approx(0.49)
     assert np_values[2] == pytest.approx(-0.21)
     assert np_values[3] == pytest.approx(0.08)
+
+
+def test_load_runtime_config_builds_independent_gamma_parameter_vector(
+    synthetic_independent_config_path: Path,
+) -> None:
+    """
+    Independent gamma mode should expose only the gamma mean and scatter slots.
+
+    This locks the public 10-dimensional parameter contract so later refactors
+    cannot accidentally reintroduce the removed gamma slope parameters into the
+    sampled vector or serialized public metadata.
+    """
+
+    runtime_config = load_runtime_config(synthetic_independent_config_path)
+
+    assert runtime_config.gamma_model.mode == "independent"
+    parameter_vector = runtime_config.sampling.initial_center.to_array()
+    assert parameter_vector.shape == (10,)
+    public_center = runtime_config.sampling.initial_center.to_public_dict(
+        runtime_config.mass_definition,
+    )
+    assert "beta_gamma" not in public_center
+    assert "xi_gamma" not in public_center
+    assert set(public_center) == {
+        "mu5_0",
+        "beta5",
+        "xi5",
+        "sigma5",
+        "mu_gamma_0",
+        "sigma_gamma",
+        "mu_zs",
+        "sigma_zs",
+        "theta0",
+        "loga",
+    }
+
+
+def test_load_runtime_config_rejects_gamma_slopes_in_independent_mode(tmp_path: Path) -> None:
+    """
+    Independent gamma mode must reject the removed slope parameters explicitly.
+
+    Silently ignoring `beta_gamma` or `xi_gamma` would make a malformed config
+    look valid while sampling a different model than the user requested.
+    """
+
+    path = tmp_path / "invalid_independent_gamma.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "profile": {"name": "sersic"},
+                "mass_definition": {"enclosed_radius_kpc": 5},
+                "gamma_model": {"mode": "independent"},
+                "data": {
+                    "observation_path": str(tmp_path / "observations.hdf5"),
+                    "cross_section_path": str(tmp_path / "cross_section.h5"),
+                },
+                "sampling": {
+                    "n_walkers": 24,
+                    "n_steps": 3,
+                    "warmup": 1,
+                    "random_seed": 7,
+                    "initial_center": {
+                        "mu5_0": 11.32,
+                        "beta5": 0.59,
+                        "xi5": -0.11,
+                        "sigma5": 0.06,
+                        "mu_gamma_0": 1.99,
+                        "beta_gamma": 0.1,
+                        "sigma_gamma": 0.149,
+                        "mu_zs": 1.8,
+                        "sigma_zs": 0.215,
+                        "theta0": 0.93,
+                        "loga": 1.0,
+                    },
+                },
+                "integration": {
+                    "gamma_points": 200,
+                    "mstar_points": 200,
+                    "normalization_samples": 128,
+                },
+                "cosmology": {
+                    "h0": 70.0,
+                    "omega_m": 0.3,
+                },
+                "runtime": {
+                    "checkpoint_every": 1,
+                    "parallel_strategy": "auto",
+                    "progress": False,
+                    "progress_summary_every": 1,
+                    "show_stage_timing": True,
+                    "disable_hdf5_file_locking": False,
+                    "num_threads": 0,
+                    "reserve_cores": 2,
+                },
+                "output": {
+                    "root_dir": str(tmp_path / "outputs"),
+                    "run_label": "synthetic",
+                    "overwrite_latest": True,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="beta_gamma"):
+        load_runtime_config(path)
 
 
 def test_build_profile_spec_exposes_profile_specific_rules() -> None:

@@ -33,7 +33,7 @@ import yaml
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 
 
-PARAMETER_ORDER = (
+DEPENDENT_PARAMETER_ORDER = (
     "mu5_0",
     "beta5",
     "xi5",
@@ -41,6 +41,19 @@ PARAMETER_ORDER = (
     "mu_gamma_0",
     "beta_gamma",
     "xi_gamma",
+    "sigma_gamma",
+    "mu_zs",
+    "sigma_zs",
+    "theta0",
+    "loga",
+)
+
+INDEPENDENT_PARAMETER_ORDER = (
+    "mu5_0",
+    "beta5",
+    "xi5",
+    "sigma5",
+    "mu_gamma_0",
     "sigma_gamma",
     "mu_zs",
     "sigma_zs",
@@ -118,6 +131,9 @@ def _write_config(
     cross_section_path: Path,
     output_root: Path,
     mass_radius_kpc: int = 5,
+    gamma_mode: str = "dependent",
+    beta_gamma: float = 0.10,
+    xi_gamma: float = -0.67,
 ) -> Path:
     """Create a YAML config snapshot that mirrors a completed run."""
 
@@ -138,9 +154,33 @@ def _write_config(
     else:
         raise ValueError("Synthetic PPC fixtures only support 5 or 10 kpc mass definitions.")
 
+    if gamma_mode == "dependent":
+        gamma_initial_center = {
+            "mu_gamma_0": 1.99,
+            "beta_gamma": float(beta_gamma),
+            "xi_gamma": float(xi_gamma),
+            "sigma_gamma": 0.149,
+            "mu_zs": 1.8,
+            "sigma_zs": 0.215,
+            "theta0": 0.93,
+            "loga": 1.0,
+        }
+    elif gamma_mode == "independent":
+        gamma_initial_center = {
+            "mu_gamma_0": 1.99,
+            "sigma_gamma": 0.149,
+            "mu_zs": 1.8,
+            "sigma_zs": 0.215,
+            "theta0": 0.93,
+            "loga": 1.0,
+        }
+    else:
+        raise ValueError(f"Unsupported synthetic gamma mode '{gamma_mode}'.")
+
     config = {
         "profile": {"name": profile_name},
         "mass_definition": {"enclosed_radius_kpc": int(mass_radius_kpc)},
+        "gamma_model": {"mode": gamma_mode},
         "data": {
             "observation_path": str(observation_path),
             "cross_section_path": str(cross_section_path),
@@ -152,14 +192,7 @@ def _write_config(
             "random_seed": 7,
             "initial_center": {
                 **initial_center,
-                "mu_gamma_0": 1.99,
-                "beta_gamma": 0.10,
-                "xi_gamma": -0.67,
-                "sigma_gamma": 0.149,
-                "mu_zs": 1.8,
-                "sigma_zs": 0.215,
-                "theta0": 0.93,
-                "loga": 1.0,
+                **gamma_initial_center,
             },
             "initial_jitter_scale": 1.0e-3,
         },
@@ -167,6 +200,10 @@ def _write_config(
             "gamma_points": 200,
             "mstar_points": 200,
             "normalization_samples": 128,
+        },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
         },
         "runtime": {
             "distance_table_max_z": 5.0,
@@ -381,6 +418,9 @@ def _build_completed_run(
     profile_name: str,
     n_steps: int = 5,
     mass_radius_kpc: int = 5,
+    gamma_mode: str = "dependent",
+    beta_gamma: float = 0.10,
+    xi_gamma: float = -0.67,
 ) -> tuple[Path, Path]:
     """Build a minimal completed run directory plus its sigma table."""
 
@@ -398,13 +438,27 @@ def _build_completed_run(
         cross_section_path=cross_section_path,
         output_root=tmp_path / "outputs",
         mass_radius_kpc=mass_radius_kpc,
+        gamma_mode=gamma_mode,
+        beta_gamma=beta_gamma,
+        xi_gamma=xi_gamma,
     )
     if int(mass_radius_kpc) == 5:
-        base_theta = np.array([11.32, 0.59, -0.11, 0.06, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+        mass_theta = [11.32, 0.59, -0.11, 0.06]
     elif int(mass_radius_kpc) == 10:
-        base_theta = np.array([11.42, 0.49, -0.21, 0.08, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+        mass_theta = [11.42, 0.49, -0.21, 0.08]
     else:
         raise ValueError("Synthetic PPC fixtures only support 5 or 10 kpc mass definitions.")
+
+    if gamma_mode == "dependent":
+        base_theta = np.array(
+            [*mass_theta, 1.99, float(beta_gamma), float(xi_gamma), 0.149, 1.8, 0.215, 0.93, 1.0],
+            dtype=float,
+        )
+    elif gamma_mode == "independent":
+        base_theta = np.array([*mass_theta, 1.99, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    else:
+        raise ValueError(f"Unsupported synthetic gamma mode '{gamma_mode}'.")
+
     _seed_backend(run_dir / "chain.h5", base_theta=base_theta, n_steps=n_steps)
     sigma_table_path = _write_sigma_table(
         tmp_path / f"{profile_name}_sigma_table.npz",
@@ -448,7 +502,10 @@ def test_run_posterior_predictive_generates_expected_artifacts_for_sersic(tmp_pa
     assert (result.result_dir / "run_manifest.json").exists()
 
     payload = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert payload["profile_name"] == "sersic"
+    assert payload["gamma_mode"] == "dependent"
+    assert payload["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
     assert payload["burn_in_applied"] == 2
     assert payload["requested_n_replicates"] == 6
     assert payload["n_posterior_draws_used"] == 6
@@ -458,6 +515,8 @@ def test_run_posterior_predictive_generates_expected_artifacts_for_sersic(tmp_pa
     assert set(payload["statistics"].keys()) == {"theta_ein", "sigma"}
     assert set(payload["statistics"]["theta_ein"].keys()) == {"median", "std", "p10", "p90"}
     assert set(payload["statistics"]["sigma"].keys()) == {"median", "std", "p10", "p90"}
+    assert manifest["gamma_mode"] == "dependent"
+    assert manifest["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
 
     arrays = np.load(result.result_dir / "replicated_statistics.npz")
     assert arrays["theta_sample_theta_ein"].shape == (6, 23)
@@ -502,6 +561,38 @@ def test_run_posterior_predictive_defaults_to_tail_capped_full_chain_mode(tmp_pa
     assert arrays["sigma_sample_sigma"].shape == (3 * 24, 7)
     assert "theta_stat_mean" not in arrays.files
     assert np.isfinite(arrays["theta_stat_median"]).all()
+
+
+def test_run_posterior_predictive_records_independent_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
+    """Independent gamma runs should write the reduced 10D parameter contract into PPC artifacts."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        gamma_mode="independent",
+    )
+    result = run_posterior_predictive(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "ppc_output"),
+        n_replicates=3,
+        burn_in=1,
+        random_seed=43,
+        candidate_pool_size=64,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
+
+    assert payload["gamma_mode"] == "independent"
+    assert payload["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
+    assert manifest["gamma_mode"] == "independent"
+    assert manifest["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
+    assert result.metadata["gamma_mode"] == "independent"
+    assert result.metadata["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
 
 
 def test_run_posterior_predictive_supports_devauc_sigma_tables(tmp_path: Path) -> None:
@@ -883,6 +974,67 @@ def test_run_posterior_predictive_rejects_sigma_tables_with_wrong_mass_definitio
             burn_in=1,
             random_seed=61,
             candidate_pool_size=64,
+        )
+
+
+def test_draw_candidate_population_matches_zero_slope_dependent_gamma_mode(tmp_path: Path) -> None:
+    """Independent PPC generation should match dependent mode when the gamma slopes are explicitly zero."""
+
+    from cmass_lens_inference.compiled_context import build_compiled_context
+    from cmass_lens_inference.config import load_runtime_config
+    from cmass_posterior_predictive.predictive import _draw_candidate_population
+
+    dependent_run_dir, _ = _build_completed_run(
+        tmp_path / "dependent_case",
+        profile_name="sersic",
+        gamma_mode="dependent",
+        beta_gamma=0.0,
+        xi_gamma=0.0,
+    )
+    independent_run_dir, _ = _build_completed_run(
+        tmp_path / "independent_case",
+        profile_name="sersic",
+        gamma_mode="independent",
+    )
+
+    dependent_runtime_config = load_runtime_config(dependent_run_dir / "config_snapshot.yaml")
+    independent_runtime_config = load_runtime_config(independent_run_dir / "config_snapshot.yaml")
+    dependent_context, dependent_profile, _, _, _, _ = build_compiled_context(dependent_runtime_config)
+    independent_context, independent_profile, _, _, _, _ = build_compiled_context(independent_runtime_config)
+
+    dependent_population = _draw_candidate_population(
+        theta=dependent_runtime_config.sampling.initial_center.to_array(),
+        profile=dependent_profile,
+        context=dependent_context,
+        rng=np.random.default_rng(101),
+        candidate_pool_size=int(dependent_context.base_normals.shape[0]),
+    )
+    independent_population = _draw_candidate_population(
+        theta=independent_runtime_config.sampling.initial_center.to_array(),
+        profile=independent_profile,
+        context=independent_context,
+        rng=np.random.default_rng(101),
+        candidate_pool_size=int(independent_context.base_normals.shape[0]),
+    )
+
+    for field_name in (
+        "log_mstar",
+        "theta_ein",
+        "gamma",
+        "zd",
+        "zs",
+        "mass",
+        "log_re_kpc",
+        "re_kpc",
+        "n",
+        "detectable_weights",
+        "selected_weights",
+        "weights",
+    ):
+        assert np.allclose(
+            dependent_population[field_name],
+            independent_population[field_name],
+            equal_nan=True,
         )
 
 
@@ -1413,6 +1565,8 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
 
     payload = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
     assert payload["profile_name"] == "sersic"
+    assert payload["gamma_mode"] == "dependent"
+    assert payload["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
     assert payload["requested_n_posterior_draws"] == 4
     assert payload["n_posterior_draws"] == 4
     assert payload["n_posterior_draws_used"] == 4
@@ -1440,6 +1594,8 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert result.metadata["generator_mode"] == "sampled_population_binned"
     assert result.metadata["posterior_draw_mode"] == "sampled_subset"
     assert result.metadata["posterior_draw_tail_cap"] == 192000
+    assert result.metadata["gamma_mode"] == "dependent"
+    assert result.metadata["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
     assert result.metadata["parallel_strategy"] == "off"
     assert result.metadata["worker_processes"] == 0
 
@@ -1475,6 +1631,38 @@ def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) ->
     assert set(payload["quantities"].keys()) == {"m10", "gamma", "sigma_ap"}
     assert arrays["parent_m10_draws"].shape == (3, 5)
     assert "parent_m5_draws" not in arrays.files
+
+
+def test_run_posterior_trends_records_independent_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
+    """Trend artifacts should expose the 10D contract when the run used independent gamma mode."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        gamma_mode="independent",
+    )
+    result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "trend_output"),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=109,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
+
+    assert payload["gamma_mode"] == "independent"
+    assert payload["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
+    assert result.metadata["gamma_mode"] == "independent"
+    assert result.metadata["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
 
 
 def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:
