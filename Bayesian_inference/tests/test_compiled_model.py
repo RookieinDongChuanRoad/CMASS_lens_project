@@ -13,8 +13,12 @@ in use.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from numba.core.registry import CPUDispatcher
 import numpy as np
+import pytest
+import yaml
 
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.model import build_compiled_model, log_prob
@@ -62,6 +66,7 @@ def test_compiled_model_builds_contiguous_array_context(synthetic_config_path) -
     assert not hasattr(compiled_model.context.chi_kpc_grid, "unit")
     assert not hasattr(compiled_model.context, "gamma_w")
     assert not hasattr(compiled_model.context, "n_obs_for_model")
+    assert compiled_model.context.gamma_mode_code == 0
 
 
 def test_compiled_model_tracks_selected_mass_definition_in_context(synthetic_m10_config_path) -> None:
@@ -110,6 +115,69 @@ def test_model_log_prob_runs_through_monolithic_numba_kernels(synthetic_config_p
     assert blob["parallel_strategy"].decode("utf-8").rstrip("\x00") == compiled_model.parallelism.strategy
 
 
+def test_independent_gamma_mode_uses_ten_dimensional_theta_vector(
+    synthetic_independent_config_path,
+) -> None:
+    """
+    The independent gamma mode should flow through the compiled model as 10-D.
+
+    This test locks the runtime contract so the compiled model, not just the
+    config loader, honors the reduced sampled parameter space.
+    """
+
+    runtime_config = load_runtime_config(synthetic_independent_config_path)
+    compiled_model = build_compiled_model(runtime_config)
+    theta = runtime_config.sampling.initial_center.to_array()
+
+    assert theta.shape == (10,)
+    assert compiled_model.context.gamma_mode_code == 1
+
+    log_prob_value, _ = log_prob(theta, compiled_model)
+    assert np.isfinite(log_prob_value)
+
+
+def test_independent_gamma_mode_matches_zero_slope_dependent_log_prob(
+    synthetic_config_path,
+    synthetic_independent_config_path,
+    tmp_path,
+) -> None:
+    """
+    Independent gamma mode should match dependent mode with zero gamma slopes.
+
+    This is the key scientific regression guard for the new parameterization:
+    removing the sampled gamma slopes should change the theta dimension, but it
+    must not change the implied likelihood when the dependent model slopes are
+    explicitly set to zero.
+    """
+
+    dependent_payload = yaml.safe_load(Path(synthetic_config_path).read_text(encoding="utf-8"))
+    dependent_payload["sampling"]["initial_center"]["beta_gamma"] = 0.0
+    dependent_payload["sampling"]["initial_center"]["xi_gamma"] = 0.0
+    dependent_zero_path = tmp_path / "dependent_zero_slopes.yaml"
+    dependent_zero_path.write_text(
+        yaml.safe_dump(dependent_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    dependent_runtime_config = load_runtime_config(dependent_zero_path)
+    independent_runtime_config = load_runtime_config(synthetic_independent_config_path)
+    dependent_compiled_model = build_compiled_model(dependent_runtime_config)
+    independent_compiled_model = build_compiled_model(independent_runtime_config)
+
+    dependent_log_prob, _ = log_prob(
+        dependent_runtime_config.sampling.initial_center.to_array(),
+        dependent_compiled_model,
+    )
+    independent_log_prob, _ = log_prob(
+        independent_runtime_config.sampling.initial_center.to_array(),
+        independent_compiled_model,
+    )
+
+    assert np.isfinite(dependent_log_prob)
+    assert np.isfinite(independent_log_prob)
+    assert independent_log_prob == pytest.approx(dependent_log_prob, rel=0.0, abs=1.0e-12)
+
+
 def test_likelihood_kernel_matches_numpy_trapezoid_reference(synthetic_config_path) -> None:
     """
     The production likelihood kernel should now mirror the mathematical
@@ -125,6 +193,7 @@ def test_likelihood_kernel_matches_numpy_trapezoid_reference(synthetic_config_pa
     compiled_model = build_compiled_model(runtime_config)
     context = compiled_model.context
     theta = runtime_config.sampling.initial_center.to_array()
+    gamma_mode_code = context.gamma_mode_code
 
     mu5_0 = float(theta[0])
     beta5 = float(theta[1])
@@ -234,6 +303,7 @@ def test_likelihood_kernel_matches_numpy_trapezoid_reference(synthetic_config_pa
             delta_r_grid=context.delta_r_grid,
             gamma_grid_int=context.gamma_grid_int,
             mass_radius_kpc=context.mass_radius_kpc,
+            gamma_mode_code=gamma_mode_code,
         )
     )
 

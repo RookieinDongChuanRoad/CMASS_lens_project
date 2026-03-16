@@ -76,6 +76,7 @@ def _run_with_layout(
 
     config_summary = {
         "profile": runtime_context.config.profile.name,
+        "gamma_mode": runtime_context.config.gamma_model.mode,
         "mass_definition": {
             "label": runtime_context.config.mass_definition.label,
             "enclosed_radius_kpc": float(runtime_context.config.mass_definition.radius_kpc),
@@ -84,6 +85,7 @@ def _run_with_layout(
             "n_walkers": runtime_context.config.sampling.n_walkers,
             "n_steps": runtime_context.config.sampling.n_steps,
             "warmup": runtime_context.config.sampling.warmup,
+            "parameter_order": list(runtime_context.config.parameter_schema.public_parameter_names),
             "initial_center": runtime_context.config.sampling.initial_center.to_public_dict(
                 runtime_context.config.mass_definition
             ),
@@ -167,7 +169,7 @@ def run_inference(config_path: str, label: str | None = None) -> RunResult:
     chain_backend = create_chain_backend(
         run_layout.run_dir / "chain.h5",
         runtime_config.sampling.n_walkers,
-        12,
+        runtime_config.parameter_schema.n_dim,
         reset=True,
     )
     return _run_with_layout(
@@ -253,7 +255,7 @@ def resume_inference(run_dir: str) -> RunResult:
     chain_backend = create_chain_backend(
         chain_path,
         runtime_config.sampling.n_walkers,
-        12,
+        runtime_config.parameter_schema.n_dim,
         reset=False,
     )
     raw_config_text = config_snapshot_path.read_text(encoding="utf-8")

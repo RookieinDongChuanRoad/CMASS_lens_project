@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from workspace_support import (
+    CURRENT_GAMMA_MODE,
     CURRENT_PARAMETER_ORDER,
     CURRENT_PROJECT_ROOT,
     MODE_SETTINGS,
@@ -67,6 +68,7 @@ def run_current_pipeline(profile_name: str, mode_name: str) -> dict[str, object]
         "requested_steps": mode.n_steps,
         "warmup": mode.warmup,
         "discard": mode.discard,
+        "gamma_mode": CURRENT_GAMMA_MODE,
         "parameter_order": list(CURRENT_PARAMETER_ORDER),
         "parameter_labels": NOTEBOOK_PARAMETER_LABELS,
         "config_path": str(config_path),

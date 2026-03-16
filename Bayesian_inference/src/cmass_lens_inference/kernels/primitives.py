@@ -25,6 +25,8 @@ SQRT2PI = math.sqrt(2.0 * math.pi)
 LOG10_4 = math.log10(4.0)
 C_KM_S = c.to("km/s").value
 G_KPC_KMS2_MSUN = G.to(u.kpc * u.km**2 / (u.s**2 * u.Msun)).value
+GAMMA_MODE_DEPENDENT_CODE = 0
+GAMMA_MODE_INDEPENDENT_CODE = 1
 
 
 
@@ -273,3 +275,76 @@ def mu_r(
     if use_sersic_index == 1:
         out += nu_r * (math.log10(max(n_value, 1.0e-12)) - LOG10_4)
     return out
+
+
+@nb.njit(cache=True, inline="always")
+def theta_dimension_for_gamma_mode(gamma_mode_code: int) -> int:
+    """Return the sampled theta dimension for the requested gamma mode."""
+
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        return 12
+    return 10
+
+
+@nb.njit(cache=True, inline="always")
+def unpack_model_theta(theta: np.ndarray, gamma_mode_code: int) -> tuple[float, ...]:
+    """
+    Unpack the mode-aware model parameter vector into a fixed scalar bundle.
+
+    The independent gamma mode removes two sampled parameters from the vector,
+    but the kernels still consume one normalized tuple so the main numerical
+    loops do not need to duplicate indexing logic.
+    """
+
+    mu5_0 = theta[0]
+    beta5 = theta[1]
+    xi5 = theta[2]
+    sigma5 = theta[3]
+    mu_gamma_0 = theta[4]
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        beta_gamma = theta[5]
+        xi_gamma = theta[6]
+        sigma_gamma = theta[7]
+        mu_zs = theta[8]
+        sigma_zs = theta[9]
+        theta0 = theta[10]
+        loga = theta[11]
+    else:
+        beta_gamma = 0.0
+        xi_gamma = 0.0
+        sigma_gamma = theta[5]
+        mu_zs = theta[6]
+        sigma_zs = theta[7]
+        theta0 = theta[8]
+        loga = theta[9]
+
+    return (
+        mu5_0,
+        beta5,
+        xi5,
+        sigma5,
+        mu_gamma_0,
+        beta_gamma,
+        xi_gamma,
+        sigma_gamma,
+        mu_zs,
+        sigma_zs,
+        theta0,
+        loga,
+    )
+
+
+@nb.njit(cache=True, inline="always")
+def gamma_population_mean(
+    mu_gamma_0: float,
+    beta_gamma: float,
+    xi_gamma: float,
+    mstar_shift11p4: float,
+    delta_r: float,
+    gamma_mode_code: int,
+) -> float:
+    """Return the conditional gamma mean for the active gamma mode."""
+
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        return mu_gamma_0 + beta_gamma * mstar_shift11p4 + xi_gamma * delta_r
+    return mu_gamma_0

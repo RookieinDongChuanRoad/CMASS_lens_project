@@ -15,11 +15,14 @@ import numba as nb
 import numpy as np
 
 from .primitives import (
+    gamma_population_mean,
     interp1d_clip,
     mu_r,
     p_find,
     phi_standard,
     skewnorm_sample,
+    theta_dimension_for_gamma_mode,
+    unpack_model_theta,
     theta_ein_arcsec,
     truncnorm_sample,
 )
@@ -50,6 +53,7 @@ def normalization_mc_numba(
     gamma_trunc_low: float,
     gamma_trunc_high: float,
     mass_radius_kpc: float,
+    gamma_mode_code: int,
 ) -> float:
     """
     Estimate the selection normalization for one hyper-parameter vector.
@@ -59,18 +63,23 @@ def normalization_mc_numba(
     scalar constants, and a final average of discovery-weighted cross-sections.
     """
 
-    mu5_0 = theta[0]
-    beta5 = theta[1]
-    xi5 = theta[2]
-    sigma5 = theta[3]
-    mu_gamma_0 = theta[4]
-    beta_gamma = theta[5]
-    xi_gamma = theta[6]
-    sigma_gamma = theta[7]
-    mu_zs = theta[8]
-    sigma_zs = theta[9]
-    theta0 = theta[10]
-    loga = theta[11]
+    if theta.shape[0] != theta_dimension_for_gamma_mode(gamma_mode_code):
+        return 0.0
+
+    (
+        mu5_0,
+        beta5,
+        xi5,
+        sigma5,
+        mu_gamma_0,
+        beta_gamma,
+        xi_gamma,
+        sigma_gamma,
+        mu_zs,
+        sigma_zs,
+        theta0,
+        loga,
+    ) = unpack_model_theta(theta, gamma_mode_code)
 
     if sigma5 <= 0.0 or sigma_gamma <= 0.0 or sigma_zs <= 0.0:
         return 0.0
@@ -104,7 +113,14 @@ def normalization_mc_numba(
             re_draw = mu_r_draw + sigma_r * nrm[5]
             delta_r = re_draw - mu_r_draw
             log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[6]
-            mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
+            mu_gamma = gamma_population_mean(
+                mu_gamma_0,
+                beta_gamma,
+                xi_gamma,
+                mstar - 11.4,
+                delta_r,
+                gamma_mode_code,
+            )
             gamma = truncnorm_sample(
                 mu_gamma,
                 sigma_gamma,
@@ -118,7 +134,14 @@ def normalization_mc_numba(
             re_draw = mu_r_draw + sigma_r * nrm[4]
             delta_r = re_draw - mu_r_draw
             log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[5]
-            mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
+            mu_gamma = gamma_population_mean(
+                mu_gamma_0,
+                beta_gamma,
+                xi_gamma,
+                mstar - 11.4,
+                delta_r,
+                gamma_mode_code,
+            )
             gamma = truncnorm_sample(
                 mu_gamma,
                 sigma_gamma,

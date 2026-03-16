@@ -15,23 +15,8 @@ from typing import Any
 
 import numpy as np
 
-from .mass_definition import MassDefinition, serialize_public_initial_center
-
-
-PARAMETER_NAMES: tuple[str, ...] = (
-    "mu5_0",
-    "beta5",
-    "xi5",
-    "sigma5",
-    "mu_gamma_0",
-    "beta_gamma",
-    "xi_gamma",
-    "sigma_gamma",
-    "mu_zs",
-    "sigma_zs",
-    "theta0",
-    "loga",
-)
+from .mass_definition import MassDefinition
+from .parameter_schema import GammaModelConfig, ParameterSchema
 
 
 def _serialize_json_friendly(value: Any) -> Any:
@@ -59,49 +44,80 @@ def _serialize_json_friendly(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class HyperParams:
-    """The 12 population hyper-parameters defined by the requirements."""
+    """
+    Mode-aware sampled hyper-parameters for one run configuration.
 
-    mu5_0: float
-    beta5: float
-    xi5: float
-    sigma5: float
-    mu_gamma_0: float
-    beta_gamma: float
-    xi_gamma: float
-    sigma_gamma: float
-    mu_zs: float
-    sigma_zs: float
-    theta0: float
-    loga: float
+    The values are stored as an ordered tuple rather than as fixed dataclass
+    fields because the gamma mode now changes the parameter dimension and
+    public naming surface.
+    """
+
+    parameter_schema: ParameterSchema
+    parameter_values: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.parameter_values) != self.parameter_schema.n_dim:
+            raise ValueError(
+                "Hyper-parameter tuple length does not match the configured "
+                f"schema dimension {self.parameter_schema.n_dim}."
+            )
 
     def to_array(self) -> np.ndarray:
         """Return parameters in the sampler's canonical order."""
 
-        return np.array([getattr(self, name) for name in PARAMETER_NAMES], dtype=float)
+        return np.asarray(self.parameter_values, dtype=float)
 
     @classmethod
-    def from_array(cls, values: np.ndarray) -> "HyperParams":
+    def from_array(cls, values: np.ndarray, parameter_schema: ParameterSchema) -> "HyperParams":
         """Construct the dataclass from an ordered parameter vector."""
 
-        if values.shape != (len(PARAMETER_NAMES),):
-            raise ValueError("Hyper-parameter vector must contain exactly 12 values.")
-        return cls(**dict(zip(PARAMETER_NAMES, values.tolist(), strict=True)))
+        parameter_schema.validate_theta_shape(np.asarray(values, dtype=float))
+        return cls(
+            parameter_schema=parameter_schema,
+            parameter_values=tuple(np.asarray(values, dtype=float).tolist()),
+        )
+
+    @classmethod
+    def from_public_dict(
+        cls,
+        public_values: dict[str, float],
+        parameter_schema: ParameterSchema,
+    ) -> "HyperParams":
+        """Construct hyper-parameters from the public config naming surface."""
+
+        normalized = parameter_schema.normalize_public_values(public_values)
+        return cls(
+            parameter_schema=parameter_schema,
+            parameter_values=tuple(
+                float(normalized[name])
+                for name in parameter_schema.internal_parameter_names
+            ),
+        )
 
     def to_dict(self) -> dict[str, float]:
-        """Return a plain dictionary for serialization and metadata output."""
+        """Return internal-name keyed values for low-level model consumers."""
 
-        return {name: float(getattr(self, name)) for name in PARAMETER_NAMES}
+        return {
+            name: float(value)
+            for name, value in zip(
+                self.parameter_schema.internal_parameter_names,
+                self.parameter_values,
+                strict=True,
+            )
+        }
 
-    def to_public_dict(self, mass_definition: MassDefinition) -> dict[str, float]:
+    def to_public_dict(self, mass_definition: MassDefinition | None = None) -> dict[str, float]:
         """
         Serialize the hyper-parameters using the selected public name family.
 
-        The first four internal slots always represent the active enclosed-mass
-        observable, even though the implementation keeps the historical field
-        names for vector-order compatibility with the existing sampler code.
+        The mass-definition argument stays optional so older call sites can keep
+        passing it while the schema itself remains the single source of truth.
         """
 
-        return serialize_public_initial_center(self.to_dict(), mass_definition)
+        return self.parameter_schema.serialize_public_values(
+            self.to_dict(),
+            mass_definition=mass_definition,
+        )
 
 
 @dataclass(frozen=True)
@@ -183,6 +199,8 @@ class RuntimeConfig:
 
     profile: ProfileConfig
     mass_definition: MassDefinition
+    gamma_model: GammaModelConfig
+    parameter_schema: ParameterSchema
     data: DataConfig
     sampling: SamplingConfig
     integration: IntegrationConfig
@@ -331,6 +349,7 @@ class CompiledModelContext:
     gamma_trunc_low: float
     gamma_trunc_high: float
     normalization_min_value: float
+    gamma_mode_code: int
 
 
 @dataclass(frozen=True)

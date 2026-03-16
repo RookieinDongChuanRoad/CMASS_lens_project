@@ -39,6 +39,10 @@ from scipy.special import ndtr, ndtri
 from cmass_lens_inference.compiled_context import build_compiled_context
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.mass_definition import MassDefinition, get_mass_definition, mass_definition_metadata
+from cmass_lens_inference.parameter_schema import (
+    GAMMA_MODE_DEPENDENT_CODE,
+    GAMMA_MODE_INDEPENDENT_CODE,
+)
 from cmass_lens_inference.parallel import apply_thread_limits
 from cmass_lens_inference.types import (
     ObservationRecord,
@@ -793,6 +797,97 @@ def _discovery_probability(theta_ein: np.ndarray, theta0: float, loga: float) ->
     return 1.0 / (1.0 + np.exp(x))
 
 
+def _expected_theta_dimension_for_gamma_mode(gamma_mode_code: int) -> int:
+    """
+    Return the sampled theta dimension expected by the active gamma mode.
+
+    PPC consumes posterior draws after inference has finished, so it cannot
+    rely on the sampler to catch a mismatched chain shape. The helper keeps
+    that validation close to the chain consumer and makes the mode-specific
+    dimensional contract explicit.
+    """
+
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        return 12
+    if gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
+        return 10
+    raise ValueError(f"Unsupported gamma mode code '{gamma_mode_code}' in posterior predictive workflow.")
+
+
+def _unpack_population_theta(theta: np.ndarray, gamma_mode_code: int) -> dict[str, float]:
+    """
+    Decode one posterior draw into named scalar parameters for PPC generation.
+
+    The gamma mode now changes the actual sampled vector length. Converting the
+    raw `theta` row into a named mapping up front prevents later code from
+    scattering fragile index arithmetic across the population generator.
+    """
+
+    theta_array = np.asarray(theta, dtype=float)
+    expected_dimension = _expected_theta_dimension_for_gamma_mode(gamma_mode_code)
+    if theta_array.shape != (expected_dimension,):
+        raise ValueError(
+            "Posterior draw has the wrong dimension for posterior predictive "
+            f"generation: expected {expected_dimension}, got {theta_array.shape}."
+        )
+
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        return {
+            "mu5_0": float(theta_array[0]),
+            "beta5": float(theta_array[1]),
+            "xi5": float(theta_array[2]),
+            "sigma5": float(theta_array[3]),
+            "mu_gamma_0": float(theta_array[4]),
+            "beta_gamma": float(theta_array[5]),
+            "xi_gamma": float(theta_array[6]),
+            "sigma_gamma": float(theta_array[7]),
+            "mu_zs": float(theta_array[8]),
+            "sigma_zs": float(theta_array[9]),
+            "theta0": float(theta_array[10]),
+            "loga": float(theta_array[11]),
+        }
+
+    return {
+        "mu5_0": float(theta_array[0]),
+        "beta5": float(theta_array[1]),
+        "xi5": float(theta_array[2]),
+        "sigma5": float(theta_array[3]),
+        "mu_gamma_0": float(theta_array[4]),
+        # In the independent mode the gamma slopes are removed from the sampled
+        # vector entirely, so PPC reconstructs the scientific contract
+        # explicitly instead of assuming hidden placeholder slots still exist.
+        "beta_gamma": 0.0,
+        "xi_gamma": 0.0,
+        "sigma_gamma": float(theta_array[5]),
+        "mu_zs": float(theta_array[6]),
+        "sigma_zs": float(theta_array[7]),
+        "theta0": float(theta_array[8]),
+        "loga": float(theta_array[9]),
+    }
+
+
+def _gamma_population_mean(
+    mu_gamma_0: float,
+    beta_gamma: float,
+    xi_gamma: float,
+    mstar_shift11p4: np.ndarray,
+    delta_r: np.ndarray,
+    gamma_mode_code: int,
+) -> np.ndarray:
+    """
+    Evaluate the mode-aware population mean of `gamma` for one PPC draw.
+
+    This helper is shared by histogram PPC and trend generation so both
+    workflows follow exactly the same rule for the new independent mode.
+    """
+
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        return mu_gamma_0 + beta_gamma * mstar_shift11p4 + xi_gamma * delta_r
+    if gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
+        return np.full_like(mstar_shift11p4, mu_gamma_0, dtype=float)
+    raise ValueError(f"Unsupported gamma mode code '{gamma_mode_code}' in posterior predictive workflow.")
+
+
 def _draw_candidate_population(
     theta: np.ndarray,
     profile: ProfileSpec,
@@ -824,7 +919,19 @@ def _draw_candidate_population(
         sampled_indices = rng.choice(basis.shape[0], size=candidate_pool_size, replace=replace)
         normals = basis[sampled_indices]
 
-    mu5_0, beta5, xi5, sigma5, mu_gamma_0, beta_gamma, xi_gamma, sigma_gamma, mu_zs, sigma_zs, theta0, loga = theta
+    theta_components = _unpack_population_theta(theta=theta, gamma_mode_code=context.gamma_mode_code)
+    mu5_0 = theta_components["mu5_0"]
+    beta5 = theta_components["beta5"]
+    xi5 = theta_components["xi5"]
+    sigma5 = theta_components["sigma5"]
+    mu_gamma_0 = theta_components["mu_gamma_0"]
+    beta_gamma = theta_components["beta_gamma"]
+    xi_gamma = theta_components["xi_gamma"]
+    sigma_gamma = theta_components["sigma_gamma"]
+    mu_zs = theta_components["mu_zs"]
+    sigma_zs = theta_components["sigma_zs"]
+    theta0 = theta_components["theta0"]
+    loga = theta_components["loga"]
 
     mstar = _vectorized_skewnorm_sample(
         normals[:, 2],
@@ -833,24 +940,32 @@ def _draw_candidate_population(
         profile.mass_function_scale,
         profile.mass_function_alpha,
     )
+    mstar_shift11p4 = mstar - 11.4
     zd = context.mu_d + context.sigma_d * normals[:, 0]
     zs = mu_zs + sigma_zs * normals[:, 1]
 
     if profile.fixed_n is None:
-        logn = profile.mu_n0 + profile.beta_n * (mstar - 11.4) + profile.sigma_n * normals[:, 4]
+        logn = profile.mu_n0 + profile.beta_n * mstar_shift11p4 + profile.sigma_n * normals[:, 4]
         n_value = np.power(10.0, logn)
         mu_r = _vectorized_mu_r(mstar, n_value, profile)
         re_log_kpc = mu_r + profile.sigma_r * normals[:, 5]
         delta_r = re_log_kpc - mu_r
-        log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * normals[:, 6]
-        mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
+        log_enclosed_mass = mu5_0 + beta5 * mstar_shift11p4 + xi5 * delta_r + sigma5 * normals[:, 6]
     else:
         n_value = np.full(candidate_pool_size, profile.fixed_n, dtype=float)
         mu_r = _vectorized_mu_r(mstar, n_value, profile)
         re_log_kpc = mu_r + profile.sigma_r * normals[:, 4]
         delta_r = re_log_kpc - mu_r
-        log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * normals[:, 5]
-        mu_gamma = mu_gamma_0 + beta_gamma * (mstar - 11.4) + xi_gamma * delta_r
+        log_enclosed_mass = mu5_0 + beta5 * mstar_shift11p4 + xi5 * delta_r + sigma5 * normals[:, 5]
+
+    mu_gamma = _gamma_population_mean(
+        mu_gamma_0=mu_gamma_0,
+        beta_gamma=beta_gamma,
+        xi_gamma=xi_gamma,
+        mstar_shift11p4=mstar_shift11p4,
+        delta_r=delta_r,
+        gamma_mode_code=context.gamma_mode_code,
+    )
 
     gamma = _vectorized_truncnorm_sample(
         normals[:, 7],
@@ -1968,6 +2083,8 @@ def run_posterior_trends(
     summary_payload = {
         "run_id": resolved_run_dir.name,
         "profile_name": runtime_config.profile.name,
+        "gamma_mode": runtime_config.gamma_model.mode,
+        "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
         "input_run_dir": str(resolved_run_dir),
         "result_dir": str(result_dir),
         "burn_in_applied": burn_in_steps,
@@ -2034,6 +2151,8 @@ def run_posterior_trends(
             "n_posterior_draws_used": n_posterior_draws_used,
             "posterior_draw_mode": posterior_draw_mode,
             "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
+            "gamma_mode": runtime_config.gamma_model.mode,
+            "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
             "n_parent_sample": int(n_parent_sample),
             "mass_bin_min": float(mass_bin_min),
             "mass_bin_max": float(mass_bin_max),
@@ -2148,6 +2267,8 @@ def run_posterior_predictive(
     summary_payload = {
         "run_id": resolved_run_dir.name,
         "profile_name": runtime_config.profile.name,
+        "gamma_mode": runtime_config.gamma_model.mode,
+        "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
         "input_run_dir": str(resolved_run_dir),
         "result_dir": str(result_dir),
         "burn_in_applied": burn_in_steps,
@@ -2164,6 +2285,8 @@ def run_posterior_predictive(
     manifest_payload = {
         "run_id": resolved_run_dir.name,
         "profile_name": runtime_config.profile.name,
+        "gamma_mode": runtime_config.gamma_model.mode,
+        "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
         "config_snapshot_path": str(config_snapshot_path),
         "chain_path": str(chain_path),
         "sigma_table_path": str(Path(sigma_table_path).expanduser().resolve()),
@@ -2227,9 +2350,12 @@ def run_posterior_predictive(
         sigma_table_path=Path(sigma_table_path).expanduser().resolve(),
         metadata={
             "requested_n_replicates": None if n_replicates is None else int(n_replicates),
+            "n_posterior_draws_used": n_posterior_draws_used,
             "posterior_draw_mode": posterior_draw_mode,
             "candidate_pool_size": effective_candidate_pool_size,
             "normalization_samples": runtime_config.integration.normalization_samples,
+            "gamma_mode": runtime_config.gamma_model.mode,
+            "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
             "mass_definition": mass_definition_metadata(mass_definition),
             "parallelism": parallelism.to_dict(),
             "statistics": summary_payload["statistics"],

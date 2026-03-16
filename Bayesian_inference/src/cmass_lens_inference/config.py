@@ -11,7 +11,8 @@ from pathlib import Path
 
 import yaml
 
-from .mass_definition import get_mass_definition, normalize_public_initial_center
+from .mass_definition import get_mass_definition
+from .parameter_schema import GammaModelConfig, build_parameter_schema
 from .types import (
     CosmologyConfig,
     DataConfig,
@@ -39,6 +40,26 @@ def _require_section(data: dict, section_name: str) -> dict:
     return section
 
 
+def _load_gamma_model_section(path: Path, raw_data: dict) -> GammaModelConfig:
+    """
+    Load the gamma-model section and migrate legacy run snapshots when needed.
+
+    Only stored run snapshots are auto-migrated because those files are part of
+    the pipeline's own managed state. User-authored source configs must declare
+    the mode explicitly so the chosen scientific model is always unambiguous.
+    """
+
+    if "gamma_model" not in raw_data:
+        if path.name != "config_snapshot.yaml":
+            raise KeyError("Missing required config section: gamma_model")
+
+        raw_data["gamma_model"] = {"mode": "dependent"}
+        path.write_text(yaml.safe_dump(raw_data, sort_keys=False), encoding="utf-8")
+
+    gamma_model_raw = _require_section(raw_data, "gamma_model")
+    return GammaModelConfig(mode=str(gamma_model_raw["mode"]))
+
+
 def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     """
     Load, validate, and normalize the project YAML configuration.
@@ -62,19 +83,24 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     cosmology_raw = _require_section(raw_data, "cosmology")
     runtime_raw = _require_section(raw_data, "runtime")
     output_raw = _require_section(raw_data, "output")
+    gamma_model = _load_gamma_model_section(path, raw_data)
 
     mass_definition = get_mass_definition(mass_definition_raw["enclosed_radius_kpc"])
     initial_center_raw = _require_section(sampling_raw, "initial_center")
-    initial_center = HyperParams(
-        **normalize_public_initial_center(
-            initial_center_raw=initial_center_raw,
-            mass_definition=mass_definition,
-        )
+    parameter_schema = build_parameter_schema(
+        gamma_model=gamma_model,
+        mass_definition=mass_definition,
+    )
+    initial_center = HyperParams.from_public_dict(
+        public_values=initial_center_raw,
+        parameter_schema=parameter_schema,
     )
 
     return RuntimeConfig(
         profile=ProfileConfig(name=str(profile_raw["name"])),
         mass_definition=mass_definition,
+        gamma_model=gamma_model,
+        parameter_schema=parameter_schema,
         data=DataConfig(
             observation_path=Path(data_raw["observation_path"]).expanduser().resolve(),
             cross_section_path=Path(data_raw["cross_section_path"]).expanduser().resolve(),
