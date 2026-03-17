@@ -23,7 +23,7 @@ import numpy as np
 
 from .config import load_runtime_config
 from .mass_definition import mass_definition_metadata
-from .types import PARAMETER_NAMES, PosteriorCornerLatestResult, PosteriorCornerResult
+from .types import PosteriorCornerLatestResult, PosteriorCornerResult
 
 
 DEFAULT_DEVAUC_CORNER_RUN_DIR = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest")
@@ -38,6 +38,7 @@ _SHARED_PARAMETER_LABELS: dict[str, str] = {
     "mu_gamma_0": r"$\mu_{\gamma,0}$",
     "beta_gamma": r"$\beta_{\gamma}$",
     "xi_gamma": r"$\xi_{\gamma}$",
+    "beta_sigma_star_gamma": r"$\beta_{\Sigma_\ast,\gamma}$",
     "sigma_gamma": r"$\sigma_{\gamma}$",
     "mu_zs": r"$\mu_{z_{\mathrm{s}}}$",
     "sigma_zs": r"$\sigma_{z_{\mathrm{s}}}$",
@@ -87,7 +88,7 @@ def _load_flattened_posterior_chain(chain_path: Path, burn_in: int) -> np.ndarra
     return chain[burn_in:].reshape(-1, chain.shape[-1])
 
 
-def _public_parameter_order_and_labels(mass_definition) -> tuple[list[str], list[str]]:
+def _public_parameter_order_and_labels(runtime_config) -> tuple[list[str], list[str]]:
     """
     Return the user-visible parameter order and mathtext labels for one run.
 
@@ -96,16 +97,14 @@ def _public_parameter_order_and_labels(mass_definition) -> tuple[list[str], list
     `mu10_0` when the mass definition is `10 kpc`.
     """
 
-    public_parameter_order = [
-        *mass_definition.public_parameter_names,
-        *PARAMETER_NAMES[4:],
-    ]
+    mass_definition = runtime_config.mass_definition
+    public_parameter_order = list(runtime_config.parameter_schema.public_parameter_names)
     public_parameter_labels = [
         rf"$\mu_{{{int(mass_definition.radius_kpc)},0}}$",
         rf"$\beta_{{{int(mass_definition.radius_kpc)}}}$",
         rf"$\xi_{{{int(mass_definition.radius_kpc)}}}$",
         rf"$\sigma_{{{int(mass_definition.radius_kpc)}}}$",
-        *[_SHARED_PARAMETER_LABELS[name] for name in PARAMETER_NAMES[4:]],
+        *[_SHARED_PARAMETER_LABELS[name] for name in public_parameter_order[4:]],
     ]
     return public_parameter_order, public_parameter_labels
 
@@ -152,9 +151,10 @@ def _write_corner_figure(
     """
 
     posterior_samples = np.asarray(posterior_samples, dtype=float)
-    if posterior_samples.ndim != 2 or posterior_samples.shape[1] != len(PARAMETER_NAMES):
+    if posterior_samples.ndim != 2 or posterior_samples.shape[1] != len(parameter_labels):
         raise ValueError(
-            "Posterior corner plotting expects a 2D array with one column per canonical parameter."
+            "Posterior corner plotting expects a 2D array with one column per "
+            "mode-aware parameter."
         )
 
     figure = corner.corner(
@@ -187,7 +187,7 @@ def run_posterior_corner(run_dir: str | Path, burn_in: str | int = "auto") -> Po
         resolved_run_dir=resolved_run_dir,
         burn_in=burn_in,
     )
-    public_parameter_order, public_parameter_labels = _public_parameter_order_and_labels(runtime_config.mass_definition)
+    public_parameter_order, public_parameter_labels = _public_parameter_order_and_labels(runtime_config)
 
     figure_path = resolved_run_dir / POSTERIOR_CORNER_FIGURE_NAME
     _write_corner_figure(

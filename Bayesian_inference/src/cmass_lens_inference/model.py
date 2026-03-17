@@ -176,6 +176,7 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         p_zd_fixed=context.p_zd_fixed,
         mstar_grid=context.mstar_grid,
         mstar_shift11p4=context.mstar_shift11p4,
+        sigma_star_shift9p0_grid=context.sigma_star_shift9p0_grid,
         mstar_integrand_base=context.mstar_integrand_base,
         delta_r_grid=context.delta_r_grid,
         gamma_grid_int=context.gamma_grid_int,

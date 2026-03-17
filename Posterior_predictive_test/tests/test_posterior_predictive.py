@@ -61,6 +61,20 @@ INDEPENDENT_PARAMETER_ORDER = (
     "loga",
 )
 
+SIGMA_STAR_DEPENDENT_PARAMETER_ORDER = (
+    "mu5_0",
+    "beta5",
+    "xi5",
+    "sigma5",
+    "mu_gamma_0",
+    "beta_sigma_star_gamma",
+    "sigma_gamma",
+    "mu_zs",
+    "sigma_zs",
+    "theta0",
+    "loga",
+)
+
 
 def _write_observation_file(path: Path, profile_name: str) -> Path:
     """
@@ -94,6 +108,17 @@ def _write_observation_file(path: Path, profile_name: str) -> Path:
 
             if lens_index < 7:
                 group.attrs["num_sigma"] = 1 if lens_index < 4 else 2
+                mass_mid = 11.20 + 0.03 * lens_index
+                group.attrs["m5_mid"] = mass_mid
+                group.attrs["m5_lower"] = mass_mid - 0.08
+                group.attrs["m5_upper"] = mass_mid + 0.06
+                group.attrs["m10_mid"] = mass_mid + 0.12
+                group.attrs["m10_lower"] = mass_mid + 0.03
+                group.attrs["m10_upper"] = mass_mid + 0.20
+                gamma_mid = 2.00 - 0.02 * lens_index
+                group.attrs["gamma_mid"] = gamma_mid
+                group.attrs["gamma_lower"] = gamma_mid - 0.12
+                group.attrs["gamma_upper"] = gamma_mid + 0.10
                 if lens_index < 4:
                     group.attrs["sigma"] = np.asarray([250.0 + 5.0 * lens_index], dtype=float)
                     group.attrs["sigma_err"] = np.asarray([12.0 + lens_index], dtype=float)
@@ -134,6 +159,7 @@ def _write_config(
     gamma_mode: str = "dependent",
     beta_gamma: float = 0.10,
     xi_gamma: float = -0.67,
+    beta_sigma_star_gamma: float = 0.24,
 ) -> Path:
     """Create a YAML config snapshot that mirrors a completed run."""
 
@@ -168,6 +194,16 @@ def _write_config(
     elif gamma_mode == "independent":
         gamma_initial_center = {
             "mu_gamma_0": 1.99,
+            "sigma_gamma": 0.149,
+            "mu_zs": 1.8,
+            "sigma_zs": 0.215,
+            "theta0": 0.93,
+            "loga": 1.0,
+        }
+    elif gamma_mode == "sigma_star_dependent":
+        gamma_initial_center = {
+            "mu_gamma_0": 1.99,
+            "beta_sigma_star_gamma": float(beta_sigma_star_gamma),
             "sigma_gamma": 0.149,
             "mu_zs": 1.8,
             "sigma_zs": 0.215,
@@ -421,6 +457,7 @@ def _build_completed_run(
     gamma_mode: str = "dependent",
     beta_gamma: float = 0.10,
     xi_gamma: float = -0.67,
+    beta_sigma_star_gamma: float = 0.24,
 ) -> tuple[Path, Path]:
     """Build a minimal completed run directory plus its sigma table."""
 
@@ -441,6 +478,7 @@ def _build_completed_run(
         gamma_mode=gamma_mode,
         beta_gamma=beta_gamma,
         xi_gamma=xi_gamma,
+        beta_sigma_star_gamma=beta_sigma_star_gamma,
     )
     if int(mass_radius_kpc) == 5:
         mass_theta = [11.32, 0.59, -0.11, 0.06]
@@ -456,6 +494,11 @@ def _build_completed_run(
         )
     elif gamma_mode == "independent":
         base_theta = np.array([*mass_theta, 1.99, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    elif gamma_mode == "sigma_star_dependent":
+        base_theta = np.array(
+            [*mass_theta, 1.99, float(beta_sigma_star_gamma), 0.149, 1.8, 0.215, 0.93, 1.0],
+            dtype=float,
+        )
     else:
         raise ValueError(f"Unsupported synthetic gamma mode '{gamma_mode}'.")
 
@@ -593,6 +636,38 @@ def test_run_posterior_predictive_records_independent_gamma_mode_and_parameter_o
     assert manifest["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
     assert result.metadata["gamma_mode"] == "independent"
     assert result.metadata["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
+
+
+def test_run_posterior_predictive_records_sigma_star_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
+    """Sigma-star gamma runs should write the 11D parameter contract into PPC artifacts."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        gamma_mode="sigma_star_dependent",
+    )
+    result = run_posterior_predictive(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "ppc_output"),
+        n_replicates=3,
+        burn_in=1,
+        random_seed=43,
+        candidate_pool_size=64,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
+
+    assert payload["gamma_mode"] == "sigma_star_dependent"
+    assert payload["parameter_order"] == list(SIGMA_STAR_DEPENDENT_PARAMETER_ORDER)
+    assert manifest["gamma_mode"] == "sigma_star_dependent"
+    assert manifest["parameter_order"] == list(SIGMA_STAR_DEPENDENT_PARAMETER_ORDER)
+    assert result.metadata["gamma_mode"] == "sigma_star_dependent"
+    assert result.metadata["parameter_order"] == list(SIGMA_STAR_DEPENDENT_PARAMETER_ORDER)
 
 
 def test_run_posterior_predictive_supports_devauc_sigma_tables(tmp_path: Path) -> None:
@@ -1036,6 +1111,86 @@ def test_draw_candidate_population_matches_zero_slope_dependent_gamma_mode(tmp_p
             independent_population[field_name],
             equal_nan=True,
         )
+
+
+def test_draw_candidate_population_matches_independent_when_sigma_star_slope_is_zero(tmp_path: Path) -> None:
+    """Sigma-star PPC generation should collapse to the independent mode at zero slope."""
+
+    from cmass_lens_inference.compiled_context import build_compiled_context
+    from cmass_lens_inference.config import load_runtime_config
+    from cmass_posterior_predictive.predictive import _draw_candidate_population
+
+    sigma_run_dir, _ = _build_completed_run(
+        tmp_path / "sigma_star_case",
+        profile_name="sersic",
+        gamma_mode="sigma_star_dependent",
+        beta_sigma_star_gamma=0.0,
+    )
+    independent_run_dir, _ = _build_completed_run(
+        tmp_path / "independent_case",
+        profile_name="sersic",
+        gamma_mode="independent",
+    )
+
+    sigma_runtime_config = load_runtime_config(sigma_run_dir / "config_snapshot.yaml")
+    independent_runtime_config = load_runtime_config(independent_run_dir / "config_snapshot.yaml")
+    sigma_context, sigma_profile, _, _, _, _ = build_compiled_context(sigma_runtime_config)
+    independent_context, independent_profile, _, _, _, _ = build_compiled_context(independent_runtime_config)
+
+    sigma_population = _draw_candidate_population(
+        theta=sigma_runtime_config.sampling.initial_center.to_array(),
+        profile=sigma_profile,
+        context=sigma_context,
+        rng=np.random.default_rng(101),
+        candidate_pool_size=int(sigma_context.base_normals.shape[0]),
+    )
+    independent_population = _draw_candidate_population(
+        theta=independent_runtime_config.sampling.initial_center.to_array(),
+        profile=independent_profile,
+        context=independent_context,
+        rng=np.random.default_rng(101),
+        candidate_pool_size=int(independent_context.base_normals.shape[0]),
+    )
+
+    for field_name in (
+        "log_mstar",
+        "theta_ein",
+        "gamma",
+        "zd",
+        "zs",
+        "mass",
+        "log_re_kpc",
+        "re_kpc",
+        "n",
+        "detectable_weights",
+        "selected_weights",
+        "weights",
+    ):
+        assert np.allclose(
+            sigma_population[field_name],
+            independent_population[field_name],
+            equal_nan=True,
+        )
+
+
+def test_gamma_population_mean_uses_sigma_star_shift_in_sigma_star_mode() -> None:
+    """The PPC gamma mean helper should use `Sigma_* - 9.0` in the third mode."""
+
+    from cmass_posterior_predictive.predictive import _gamma_population_mean
+
+    sigma_star_shift9p0 = np.array([-0.40, 0.15, 0.35], dtype=float)
+    actual = _gamma_population_mean(
+        mu_gamma_0=1.99,
+        beta_gamma=12.0,
+        xi_gamma=-8.0,
+        beta_sigma_star_gamma=0.24,
+        mstar_shift11p4=np.array([0.0, 0.2, -0.1], dtype=float),
+        delta_r=np.array([0.1, -0.3, 0.2], dtype=float),
+        sigma_star_shift9p0=sigma_star_shift9p0,
+        gamma_mode_code=2,
+    )
+
+    np.testing.assert_allclose(actual, 1.99 + 0.24 * sigma_star_shift9p0)
 
 
 def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tables_are_ready(tmp_path: Path) -> None:
@@ -1678,6 +1833,38 @@ def test_run_posterior_trends_records_independent_gamma_mode_and_parameter_order
     assert result.metadata["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
 
 
+def test_run_posterior_trends_records_sigma_star_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
+    """Trend artifacts should expose the 11D contract for sigma-star gamma mode."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        gamma_mode="sigma_star_dependent",
+    )
+    result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "trend_output"),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=109,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
+
+    assert payload["gamma_mode"] == "sigma_star_dependent"
+    assert payload["parameter_order"] == list(SIGMA_STAR_DEPENDENT_PARAMETER_ORDER)
+    assert result.metadata["gamma_mode"] == "sigma_star_dependent"
+    assert result.metadata["parameter_order"] == list(SIGMA_STAR_DEPENDENT_PARAMETER_ORDER)
+
+
 def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:
     """Omitting `n_posterior_draws` should use the tail-capped full chain by default."""
 
@@ -1849,6 +2036,68 @@ def test_cli_surface_exposes_canonical_trend_defaults() -> None:
     assert Path(args.output_dir) == DEFAULT_PPC_OUTPUT_ROOT_DIR
     assert inspect.signature(run_posterior_trends).parameters["n_posterior_draws"].default is None
     assert inspect.signature(run_posterior_trends).parameters["worker_processes"].default is None
+
+
+def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_path: Path) -> None:
+    """The figure annotator should back up the old PNG and rewrite it in place."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
+    output_root = tmp_path / "outputs"
+    trend_result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(output_root),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=131,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    figure_path = trend_result.result_dir / "fig8_like.png"
+    before_bytes = figure_path.read_bytes()
+    raw_observation_path = run_dir.parent.parent.parent / "data" / "devauc_observations.hdf5"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cmass_posterior_predictive.cli",
+            "annotate-fig8-observations",
+            "--outputs-root",
+            str(output_root),
+            "--raw-devauc",
+            str(raw_observation_path),
+            "--raw-sersic",
+            str(raw_observation_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["status"] == "completed"
+    assert payload["processed_run_count"] == 1
+    assert payload["processed_runs"][0]["profile_name"] == "devauc"
+    assert payload["processed_runs"][0]["mass_quantity"] == "m10"
+    assert payload["processed_runs"][0]["observed_mass_points"] == 7
+    assert payload["processed_runs"][0]["observed_gamma_points"] == 7
+    assert payload["processed_runs"][0]["observed_sigma_points"] == 10
+
+    after_bytes = figure_path.read_bytes()
+    backup_paths = sorted(trend_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
+
+    assert backup_paths
+    assert backup_paths[0].read_bytes() == before_bytes
+    assert after_bytes != before_bytes
 
 
 def test_cli_posterior_trends_rejects_removed_conditional_curve_arguments(tmp_path: Path) -> None:

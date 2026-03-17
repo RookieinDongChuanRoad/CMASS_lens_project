@@ -315,6 +315,115 @@ def test_load_runtime_config_rejects_gamma_slopes_in_independent_mode(tmp_path: 
         load_runtime_config(path)
 
 
+def test_load_runtime_config_builds_sigma_star_gamma_parameter_vector(
+    synthetic_sigma_star_dependent_config_path: Path,
+) -> None:
+    """
+    Sigma-star gamma mode should expose the 11D public parameter contract.
+
+    The third mode removes the historical `beta_gamma` / `xi_gamma` pair and
+    replaces them with one explicit `Sigma_*` slope. This test locks both the
+    sampled vector length and the serialized public names.
+    """
+
+    runtime_config = load_runtime_config(synthetic_sigma_star_dependent_config_path)
+
+    assert runtime_config.gamma_model.mode == "sigma_star_dependent"
+    parameter_vector = runtime_config.sampling.initial_center.to_array()
+    assert parameter_vector.shape == (11,)
+    public_center = runtime_config.sampling.initial_center.to_public_dict(
+        runtime_config.mass_definition,
+    )
+    assert "beta_gamma" not in public_center
+    assert "xi_gamma" not in public_center
+    assert public_center["beta_sigma_star_gamma"] == pytest.approx(0.24)
+    assert set(public_center) == {
+        "mu5_0",
+        "beta5",
+        "xi5",
+        "sigma5",
+        "mu_gamma_0",
+        "beta_sigma_star_gamma",
+        "sigma_gamma",
+        "mu_zs",
+        "sigma_zs",
+        "theta0",
+        "loga",
+    }
+
+
+def test_load_runtime_config_rejects_legacy_gamma_slopes_in_sigma_star_mode(tmp_path: Path) -> None:
+    """
+    Sigma-star gamma mode must reject the removed `logM* + logRe` slope names.
+
+    Accepting `beta_gamma` or `xi_gamma` here would silently change the model
+    family while preserving a superficially valid config surface.
+    """
+
+    path = tmp_path / "invalid_sigma_star_gamma.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "profile": {"name": "sersic"},
+                "mass_definition": {"enclosed_radius_kpc": 5},
+                "gamma_model": {"mode": "sigma_star_dependent"},
+                "data": {
+                    "observation_path": str(tmp_path / "observations.hdf5"),
+                    "cross_section_path": str(tmp_path / "cross_section.h5"),
+                },
+                "sampling": {
+                    "n_walkers": 24,
+                    "n_steps": 3,
+                    "warmup": 1,
+                    "random_seed": 7,
+                    "initial_center": {
+                        "mu5_0": 11.32,
+                        "beta5": 0.59,
+                        "xi5": -0.11,
+                        "sigma5": 0.06,
+                        "mu_gamma_0": 1.99,
+                        "beta_gamma": 0.1,
+                        "sigma_gamma": 0.149,
+                        "mu_zs": 1.8,
+                        "sigma_zs": 0.215,
+                        "theta0": 0.93,
+                        "loga": 1.0,
+                    },
+                },
+                "integration": {
+                    "gamma_points": 200,
+                    "mstar_points": 200,
+                    "normalization_samples": 128,
+                },
+                "cosmology": {
+                    "h0": 70.0,
+                    "omega_m": 0.3,
+                },
+                "runtime": {
+                    "checkpoint_every": 1,
+                    "parallel_strategy": "auto",
+                    "progress": False,
+                    "progress_summary_every": 1,
+                    "show_stage_timing": True,
+                    "disable_hdf5_file_locking": False,
+                    "num_threads": 0,
+                    "reserve_cores": 2,
+                },
+                "output": {
+                    "root_dir": str(tmp_path / "outputs"),
+                    "run_label": "synthetic",
+                    "overwrite_latest": True,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="beta_gamma"):
+        load_runtime_config(path)
+
+
 def test_build_profile_spec_exposes_profile_specific_rules() -> None:
     """
     The profile builder should isolate all devauc/sersic differences.

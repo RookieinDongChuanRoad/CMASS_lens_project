@@ -9,8 +9,10 @@ public surface with PPT-specific APIs.
 
 from .notebook_comparison import run_notebook_pipeline_comparison
 from .predictive import run_posterior_predictive, wait_for_external_sigma_tables_and_run
+from .predictive import annotate_existing_fig8_like_figures_with_observations
 from .trends import run_posterior_trends
 from .types import (
+    Fig8ObservationAnnotationResult,
     NotebookComparisonResult,
     PosteriorPredictiveMonitorResult,
     PosteriorPredictiveResult,
@@ -18,10 +20,12 @@ from .types import (
 )
 
 __all__ = [
+    "Fig8ObservationAnnotationResult",
     "NotebookComparisonResult",
     "PosteriorPredictiveMonitorResult",
     "PosteriorPredictiveResult",
     "PosteriorTrendResult",
+    "annotate_existing_fig8_like_figures_with_observations",
     "run_notebook_pipeline_comparison",
     "run_posterior_predictive",
     "wait_for_external_sigma_tables_and_run",

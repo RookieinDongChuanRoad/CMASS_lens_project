@@ -26,8 +26,70 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
+from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
-from cmass_lens_inference.types import PARAMETER_NAMES
+
+
+def _initial_center_for_gamma_mode(
+    mass_initial_center: dict[str, float],
+    gamma_mode: str,
+) -> dict[str, float]:
+    """Build the public initial-center payload for one gamma parameterization."""
+
+    if gamma_mode == "dependent":
+        return {
+            **mass_initial_center,
+            "mu_gamma_0": 1.99,
+            "beta_gamma": 0.10,
+            "xi_gamma": -0.67,
+            "sigma_gamma": 0.149,
+            "mu_zs": 1.8,
+            "sigma_zs": 0.215,
+            "theta0": 0.93,
+            "loga": 1.0,
+        }
+    if gamma_mode == "independent":
+        return {
+            **mass_initial_center,
+            "mu_gamma_0": 1.99,
+            "sigma_gamma": 0.149,
+            "mu_zs": 1.8,
+            "sigma_zs": 0.215,
+            "theta0": 0.93,
+            "loga": 1.0,
+        }
+    if gamma_mode == "sigma_star_dependent":
+        return {
+            **mass_initial_center,
+            "mu_gamma_0": 1.99,
+            "beta_sigma_star_gamma": 0.24,
+            "sigma_gamma": 0.149,
+            "mu_zs": 1.8,
+            "sigma_zs": 0.215,
+            "theta0": 0.93,
+            "loga": 1.0,
+        }
+    raise ValueError(f"Unsupported corner-test gamma mode '{gamma_mode}'.")
+
+
+def _parameter_center_for_gamma_mode(
+    mass_radius_kpc: int,
+    gamma_mode: str,
+) -> np.ndarray:
+    """Return one deterministic posterior center matching the config schema."""
+
+    if mass_radius_kpc == 10:
+        mass_theta = [11.42, 0.49, -0.21, 0.08]
+    else:
+        mass_theta = [11.32, 0.59, -0.11, 0.06]
+
+    if gamma_mode == "dependent":
+        return np.array([*mass_theta, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    if gamma_mode == "independent":
+        return np.array([*mass_theta, 1.99, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    if gamma_mode == "sigma_star_dependent":
+        return np.array([*mass_theta, 1.99, 0.24, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
+    raise ValueError(f"Unsupported corner-test gamma mode '{gamma_mode}'.")
 
 
 def _write_corner_config(
@@ -36,6 +98,7 @@ def _write_corner_config(
     output_root: Path,
     mass_radius_kpc: int = 10,
     warmup: int = 2,
+    gamma_mode: str = "dependent",
 ) -> Path:
     """
     Create the minimal config snapshot needed by the corner-plot workflow.
@@ -65,6 +128,7 @@ def _write_corner_config(
     config = {
         "profile": {"name": profile_name},
         "mass_definition": {"enclosed_radius_kpc": mass_radius_kpc},
+        "gamma_model": {"mode": gamma_mode},
         "data": {
             "observation_path": str(output_root / f"{profile_name}_observations.hdf5"),
             "cross_section_path": str(output_root / "cs_grid_power.h5"),
@@ -74,17 +138,7 @@ def _write_corner_config(
             "n_steps": 5,
             "warmup": warmup,
             "random_seed": 7,
-            "initial_center": {
-                **mass_initial_center,
-                "mu_gamma_0": 1.99,
-                "beta_gamma": 0.10,
-                "xi_gamma": -0.67,
-                "sigma_gamma": 0.149,
-                "mu_zs": 1.8,
-                "sigma_zs": 0.215,
-                "theta0": 0.93,
-                "loga": 1.0,
-            },
+            "initial_center": _initial_center_for_gamma_mode(mass_initial_center, gamma_mode),
             "initial_jitter_scale": 1.0e-3,
         },
         "integration": {
@@ -116,7 +170,12 @@ def _write_corner_config(
     return path
 
 
-def _seed_corner_backend(chain_path: Path, n_steps: int = 5, n_walkers: int = 24) -> None:
+def _seed_corner_backend(
+    chain_path: Path,
+    parameter_center: np.ndarray,
+    n_steps: int = 5,
+    n_walkers: int = 24,
+) -> None:
     """
     Create a deterministic backend chain with small but non-degenerate spread.
 
@@ -124,16 +183,15 @@ def _seed_corner_backend(chain_path: Path, n_steps: int = 5, n_walkers: int = 24
     storage format and avoids hand-writing fragile HDF5 structures.
     """
 
-    base_theta = np.array([11.32, 0.59, -0.11, 0.06, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
     backend = emcee.backends.HDFBackend(str(chain_path))
-    backend.reset(n_walkers, base_theta.shape[0])
+    backend.reset(n_walkers, parameter_center.shape[0])
     blobs = np.zeros(n_walkers, dtype=LOG_PROB_BLOB_DTYPE)
     blobs["parallel_strategy"] = b"off"
     backend.grow(n_steps, blobs)
     random_state = np.random.RandomState(123).get_state()
 
     for step_index in range(n_steps):
-        coords = np.tile(base_theta, (n_walkers, 1))
+        coords = np.tile(parameter_center, (n_walkers, 1))
         coords += 1.0e-3 * step_index
         coords += np.linspace(0.0, 2.0e-4, n_walkers, dtype=float)[:, None]
         log_prob = np.full(n_walkers, -5.0 + 0.1 * step_index, dtype=float)
@@ -147,6 +205,7 @@ def _build_corner_run(
     mass_radius_kpc: int = 10,
     warmup: int = 2,
     n_steps: int = 5,
+    gamma_mode: str = "dependent",
 ) -> Path:
     """Create a minimal completed run directory for the corner-plot tests."""
 
@@ -158,8 +217,13 @@ def _build_corner_run(
         output_root=tmp_path,
         mass_radius_kpc=mass_radius_kpc,
         warmup=warmup,
+        gamma_mode=gamma_mode,
     )
-    _seed_corner_backend(run_dir / "chain.h5", n_steps=n_steps)
+    _seed_corner_backend(
+        run_dir / "chain.h5",
+        parameter_center=_parameter_center_for_gamma_mode(mass_radius_kpc, gamma_mode),
+        n_steps=n_steps,
+    )
     return run_dir
 
 
@@ -213,6 +277,7 @@ def test_run_posterior_corner_calls_corner_with_public_m10_labels(
     monkeypatch.setattr(plt, "close", lambda figure: None)
 
     run_dir = _build_corner_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
+    runtime_config = load_runtime_config(run_dir / "config_snapshot.yaml")
     run_posterior_corner(run_dir=str(run_dir), burn_in="auto")
 
     expected_labels = [
@@ -221,7 +286,7 @@ def test_run_posterior_corner_calls_corner_with_public_m10_labels(
         r"$\xi_{10}$",
         r"$\sigma_{10}$",
     ]
-    assert captured["samples_shape"] == (72, len(PARAMETER_NAMES))
+    assert captured["samples_shape"] == (72, runtime_config.parameter_schema.n_dim)
     assert captured["kwargs"]["labels"][:4] == expected_labels
     assert captured["kwargs"]["titles"][:4] == expected_labels
     assert captured["kwargs"]["show_titles"] is True
@@ -229,6 +294,37 @@ def test_run_posterior_corner_calls_corner_with_public_m10_labels(
     assert captured["kwargs"]["quantiles"] == [0.16, 0.5, 0.84]
     assert captured["kwargs"]["plot_datapoints"] is False
     assert captured["kwargs"]["levels"] == [0.68, 0.95]
+
+
+def test_run_posterior_corner_uses_schema_driven_parameter_order_for_sigma_star_mode(
+    tmp_path: Path,
+) -> None:
+    """Corner metadata should follow the active 11D sigma-star gamma schema."""
+
+    from cmass_lens_inference.posterior_corner import run_posterior_corner
+
+    run_dir = _build_corner_run(
+        tmp_path,
+        profile_name="sersic",
+        mass_radius_kpc=10,
+        gamma_mode="sigma_star_dependent",
+    )
+    result = run_posterior_corner(run_dir=str(run_dir), burn_in="auto")
+
+    assert result.metadata["parameter_order"] == [
+        "mu10_0",
+        "beta10",
+        "xi10",
+        "sigma10",
+        "mu_gamma_0",
+        "beta_sigma_star_gamma",
+        "sigma_gamma",
+        "mu_zs",
+        "sigma_zs",
+        "theta0",
+        "loga",
+    ]
+    assert len(result.metadata["parameter_labels"]) == 11
 
 
 def test_cli_posterior_corner_latest_command_generates_both_profiles(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ import numpy as np
 from .primitives import (
     gamma_population_mean,
     interp1d_clip,
+    LOG10_2PI,
     mu_r,
     p_find,
     phi_standard,
@@ -74,6 +75,7 @@ def normalization_mc_numba(
         mu_gamma_0,
         beta_gamma,
         xi_gamma,
+        beta_sigma_star_gamma,
         sigma_gamma,
         mu_zs,
         sigma_zs,
@@ -112,13 +114,16 @@ def normalization_mc_numba(
             mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r)
             re_draw = mu_r_draw + sigma_r * nrm[5]
             delta_r = re_draw - mu_r_draw
+            sigma_star_shift9p0 = mstar - LOG10_2PI - 2.0 * re_draw - 9.0
             log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[6]
             mu_gamma = gamma_population_mean(
                 mu_gamma_0,
                 beta_gamma,
                 xi_gamma,
+                beta_sigma_star_gamma,
                 mstar - 11.4,
                 delta_r,
+                sigma_star_shift9p0,
                 gamma_mode_code,
             )
             gamma = truncnorm_sample(
@@ -133,13 +138,16 @@ def normalization_mc_numba(
             mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r)
             re_draw = mu_r_draw + sigma_r * nrm[4]
             delta_r = re_draw - mu_r_draw
+            sigma_star_shift9p0 = mstar - LOG10_2PI - 2.0 * re_draw - 9.0
             log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[5]
             mu_gamma = gamma_population_mean(
                 mu_gamma_0,
                 beta_gamma,
                 xi_gamma,
+                beta_sigma_star_gamma,
                 mstar - 11.4,
                 delta_r,
+                sigma_star_shift9p0,
                 gamma_mode_code,
             )
             gamma = truncnorm_sample(

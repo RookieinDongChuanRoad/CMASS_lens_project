@@ -18,6 +18,8 @@ from .io import load_cross_section_grid, load_observations
 from .profiles import build_profile_spec
 from .types import CompiledModelContext, RandomBasis, RuntimeConfig
 
+LOG10_2PI = math.log10(2.0 * math.pi)
+
 
 def build_random_basis(num_samples: int, seed: int) -> RandomBasis:
     """
@@ -142,6 +144,7 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
     p_zd_fixed = np.exp(-0.5 * ((zd - 0.558) / 0.085) ** 2) / (0.085 * sqrt2pi)
 
     mstar_shift11p4 = np.zeros((n_lens, n_mstar), dtype=np.float64)
+    sigma_star_shift9p0_grid = np.zeros((n_lens, n_mstar), dtype=np.float64)
     mstar_integrand_base = np.zeros((n_lens, n_mstar), dtype=np.float64)
     delta_r_grid = np.zeros((n_lens, n_mstar), dtype=np.float64)
 
@@ -169,6 +172,7 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
             p_r /= profile.sigma_r * sqrt2pi
 
             mstar_shift11p4[lens_index, mstar_index] = shift
+            sigma_star_shift9p0_grid[lens_index, mstar_index] = mstar - LOG10_2PI - 2.0 * re_logkpc[lens_index] - 9.0
             delta_r_grid[lens_index, mstar_index] = delta_r
             # Store only the parameter-independent part of the inner `m*`
             # integrand. The likelihood kernel now applies the hyper-parameter
@@ -195,6 +199,7 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         p_zd_fixed=np.ascontiguousarray(p_zd_fixed, dtype=np.float64),
         mstar_grid=np.ascontiguousarray(mstar_grid, dtype=np.float64),
         mstar_shift11p4=np.ascontiguousarray(mstar_shift11p4, dtype=np.float64),
+        sigma_star_shift9p0_grid=np.ascontiguousarray(sigma_star_shift9p0_grid, dtype=np.float64),
         mstar_integrand_base=np.ascontiguousarray(mstar_integrand_base, dtype=np.float64),
         delta_r_grid=np.ascontiguousarray(delta_r_grid, dtype=np.float64),
         base_normals=random_basis.base_normals,

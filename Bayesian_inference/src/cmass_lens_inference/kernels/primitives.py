@@ -23,10 +23,12 @@ import astropy.units as u
 SQRT2 = math.sqrt(2.0)
 SQRT2PI = math.sqrt(2.0 * math.pi)
 LOG10_4 = math.log10(4.0)
+LOG10_2PI = math.log10(2.0 * math.pi)
 C_KM_S = c.to("km/s").value
 G_KPC_KMS2_MSUN = G.to(u.kpc * u.km**2 / (u.s**2 * u.Msun)).value
 GAMMA_MODE_DEPENDENT_CODE = 0
 GAMMA_MODE_INDEPENDENT_CODE = 1
+GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE = 2
 
 
 
@@ -283,7 +285,11 @@ def theta_dimension_for_gamma_mode(gamma_mode_code: int) -> int:
 
     if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
         return 12
-    return 10
+    if gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
+        return 10
+    if gamma_mode_code == GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE:
+        return 11
+    return -1
 
 
 @nb.njit(cache=True, inline="always")
@@ -304,19 +310,30 @@ def unpack_model_theta(theta: np.ndarray, gamma_mode_code: int) -> tuple[float, 
     if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
         beta_gamma = theta[5]
         xi_gamma = theta[6]
+        beta_sigma_star_gamma = 0.0
         sigma_gamma = theta[7]
         mu_zs = theta[8]
         sigma_zs = theta[9]
         theta0 = theta[10]
         loga = theta[11]
-    else:
+    elif gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
         beta_gamma = 0.0
         xi_gamma = 0.0
+        beta_sigma_star_gamma = 0.0
         sigma_gamma = theta[5]
         mu_zs = theta[6]
         sigma_zs = theta[7]
         theta0 = theta[8]
         loga = theta[9]
+    else:
+        beta_gamma = 0.0
+        xi_gamma = 0.0
+        beta_sigma_star_gamma = theta[5]
+        sigma_gamma = theta[6]
+        mu_zs = theta[7]
+        sigma_zs = theta[8]
+        theta0 = theta[9]
+        loga = theta[10]
 
     return (
         mu5_0,
@@ -326,6 +343,7 @@ def unpack_model_theta(theta: np.ndarray, gamma_mode_code: int) -> tuple[float, 
         mu_gamma_0,
         beta_gamma,
         xi_gamma,
+        beta_sigma_star_gamma,
         sigma_gamma,
         mu_zs,
         sigma_zs,
@@ -339,12 +357,16 @@ def gamma_population_mean(
     mu_gamma_0: float,
     beta_gamma: float,
     xi_gamma: float,
+    beta_sigma_star_gamma: float,
     mstar_shift11p4: float,
     delta_r: float,
+    sigma_star_shift9p0: float,
     gamma_mode_code: int,
 ) -> float:
     """Return the conditional gamma mean for the active gamma mode."""
 
     if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
         return mu_gamma_0 + beta_gamma * mstar_shift11p4 + xi_gamma * delta_r
+    if gamma_mode_code == GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE:
+        return mu_gamma_0 + beta_sigma_star_gamma * sigma_star_shift9p0
     return mu_gamma_0

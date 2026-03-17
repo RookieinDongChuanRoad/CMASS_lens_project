@@ -42,6 +42,7 @@ def log_likelihood_lenses_numba(
     p_zd_fixed: np.ndarray,
     mstar_grid: np.ndarray,
     mstar_shift11p4: np.ndarray,
+    sigma_star_shift9p0_grid: np.ndarray,
     mstar_integrand_base: np.ndarray,
     delta_r_grid: np.ndarray,
     gamma_grid_int: np.ndarray,
@@ -68,6 +69,7 @@ def log_likelihood_lenses_numba(
         mu_gamma_0,
         beta_gamma,
         xi_gamma,
+        beta_sigma_star_gamma,
         sigma_gamma,
         mu_zs,
         sigma_zs,
@@ -141,8 +143,10 @@ def log_likelihood_lenses_numba(
                     mu_gamma_0,
                     beta_gamma,
                     xi_gamma,
+                    beta_sigma_star_gamma,
                     mstar_shift11p4[i, km],
                     delta_r_grid[i, km],
+                    sigma_star_shift9p0_grid[i, km],
                     gamma_mode_code,
                 )
                 mstar_integrand[km] = (

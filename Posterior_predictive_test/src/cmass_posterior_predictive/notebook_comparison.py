@@ -281,7 +281,7 @@ def _build_pipeline_context(
     if runtime_config.gamma_model.mode != GAMMA_MODE_DEPENDENT:
         raise ValueError(
             "Notebook comparison only supports dependent gamma mode. "
-            "The historical notebook baseline is not defined for independent runs."
+            "The historical notebook baseline is not defined for non-dependent runs."
         )
     if runtime_config.mass_definition.label != "m5":
         raise ValueError(

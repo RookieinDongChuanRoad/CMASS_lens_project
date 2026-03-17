@@ -22,9 +22,11 @@ from .mass_definition import MassDefinition
 
 GAMMA_MODE_DEPENDENT = "dependent"
 GAMMA_MODE_INDEPENDENT = "independent"
+GAMMA_MODE_SIGMA_STAR_DEPENDENT = "sigma_star_dependent"
 
 GAMMA_MODE_DEPENDENT_CODE = 0
 GAMMA_MODE_INDEPENDENT_CODE = 1
+GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE = 2
 
 INTERNAL_MASS_PARAMETER_NAMES: tuple[str, ...] = (
     "mu5_0",
@@ -45,6 +47,12 @@ INDEPENDENT_GAMMA_PARAMETER_NAMES: tuple[str, ...] = (
     "sigma_gamma",
 )
 
+SIGMA_STAR_DEPENDENT_GAMMA_PARAMETER_NAMES: tuple[str, ...] = (
+    "mu_gamma_0",
+    "beta_sigma_star_gamma",
+    "sigma_gamma",
+)
+
 TAIL_PARAMETER_NAMES: tuple[str, ...] = (
     "mu_zs",
     "sigma_zs",
@@ -60,6 +68,7 @@ BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME: dict[str, tuple[float, float]] = {
     "mu_gamma_0": (1.5, 2.5),
     "beta_gamma": (-3.0, 3.0),
     "xi_gamma": (-3.0, 3.0),
+    "beta_sigma_star_gamma": (-3.0, 3.0),
     "sigma_gamma": (0.0, 0.5),
     "mu_zs": (1.0, 3.0),
     "sigma_zs": (0.0, 2.0),
@@ -68,6 +77,7 @@ BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME: dict[str, tuple[float, float]] = {
 }
 
 _REMOVED_INDEPENDENT_GAMMA_KEYS = frozenset({"beta_gamma", "xi_gamma"})
+_REMOVED_SIGMA_STAR_GAMMA_KEYS = frozenset({"beta_gamma", "xi_gamma"})
 
 
 @dataclass(frozen=True)
@@ -77,10 +87,15 @@ class GammaModelConfig:
     mode: str
 
     def __post_init__(self) -> None:
-        if self.mode not in {GAMMA_MODE_DEPENDENT, GAMMA_MODE_INDEPENDENT}:
+        if self.mode not in {
+            GAMMA_MODE_DEPENDENT,
+            GAMMA_MODE_INDEPENDENT,
+            GAMMA_MODE_SIGMA_STAR_DEPENDENT,
+        }:
             raise ValueError(
                 f"Unsupported gamma model mode '{self.mode}'. Expected "
-                f"'{GAMMA_MODE_DEPENDENT}' or '{GAMMA_MODE_INDEPENDENT}'."
+                f"'{GAMMA_MODE_DEPENDENT}', '{GAMMA_MODE_INDEPENDENT}', or "
+                f"'{GAMMA_MODE_SIGMA_STAR_DEPENDENT}'."
             )
 
     @property
@@ -89,7 +104,9 @@ class GammaModelConfig:
 
         if self.mode == GAMMA_MODE_DEPENDENT:
             return GAMMA_MODE_DEPENDENT_CODE
-        return GAMMA_MODE_INDEPENDENT_CODE
+        if self.mode == GAMMA_MODE_INDEPENDENT:
+            return GAMMA_MODE_INDEPENDENT_CODE
+        return GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE
 
 
 @dataclass(frozen=True)
@@ -162,6 +179,21 @@ class ParameterSchema:
                     "Independent gamma mode does not accept removed gamma slope "
                     f"parameters: {', '.join(forbidden)}."
                 )
+        elif self.gamma_mode == GAMMA_MODE_SIGMA_STAR_DEPENDENT:
+            forbidden = sorted(_REMOVED_SIGMA_STAR_GAMMA_KEYS.intersection(public_values.keys()))
+            if forbidden:
+                raise ValueError(
+                    "Sigma-star gamma mode does not accept the dependent-mode "
+                    f"gamma slope parameters: {', '.join(forbidden)}."
+                )
+
+        expected_names = set(self.public_parameter_names)
+        unexpected = sorted(set(public_values.keys()).difference(expected_names))
+        if unexpected:
+            raise ValueError(
+                "Initial center contains parameters that are not part of the "
+                f"'{self.gamma_mode}' gamma-mode schema: {', '.join(unexpected)}."
+            )
 
         normalized: dict[str, float] = {}
         for internal_name, public_name in zip(
@@ -218,7 +250,7 @@ def build_parameter_schema(
             + DEPENDENT_GAMMA_PARAMETER_NAMES
             + TAIL_PARAMETER_NAMES
         )
-    else:
+    elif gamma_model.mode == GAMMA_MODE_INDEPENDENT:
         internal_parameter_names = (
             INTERNAL_MASS_PARAMETER_NAMES
             + INDEPENDENT_GAMMA_PARAMETER_NAMES
@@ -227,6 +259,17 @@ def build_parameter_schema(
         public_parameter_names = (
             mass_definition.public_parameter_names
             + INDEPENDENT_GAMMA_PARAMETER_NAMES
+            + TAIL_PARAMETER_NAMES
+        )
+    else:
+        internal_parameter_names = (
+            INTERNAL_MASS_PARAMETER_NAMES
+            + SIGMA_STAR_DEPENDENT_GAMMA_PARAMETER_NAMES
+            + TAIL_PARAMETER_NAMES
+        )
+        public_parameter_names = (
+            mass_definition.public_parameter_names
+            + SIGMA_STAR_DEPENDENT_GAMMA_PARAMETER_NAMES
             + TAIL_PARAMETER_NAMES
         )
 

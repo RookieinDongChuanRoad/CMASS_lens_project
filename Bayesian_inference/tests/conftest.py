@@ -380,3 +380,76 @@ def synthetic_independent_config_path(
     }
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def synthetic_sigma_star_dependent_config_path(
+    tmp_path: Path,
+    synthetic_observation_file: Path,
+    synthetic_cross_section_file: Path,
+) -> Path:
+    """
+    Create a YAML configuration file for the `sigma_star_dependent` gamma mode.
+
+    This fixture locks the third gamma-parameterization contract: the sampled
+    vector should keep the four mass hyper-parameters, replace the removed
+    `logM* + logRe` gamma slopes with one `Sigma_*` slope, and preserve the
+    shared tail parameters unchanged.
+    """
+
+    path = tmp_path / "synthetic_sersic_gamma_sigma_star.yaml"
+    config = {
+        "profile": {"name": "sersic"},
+        "mass_definition": {"enclosed_radius_kpc": 5},
+        "gamma_model": {"mode": "sigma_star_dependent"},
+        "data": {
+            "observation_path": str(synthetic_observation_file),
+            "cross_section_path": str(synthetic_cross_section_file),
+        },
+        "sampling": {
+            "n_walkers": 24,
+            "n_steps": 3,
+            "warmup": 1,
+            "random_seed": 7,
+            "initial_center": {
+                "mu5_0": 11.32,
+                "beta5": 0.59,
+                "xi5": -0.11,
+                "sigma5": 0.06,
+                "mu_gamma_0": 1.99,
+                "beta_sigma_star_gamma": 0.24,
+                "sigma_gamma": 0.149,
+                "mu_zs": 1.8,
+                "sigma_zs": 0.215,
+                "theta0": 0.93,
+                "loga": 1.0,
+            },
+            "initial_jitter_scale": 1.0e-3,
+        },
+        "integration": {
+            "gamma_points": 200,
+            "mstar_points": 200,
+            "normalization_samples": 128,
+        },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
+        "runtime": {
+            "checkpoint_every": 1,
+            "parallel_strategy": "auto",
+            "progress": False,
+            "progress_summary_every": 1,
+            "show_stage_timing": True,
+            "disable_hdf5_file_locking": False,
+            "num_threads": 0,
+            "reserve_cores": 2,
+        },
+        "output": {
+            "root_dir": str(tmp_path / "outputs"),
+            "run_label": "synthetic-gamma-sigma-star",
+            "overwrite_latest": True,
+        },
+    }
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path

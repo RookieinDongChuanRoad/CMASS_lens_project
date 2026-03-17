@@ -146,6 +146,36 @@ def test_run_inference_uses_independent_gamma_parameter_dimension(
     ]
 
 
+def test_run_inference_uses_sigma_star_gamma_parameter_dimension(
+    synthetic_sigma_star_dependent_config_path: Path,
+) -> None:
+    """
+    Sigma-star gamma mode should persist an 11D chain and public parameter order.
+
+    This locks the backend contract for downstream post-processing: chain shape
+    and serialized metadata must agree on the third gamma parameterization.
+    """
+
+    run_result = run_inference(str(synthetic_sigma_star_dependent_config_path))
+
+    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"))
+    assert backend.get_chain().shape == (3, 24, 11)
+    assert run_result.metadata["gamma_mode"] == "sigma_star_dependent"
+    assert run_result.metadata["sampling"]["parameter_order"] == [
+        "mu5_0",
+        "beta5",
+        "xi5",
+        "sigma5",
+        "mu_gamma_0",
+        "beta_sigma_star_gamma",
+        "sigma_gamma",
+        "mu_zs",
+        "sigma_zs",
+        "theta0",
+        "loga",
+    ]
+
+
 def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path) -> None:
     """
     Resume should use the previous run directory and advance from the stored

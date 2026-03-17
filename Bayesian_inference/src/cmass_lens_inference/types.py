@@ -328,6 +328,7 @@ class CompiledModelContext:
     p_zd_fixed: np.ndarray
     mstar_grid: np.ndarray
     mstar_shift11p4: np.ndarray
+    sigma_star_shift9p0_grid: np.ndarray
     mstar_integrand_base: np.ndarray
     delta_r_grid: np.ndarray
     base_normals: np.ndarray

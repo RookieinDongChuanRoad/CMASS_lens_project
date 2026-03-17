@@ -17,6 +17,7 @@ import emcee
 import h5py
 import numpy as np
 import pytest
+import yaml
 
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 
@@ -309,6 +310,48 @@ def test_run_notebook_pipeline_comparison_rejects_independent_gamma_mode(
         run_notebook_pipeline_comparison(
             chain_path=chain_path,
             pipeline_config_path=synthetic_independent_config_path,
+            population_model_path=population_model_path,
+            sigma_table_path=sigma_table_path,
+            cross_section_path=synthetic_cross_section_file,
+            output_dir=tmp_path / "comparison_output",
+            discard=1,
+            max_samples=2,
+            num_parents=8,
+            theta_sample_size=6,
+            sigma_sample_size=4,
+        )
+
+
+def test_run_notebook_pipeline_comparison_rejects_sigma_star_gamma_mode(
+    tmp_path: Path,
+    synthetic_config_path: Path,
+    synthetic_cross_section_file: Path,
+) -> None:
+    """The notebook bridge must stay dependent-only for the new sigma-star mode as well."""
+
+    from cmass_posterior_predictive.notebook_comparison import run_notebook_pipeline_comparison
+
+    sigma_table_path = _write_notebook_sigma_table(tmp_path / "jeans_sers_grid.h5")
+    population_model_path = _write_fake_population_model(tmp_path / "Population_model.py")
+    chain_path = _seed_chain_backend(
+        tmp_path / "full_0103.h5",
+        parameter_center=np.array([11.32, 0.59, -0.11, 0.06, 1.99, 0.24, 0.149, 1.8, 0.215, 0.9, 0.7]),
+    )
+    sigma_star_config_payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    sigma_star_config_payload["gamma_model"]["mode"] = "sigma_star_dependent"
+    sigma_star_config_payload["sampling"]["initial_center"].pop("beta_gamma")
+    sigma_star_config_payload["sampling"]["initial_center"].pop("xi_gamma")
+    sigma_star_config_payload["sampling"]["initial_center"]["beta_sigma_star_gamma"] = 0.24
+    sigma_star_config_path = tmp_path / "synthetic_sigma_star_comparison.yaml"
+    sigma_star_config_path.write_text(
+        yaml.safe_dump(sigma_star_config_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="only supports dependent gamma mode"):
+        run_notebook_pipeline_comparison(
+            chain_path=chain_path,
+            pipeline_config_path=sigma_star_config_path,
             population_model_path=population_model_path,
             sigma_table_path=sigma_table_path,
             cross_section_path=synthetic_cross_section_file,

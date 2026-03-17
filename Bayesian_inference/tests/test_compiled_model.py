@@ -178,6 +178,69 @@ def test_independent_gamma_mode_matches_zero_slope_dependent_log_prob(
     assert independent_log_prob == pytest.approx(dependent_log_prob, rel=0.0, abs=1.0e-12)
 
 
+def test_sigma_star_gamma_mode_uses_eleven_dimensional_theta_vector(
+    synthetic_sigma_star_dependent_config_path,
+) -> None:
+    """
+    Sigma-star gamma mode should flow through the compiled model as 11-D.
+
+    The third mode keeps the reduced evaluation vector all the way into the
+    kernels and also requires a dedicated precomputed `Sigma_*` grid for the
+    likelihood path.
+    """
+
+    runtime_config = load_runtime_config(synthetic_sigma_star_dependent_config_path)
+    compiled_model = build_compiled_model(runtime_config)
+    theta = runtime_config.sampling.initial_center.to_array()
+
+    assert theta.shape == (11,)
+    assert compiled_model.context.gamma_mode_code == 2
+    assert compiled_model.context.sigma_star_shift9p0_grid.shape == compiled_model.context.mstar_grid.shape
+
+    log_prob_value, _ = log_prob(theta, compiled_model)
+    assert np.isfinite(log_prob_value)
+
+
+def test_sigma_star_gamma_mode_matches_independent_log_prob_when_sigma_slope_is_zero(
+    synthetic_sigma_star_dependent_config_path,
+    synthetic_independent_config_path,
+    tmp_path,
+) -> None:
+    """
+    Sigma-star gamma mode should collapse to the independent mode at zero slope.
+
+    This is the key regression guard for the new parameterization: removing the
+    `Sigma_*` slope should leave the scientific model identical to the
+    previously implemented `independent` gamma mode.
+    """
+
+    sigma_payload = yaml.safe_load(Path(synthetic_sigma_star_dependent_config_path).read_text(encoding="utf-8"))
+    sigma_payload["sampling"]["initial_center"]["beta_sigma_star_gamma"] = 0.0
+    sigma_zero_path = tmp_path / "sigma_star_zero_slope.yaml"
+    sigma_zero_path.write_text(
+        yaml.safe_dump(sigma_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    sigma_runtime_config = load_runtime_config(sigma_zero_path)
+    independent_runtime_config = load_runtime_config(synthetic_independent_config_path)
+    sigma_compiled_model = build_compiled_model(sigma_runtime_config)
+    independent_compiled_model = build_compiled_model(independent_runtime_config)
+
+    sigma_log_prob, _ = log_prob(
+        sigma_runtime_config.sampling.initial_center.to_array(),
+        sigma_compiled_model,
+    )
+    independent_log_prob, _ = log_prob(
+        independent_runtime_config.sampling.initial_center.to_array(),
+        independent_compiled_model,
+    )
+
+    assert np.isfinite(sigma_log_prob)
+    assert np.isfinite(independent_log_prob)
+    assert sigma_log_prob == pytest.approx(independent_log_prob, rel=0.0, abs=1.0e-12)
+
+
 def test_likelihood_kernel_matches_numpy_trapezoid_reference(synthetic_config_path) -> None:
     """
     The production likelihood kernel should now mirror the mathematical
@@ -299,6 +362,7 @@ def test_likelihood_kernel_matches_numpy_trapezoid_reference(synthetic_config_pa
             p_zd_fixed=context.p_zd_fixed,
             mstar_grid=context.mstar_grid,
             mstar_shift11p4=context.mstar_shift11p4,
+            sigma_star_shift9p0_grid=context.sigma_star_shift9p0_grid,
             mstar_integrand_base=context.mstar_integrand_base,
             delta_r_grid=context.delta_r_grid,
             gamma_grid_int=context.gamma_grid_int,
