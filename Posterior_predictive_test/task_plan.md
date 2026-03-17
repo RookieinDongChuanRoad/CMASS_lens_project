@@ -93,6 +93,13 @@ Phase 12
 - [x] 核对 7 个目标工件时间戳与关键 JSON 合同
 - **Status:** complete
 
+### Phase 14: PPC 默认输出根目录统一
+- [x] 将 PPC / monitor / trends 的 CLI `--output-dir` 改为可选默认值
+- [x] 将三个公开 API 的 `output_root_dir` 默认值统一到项目根 `output/`
+- [x] 保留显式 `--output-dir` 覆盖默认行为
+- [x] 补充并通过默认输出路径相关测试与回归
+- **Status:** complete
+
 ## 关键问题
 1. 新的 PPC 逻辑应放在 `Bayesian_inference` 包内哪些模块，才能最大化复用现有 inference 代码？
 2. 在 sigma 插值表尚未产出的情况下，CLI 应如何设计输入契约，既能完整实现又不把假设写死？
@@ -100,6 +107,7 @@ Phase 12
 4. notebook `full_0103.h5` 的结果差异究竟来自哪个实现分叉：总体生成、参数顺序、sigma 插值器，还是后处理统计口径？
 5. 如何在不破坏现有科学合同的前提下，把 PPT 家族工作流从 inference engine 中完整剥离？
 6. 当 `latest` 指向不变但底层 `chain.h5` 被覆盖时，如何刷新单 profile 的正式产物而不误伤另一个 profile？
+7. 如何让 PPC 家族命令在不破坏显式参数覆盖的前提下，统一默认输出到项目根 `output/`？
 
 ## 已做决策
 | 决策 | 理由 |
@@ -127,6 +135,7 @@ Phase 12
 | 顶层 comparison 脚本不再做 `sys.path` 注入 | 新包已经可 editable 安装，脚本应通过正式包入口运行 |
 | 本地双包安装顺序固定为先装 `Bayesian_inference`，再对 `Posterior_predictive_test` 执行 `pip install -e . --no-deps` | `cmass-lens-inference` 是本地包而非 PyPI 依赖，直接解析依赖名会失败 |
 | 当单个 profile 的 `latest` run ID 不变但 `chain.h5` 被覆盖时，只重跑该 profile 对应的 `posterior-predictive` 与 `posterior-trends` | 这样可以刷新过期工件，同时避免无谓重跑另一个 profile |
+| PPC / monitor / trends 的默认输出根目录统一为 `/Users/liurongfu/Work/CMASS_lens_project/output`，但显式 `--output-dir` 仍优先 | 满足“默认统一落盘 + 手动覆盖”两种使用场景，且不破坏现有脚本 |
 
 ## 遇到的问题
 | 错误 | 尝试次数 | 处理方式 |

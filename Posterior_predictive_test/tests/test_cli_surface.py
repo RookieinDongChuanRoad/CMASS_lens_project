@@ -23,8 +23,6 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
             "/tmp/run",
             "--sigma-table",
             "/tmp/table.h5",
-            "--output-dir",
-            "/tmp/out",
         ]
     )
     posterior_trends_args = parser.parse_args(
@@ -34,8 +32,11 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
             "/tmp/run",
             "--sigma-table",
             "/tmp/table.h5",
-            "--output-dir",
-            "/tmp/out",
+        ]
+    )
+    monitor_args = parser.parse_args(
+        [
+            "posterior-predictive-monitor",
         ]
     )
     notebook_comparison_args = parser.parse_args(
@@ -56,4 +57,48 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
 
     assert posterior_predictive_args.command == "posterior-predictive"
     assert posterior_trends_args.command == "posterior-trends"
+    assert monitor_args.command == "posterior-predictive-monitor"
     assert notebook_comparison_args.command == "notebook-comparison"
+
+
+def test_standalone_cli_output_dir_explicit_override_wins() -> None:
+    """Explicit output roots must override the package-level defaults."""
+
+    from cmass_posterior_predictive.cli import build_argument_parser
+
+    parser = build_argument_parser()
+    output_root = "/tmp/custom_output"
+
+    posterior_predictive_args = parser.parse_args(
+        [
+            "posterior-predictive",
+            "--run-dir",
+            "/tmp/run",
+            "--sigma-table",
+            "/tmp/table.h5",
+            "--output-dir",
+            output_root,
+        ]
+    )
+    posterior_trends_args = parser.parse_args(
+        [
+            "posterior-trends",
+            "--run-dir",
+            "/tmp/run",
+            "--sigma-table",
+            "/tmp/table.h5",
+            "--output-dir",
+            output_root,
+        ]
+    )
+    monitor_args = parser.parse_args(
+        [
+            "posterior-predictive-monitor",
+            "--output-dir",
+            output_root,
+        ]
+    )
+
+    assert posterior_predictive_args.output_dir == output_root
+    assert posterior_trends_args.output_dir == output_root
+    assert monitor_args.output_dir == output_root

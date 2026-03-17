@@ -16,6 +16,7 @@ from .predictive import (
     DEFAULT_EXTERNAL_SIGMA_DIR,
     DEFAULT_MONITOR_NOT_BEFORE,
     DEFAULT_N_REPLICATES,
+    DEFAULT_PPC_OUTPUT_ROOT_DIR,
     DEFAULT_TREND_MASS_BIN_COUNT,
     DEFAULT_TREND_MASS_BIN_MAX,
     DEFAULT_TREND_MASS_BIN_MIN,
@@ -36,7 +37,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     ppc_parser = subparsers.add_parser("posterior-predictive", help="Run posterior predictive checks")
     ppc_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
     ppc_parser.add_argument("--sigma-table", required=True, help="Path to the Jeans sigma-unit interpolation table")
-    ppc_parser.add_argument("--output-dir", required=True, help="Root directory for PPC artifacts")
+    ppc_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
+        help=f"Root directory for PPC artifacts (default: {DEFAULT_PPC_OUTPUT_ROOT_DIR})",
+    )
     ppc_parser.add_argument("--n-replicates", type=int, default=DEFAULT_N_REPLICATES)
     ppc_parser.add_argument("--burn-in", default="auto")
     ppc_parser.add_argument("--seed", type=int, default=20260309)
@@ -46,7 +51,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     trend_parser = subparsers.add_parser("posterior-trends", help="Generate Fig. 8-like posterior trend figures")
     trend_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
     trend_parser.add_argument("--sigma-table", required=True, help="Path to the Jeans sigma-unit interpolation table")
-    trend_parser.add_argument("--output-dir", required=True, help="Root directory for trend artifacts")
+    trend_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
+        help=f"Root directory for trend artifacts (default: {DEFAULT_PPC_OUTPUT_ROOT_DIR})",
+    )
     trend_parser.add_argument("--n-posterior-draws", type=int, default=DEFAULT_TREND_POSTERIOR_DRAWS)
     trend_parser.add_argument("--burn-in", default="auto")
     trend_parser.add_argument("--seed", type=int, default=20260310)
@@ -64,7 +73,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "posterior-predictive-monitor",
         help="Wait for external sigma tables, validate them, and run devauc/sersic PPC",
     )
-    monitor_parser.add_argument("--output-dir", required=True, help="Root directory for PPC artifacts")
+    monitor_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
+        help=f"Root directory for PPC artifacts (default: {DEFAULT_PPC_OUTPUT_ROOT_DIR})",
+    )
     monitor_parser.add_argument("--external-dir", default=str(DEFAULT_EXTERNAL_SIGMA_DIR))
     monitor_parser.add_argument(
         "--devauc-run-dir",

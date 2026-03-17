@@ -69,6 +69,7 @@ STD_PANEL_LEFT_PADDING_FRACTION = 0.025
 SIGMA_STD_UPPER_PERCENTILE = 99.5
 SIGMA_STD_UPPER_PADDING_FACTOR = 1.03
 DEFAULT_EXTERNAL_SIGMA_DIR = Path("/Users/liurongfu/Work/CMASS_lens_project/data/external")
+DEFAULT_PPC_OUTPUT_ROOT_DIR = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs")
 DEFAULT_MONITOR_NOT_BEFORE = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
 _MAX_ALLOWED_NEGATIVE_FRACTION = 0.05
 _MAX_ALLOWED_NEGATIVE_ABSOLUTE_VALUE = 1.0e-4
@@ -380,9 +381,9 @@ def _inspect_sigma_table_candidate(
 
 
 def wait_for_external_sigma_tables_and_run(
-    output_root_dir: str,
     devauc_run_dir: str,
     sersic_run_dir: str,
+    output_root_dir: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
     external_dir: str | Path = DEFAULT_EXTERNAL_SIGMA_DIR,
     not_before: datetime | str | None = None,
     poll_interval_seconds: float = 30.0,
@@ -1971,9 +1972,14 @@ def _write_overview_figure(
 
 
 def _materialize_result_dir(output_root_dir: Path, profile_name: str, run_id: str) -> Path:
-    """Create the deterministic result directory for one PPC run."""
+    """Create the deterministic result directory for one PPC run.
 
-    result_dir = output_root_dir.expanduser().resolve() / profile_name / run_id
+    All PPC-family workflows now write artifacts under a dedicated `ppc`
+    subdirectory so inference-chain files and PPC products never share the
+    same run root.
+    """
+
+    result_dir = output_root_dir.expanduser().resolve() / profile_name / run_id / "ppc"
     result_dir.mkdir(parents=True, exist_ok=True)
     return result_dir
 
@@ -1981,7 +1987,7 @@ def _materialize_result_dir(output_root_dir: Path, profile_name: str, run_id: st
 def run_posterior_trends(
     run_dir: str,
     sigma_table_path: str,
-    output_root_dir: str,
+    output_root_dir: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
     n_posterior_draws: int | None = DEFAULT_TREND_POSTERIOR_DRAWS,
     burn_in: str | int = "auto",
     random_seed: int = DEFAULT_RANDOM_SEED + 1,
@@ -2169,7 +2175,7 @@ def run_posterior_trends(
 def run_posterior_predictive(
     run_dir: str,
     sigma_table_path: str,
-    output_root_dir: str,
+    output_root_dir: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
     n_replicates: int | None = DEFAULT_N_REPLICATES,
     burn_in: str | int = "auto",
     random_seed: int = DEFAULT_RANDOM_SEED,

@@ -129,6 +129,19 @@
   - `fig8_like_curves.npz`: `2026-03-11 14:40:39 CST`
   - `fig8_like.png`: `2026-03-11 14:40:39 CST`
 
+## 2026-03-16 PPC 默认输出目录策略
+- 用户要求今后 PPC 输出统一到项目根 `output/`，并按 profile 归档。
+- 已锁定策略：
+  - 默认根目录：`/Users/liurongfu/Work/CMASS_lens_project/output`
+  - 覆盖范围：`posterior-predictive`、`posterior-predictive-monitor`、`posterior-trends`
+  - 显式传入 `--output-dir` 时，仍按显式参数优先
+  - `notebook-comparison` 不纳入这次默认目录策略
+- 代码实现层采用同一个常量：
+  - `DEFAULT_PPC_OUTPUT_ROOT_DIR = Path(\"/Users/liurongfu/Work/CMASS_lens_project/output\")`
+- API 与 CLI 已同步：
+  - 三个 API 的 `output_root_dir` 默认值改为上述常量
+  - 三个 CLI 的 `--output-dir` 从必填改为可选默认值，并在 help 中显示默认路径
+
 ## Fig. 8 类趋势图实现发现
 - histogram PPC 和 Fig. 8 趋势图是两类不同统计对象：
   - histogram PPC 比较的是固定样本量 replicated sample 的 summary statistics

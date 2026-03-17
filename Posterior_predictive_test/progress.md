@@ -167,3 +167,16 @@
   - PPC 返回 `status=completed`，`n_replicates=192000`
   - trends 返回 `status=completed`，`n_posterior_draws=256`, `n_mass_bins=19`
   - 7 个目标工件都晚于本次执行开始时间 `2026-03-11 14:31:36 CST`
+
+### 阶段 14：PPC 默认输出目录统一到项目根 output
+- **状态：** 已完成
+- **开始时间：** 2026-03-16
+- 已执行动作：
+  - 在 `cmass_posterior_predictive.predictive` 中新增 `DEFAULT_PPC_OUTPUT_ROOT_DIR`
+  - 将 `run_posterior_predictive`、`run_posterior_trends`、`wait_for_external_sigma_tables_and_run` 的 `output_root_dir` 改为可选默认参数
+  - 将 CLI 里 `posterior-predictive` / `posterior-trends` / `posterior-predictive-monitor` 的 `--output-dir` 从必填改为默认值
+  - 在 CLI 帮助文案中显示默认输出路径
+  - 更新测试以覆盖“省略 `--output-dir` 走默认目录”和“显式参数仍覆盖默认值”
+- 关键验证：
+  - `conda run -n cmass_lens pytest -q tests/test_cli_surface.py tests/test_posterior_predictive.py -k "public_defaults_use_1000_replicates or canonical_trend_defaults or standalone_cli_exposes_only_ppt_family_commands"` -> `3 passed`
+  - `conda run -n cmass_lens pytest -q tests/test_cli_surface.py tests/test_posterior_predictive.py` -> `38 passed`

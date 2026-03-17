@@ -1165,14 +1165,20 @@ def test_cli_posterior_predictive_command_executes_pipeline(tmp_path: Path) -> N
     assert payload["profile_name"] == "sersic"
     assert payload["sample_sizes"]["theta_ein"] == 23
     assert payload["sample_sizes"]["sigma"] == 7
-    assert Path(payload["result_dir"]).exists()
+    result_dir = Path(payload["result_dir"])
+    assert result_dir.exists()
+    assert result_dir.name == "ppc"
 
 
 def test_posterior_predictive_public_defaults_use_1000_replicates() -> None:
     """The public PPC defaults should use canonical tail-capped full-chain mode."""
 
     from cmass_posterior_predictive.cli import build_argument_parser
-    from cmass_posterior_predictive.predictive import run_posterior_predictive, wait_for_external_sigma_tables_and_run
+    from cmass_posterior_predictive.predictive import (
+        DEFAULT_PPC_OUTPUT_ROOT_DIR,
+        run_posterior_predictive,
+        wait_for_external_sigma_tables_and_run,
+    )
 
     parser = build_argument_parser()
     posterior_predictive_args = parser.parse_args(
@@ -1182,15 +1188,11 @@ def test_posterior_predictive_public_defaults_use_1000_replicates() -> None:
             "/tmp/run",
             "--sigma-table",
             "/tmp/table.npz",
-            "--output-dir",
-            "/tmp/output",
         ]
     )
     monitor_args = parser.parse_args(
         [
             "posterior-predictive-monitor",
-            "--output-dir",
-            "/tmp/output",
         ]
     )
 
@@ -1198,10 +1200,17 @@ def test_posterior_predictive_public_defaults_use_1000_replicates() -> None:
     assert monitor_args.n_replicates is None
     assert posterior_predictive_args.worker_processes is None
     assert monitor_args.worker_processes is None
+    assert Path(posterior_predictive_args.output_dir) == DEFAULT_PPC_OUTPUT_ROOT_DIR
+    assert Path(monitor_args.output_dir) == DEFAULT_PPC_OUTPUT_ROOT_DIR
     assert inspect.signature(run_posterior_predictive).parameters["n_replicates"].default is None
     assert inspect.signature(wait_for_external_sigma_tables_and_run).parameters["n_replicates"].default is None
     assert inspect.signature(run_posterior_predictive).parameters["worker_processes"].default is None
     assert inspect.signature(wait_for_external_sigma_tables_and_run).parameters["worker_processes"].default is None
+    assert Path(inspect.signature(run_posterior_predictive).parameters["output_root_dir"].default) == DEFAULT_PPC_OUTPUT_ROOT_DIR
+    assert (
+        Path(inspect.signature(wait_for_external_sigma_tables_and_run).parameters["output_root_dir"].default)
+        == DEFAULT_PPC_OUTPUT_ROOT_DIR
+    )
 
 
 def test_select_posterior_draws_defaults_to_tail_capped_chain() -> None:
@@ -1376,8 +1385,12 @@ def test_cli_posterior_predictive_monitor_command_waits_and_runs_both_profiles(t
     assert payload["status"] == "completed"
     assert payload["devauc_table_path"] == str(devauc_table_path.resolve())
     assert payload["sersic_table_path"] == str(sersic_table_path.resolve())
-    assert Path(payload["devauc_result"]["result_dir"]).exists()
-    assert Path(payload["sersic_result"]["result_dir"]).exists()
+    devauc_result_dir = Path(payload["devauc_result"]["result_dir"])
+    sersic_result_dir = Path(payload["sersic_result"]["result_dir"])
+    assert devauc_result_dir.exists()
+    assert sersic_result_dir.exists()
+    assert devauc_result_dir.name == "ppc"
+    assert sersic_result_dir.name == "ppc"
 
 
 def test_draw_trend_parent_population_samples_full_latent_distribution(tmp_path: Path) -> None:
@@ -1808,13 +1821,16 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
     assert payload["metadata"]["n_parent_sample"] == 72
     assert payload["metadata"]["worker_processes"] == 0
     assert payload["metadata"]["posterior_draw_mode"] == "sampled_subset"
-    assert Path(payload["result_dir"]).exists()
+    result_dir = Path(payload["result_dir"])
+    assert result_dir.exists()
+    assert result_dir.name == "ppc"
 
 
 def test_cli_surface_exposes_canonical_trend_defaults() -> None:
     """The trend CLI should default to canonical full-posterior mode and expose worker control."""
 
     from cmass_posterior_predictive.cli import build_argument_parser
+    from cmass_posterior_predictive.predictive import DEFAULT_PPC_OUTPUT_ROOT_DIR
     from cmass_posterior_predictive.trends import run_posterior_trends
 
     parser = build_argument_parser()
@@ -1825,13 +1841,12 @@ def test_cli_surface_exposes_canonical_trend_defaults() -> None:
             "/tmp/run",
             "--sigma-table",
             "/tmp/table.h5",
-            "--output-dir",
-            "/tmp/out",
         ]
     )
 
     assert args.n_posterior_draws is None
     assert args.worker_processes is None
+    assert Path(args.output_dir) == DEFAULT_PPC_OUTPUT_ROOT_DIR
     assert inspect.signature(run_posterior_trends).parameters["n_posterior_draws"].default is None
     assert inspect.signature(run_posterior_trends).parameters["worker_processes"].default is None
 
