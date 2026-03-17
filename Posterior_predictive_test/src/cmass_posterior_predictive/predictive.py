@@ -104,6 +104,24 @@ class ObservedTrendSeries:
     yerr_upper: np.ndarray
 
 
+@dataclass(frozen=True)
+class ObservedTrendSeries:
+    """
+    One quantity's observed points for the Fig. 8-style overlay.
+
+    The redraw command needs a small, explicit payload so the plotting code can
+    stay agnostic about HDF5 details. Each series therefore carries:
+    - `x`: stellar-mass positions for all observed points
+    - `y`: observed central values
+    - `yerr_lower` / `yerr_upper`: lower and upper vertical uncertainties
+    """
+
+    x: np.ndarray
+    y: np.ndarray
+    yerr_lower: np.ndarray
+    yerr_upper: np.ndarray
+
+
 def _trend_quantity_names(mass_definition: MassDefinition) -> tuple[str, str, str]:
     """Return the public quantity names for one trend run."""
 
