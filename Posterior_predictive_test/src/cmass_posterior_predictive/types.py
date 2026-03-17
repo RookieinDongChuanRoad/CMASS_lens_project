@@ -97,6 +97,27 @@ class PosteriorTrendResult:
 
 
 @dataclass
+class Fig8ObservationAnnotationResult:
+    """Structured summary of the in-place Fig. 8 observation-overlay workflow."""
+
+    status: str
+    outputs_root: Path
+    processed_run_count: int
+    processed_runs: list[dict[str, Any]] = field(default_factory=list)
+    skipped_runs: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the result into JSON-friendly data."""
+
+        payload = asdict(self)
+        for key, value in list(payload.items()):
+            if isinstance(value, Path):
+                payload[key] = str(value)
+        return payload
+
+
+@dataclass
 class NotebookComparisonResult:
     """Structured summary of the notebook-vs-pipeline comparison workflow."""
 

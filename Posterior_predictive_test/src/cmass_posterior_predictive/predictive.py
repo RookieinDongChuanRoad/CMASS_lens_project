@@ -22,6 +22,7 @@ import os
 import json
 import math
 import multiprocessing
+import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from scipy.special import ndtr, ndtri
 
 from cmass_lens_inference.compiled_context import build_compiled_context
 from cmass_lens_inference.config import load_runtime_config
+from cmass_lens_inference.profiles import build_profile_spec
 from cmass_lens_inference.mass_definition import MassDefinition, get_mass_definition, mass_definition_metadata
 from cmass_lens_inference.parameter_schema import (
     GAMMA_MODE_DEPENDENT_CODE,
@@ -50,6 +52,7 @@ from cmass_lens_inference.types import (
     ResolvedParallelism,
 )
 from .types import (
+    Fig8ObservationAnnotationResult,
     PosteriorPredictiveMonitorResult,
     PosteriorPredictiveResult,
     PosteriorTrendResult,
@@ -79,6 +82,24 @@ DEFAULT_TREND_MASS_BIN_COUNT = 19
 DEFAULT_TREND_MASS_BIN_MIN = 10.15
 DEFAULT_TREND_MASS_BIN_MAX = 12.05
 TREND_CATEGORY_NAMES = ("parent", "detectable", "selected")
+
+
+@dataclass(frozen=True)
+class ObservedTrendSeries:
+    """
+    One quantity's observed points for the Fig. 8-style overlay.
+
+    The redraw command needs a small, explicit payload so the plotting code can
+    stay agnostic about HDF5 details. Each series therefore carries:
+    - `x`: stellar-mass positions for all observed points
+    - `y`: observed central values
+    - `yerr_lower` / `yerr_upper`: lower and upper vertical uncertainties
+    """
+
+    x: np.ndarray
+    y: np.ndarray
+    yerr_lower: np.ndarray
+    yerr_upper: np.ndarray
 
 
 def _trend_quantity_names(mass_definition: MassDefinition) -> tuple[str, str, str]:
@@ -1768,6 +1789,177 @@ def _summarize_trend_draws(draws: np.ndarray) -> dict[str, np.ndarray]:
     return summaries
 
 
+def _infer_mass_definition_from_trend_npz_keys(dataset_names: set[str]) -> MassDefinition:
+    """
+    Infer whether an existing trend run is an `m5` or `m10` product.
+
+    The redraw workflow intentionally trusts the already-materialized `.npz`
+    artifact instead of directory names. This keeps the annotator aligned with
+    the actual plotted quantity even if a run is renamed or copied elsewhere.
+    """
+
+    if any(name.endswith("_m10_draws") for name in dataset_names):
+        return get_mass_definition(10)
+    return get_mass_definition(5)
+
+
+def _load_trend_summary_from_npz(npz_path: Path) -> tuple[np.ndarray, MassDefinition, dict[str, dict[str, dict[str, np.ndarray]]]]:
+    """
+    Reconstruct percentile bands directly from the saved trend draw arrays.
+
+    The annotator intentionally avoids `fig8_like_summary.json` because the
+    `.npz` contains the exact draw arrays that originally drove the figure.
+    Re-summarizing them keeps the redraw numerically faithful while remaining
+    independent of any historical summary-schema drift.
+    """
+
+    with np.load(npz_path) as arrays:
+        dataset_names = set(arrays.files)
+        mass_definition = _infer_mass_definition_from_trend_npz_keys(dataset_names)
+        mass_grid = np.asarray(arrays["mass_bin_centers"], dtype=float)
+        summary_payload: dict[str, dict[str, dict[str, np.ndarray]]] = {}
+        for quantity_name in _trend_quantity_names(mass_definition):
+            summary_payload[quantity_name] = {}
+            for category_name in TREND_CATEGORY_NAMES:
+                draw_key = f"{category_name}_{quantity_name}_draws"
+                summary_payload[quantity_name][category_name] = _summarize_trend_draws(
+                    np.asarray(arrays[draw_key], dtype=float)
+                )
+    return mass_grid, mass_definition, summary_payload
+
+
+def _resolve_first_matching_attr(group: h5py.Group, aliases: tuple[str, ...]) -> float:
+    """
+    Resolve the first available HDF5 attribute among a set of aliases.
+
+    The observation files have profile-dependent stellar-mass field names. The
+    redraw logic therefore mirrors the inference-side alias policy instead of
+    hardcoding a single attribute per profile.
+    """
+
+    for alias in aliases:
+        if alias in group.attrs:
+            return float(group.attrs[alias])
+    raise KeyError(f"None of the requested aliases were found in group '{group.name}': {aliases}")
+
+
+def _load_observed_trend_points(
+    observation_path: Path,
+    profile_name: str,
+    mass_definition: MassDefinition,
+) -> dict[str, ObservedTrendSeries]:
+    """
+    Load the observed Fig. 8 scatter points from the raw HDF5 file.
+
+    The user-prepared attrs already store the per-lens flat-prior summaries for
+    `m5/m10` and `gamma`, so this helper only needs to map them into plotting
+    arrays. The sigma panel is different: it should show every raw
+    velocity-dispersion measurement, including both entries for `num_sigma=2`
+    lenses, so that panel expands one lens into one or two points.
+    """
+
+    profile_spec = build_profile_spec(profile_name)
+    mass_quantity = mass_definition.label
+    mass_x_values: list[float] = []
+    mass_y_values: list[float] = []
+    mass_lower_errors: list[float] = []
+    mass_upper_errors: list[float] = []
+    gamma_x_values: list[float] = []
+    gamma_y_values: list[float] = []
+    gamma_lower_errors: list[float] = []
+    gamma_upper_errors: list[float] = []
+    sigma_x_values: list[float] = []
+    sigma_y_values: list[float] = []
+    sigma_lower_errors: list[float] = []
+    sigma_upper_errors: list[float] = []
+
+    with h5py.File(observation_path, "r") as handle:
+        for group_name in sorted(handle.keys()):
+            group = handle[group_name]
+            num_sigma = int(group.attrs.get("num_sigma", 0))
+            if num_sigma <= 0:
+                continue
+
+            stellar_mass = _resolve_first_matching_attr(group, profile_spec.observation_field_aliases["stellar_mass"])
+
+            mass_mid = float(group.attrs[f"{mass_quantity}_mid"])
+            mass_lower = float(group.attrs[f"{mass_quantity}_lower"])
+            mass_upper = float(group.attrs[f"{mass_quantity}_upper"])
+            gamma_mid = float(group.attrs["gamma_mid"])
+            gamma_lower = float(group.attrs["gamma_lower"])
+            gamma_upper = float(group.attrs["gamma_upper"])
+            mass_lower_error, mass_upper_error = _coerce_observed_error_components(
+                mid_value=mass_mid,
+                lower_value=mass_lower,
+                upper_value=mass_upper,
+            )
+            gamma_lower_error, gamma_upper_error = _coerce_observed_error_components(
+                mid_value=gamma_mid,
+                lower_value=gamma_lower,
+                upper_value=gamma_upper,
+            )
+
+            mass_x_values.append(stellar_mass)
+            mass_y_values.append(mass_mid)
+            mass_lower_errors.append(mass_lower_error)
+            mass_upper_errors.append(mass_upper_error)
+
+            gamma_x_values.append(stellar_mass)
+            gamma_y_values.append(gamma_mid)
+            gamma_lower_errors.append(gamma_lower_error)
+            gamma_upper_errors.append(gamma_upper_error)
+
+            sigma_values = np.atleast_1d(np.asarray(group.attrs["sigma"], dtype=float))
+            sigma_errors = np.atleast_1d(np.asarray(group.attrs["sigma_err"], dtype=float))
+            if sigma_values.shape != sigma_errors.shape:
+                raise ValueError(
+                    f"Group '{group.name}' has mismatched sigma and sigma_err shapes: "
+                    f"{sigma_values.shape} vs {sigma_errors.shape}."
+                )
+            for sigma_value, sigma_error in zip(sigma_values, sigma_errors, strict=True):
+                sigma_x_values.append(stellar_mass)
+                sigma_y_values.append(float(sigma_value))
+                sigma_lower_errors.append(float(sigma_error))
+                sigma_upper_errors.append(float(sigma_error))
+
+    return {
+        mass_quantity: ObservedTrendSeries(
+            x=np.asarray(mass_x_values, dtype=float),
+            y=np.asarray(mass_y_values, dtype=float),
+            yerr_lower=np.asarray(mass_lower_errors, dtype=float),
+            yerr_upper=np.asarray(mass_upper_errors, dtype=float),
+        ),
+        "gamma": ObservedTrendSeries(
+            x=np.asarray(gamma_x_values, dtype=float),
+            y=np.asarray(gamma_y_values, dtype=float),
+            yerr_lower=np.asarray(gamma_lower_errors, dtype=float),
+            yerr_upper=np.asarray(gamma_upper_errors, dtype=float),
+        ),
+        "sigma_ap": ObservedTrendSeries(
+            x=np.asarray(sigma_x_values, dtype=float),
+            y=np.asarray(sigma_y_values, dtype=float),
+            yerr_lower=np.asarray(sigma_lower_errors, dtype=float),
+            yerr_upper=np.asarray(sigma_upper_errors, dtype=float),
+        ),
+    }
+
+
+def _coerce_observed_error_components(mid_value: float, lower_value: float, upper_value: float) -> tuple[float, float]:
+    """
+    Convert raw `lower` / `upper` attrs into strictly non-negative y-errors.
+
+    Two encodings need to be supported:
+    - synthetic tests store absolute interval bounds around `mid`
+    - production raw files store already-computed lower / upper error magnitudes
+    The branch below keeps both representations valid without forcing the raw
+    producer and test fixtures into the same convention.
+    """
+
+    if lower_value <= mid_value <= upper_value:
+        return (mid_value - lower_value, upper_value - mid_value)
+    return (abs(lower_value), abs(upper_value))
+
+
 def _write_trend_panel(
     ax,
     mass_grid: np.ndarray,
@@ -1775,6 +1967,8 @@ def _write_trend_panel(
     detectable_summary: dict[str, np.ndarray],
     selected_summary: dict[str, np.ndarray],
     y_label: str,
+    observed_series: ObservedTrendSeries | None = None,
+    observed_label: str | None = None,
 ) -> None:
     """
     Render one panel of the Fig. 8-like trend figure.
@@ -1824,6 +2018,23 @@ def _write_trend_panel(
         linewidth=2.0,
         linestyle="--",
     )
+    if observed_series is not None and observed_series.x.size > 0:
+        ax.errorbar(
+            observed_series.x,
+            observed_series.y,
+            yerr=np.vstack((observed_series.yerr_lower, observed_series.yerr_upper)),
+            fmt="o",
+            color="#111111",
+            ecolor="#111111",
+            elinewidth=1.1,
+            capsize=2.5,
+            markersize=4.5,
+            markerfacecolor="#111111",
+            markeredgecolor="#111111",
+            linestyle="none",
+            zorder=6,
+            label=observed_label,
+        )
     ax.set_ylabel(y_label, fontsize=10)
     ax.tick_params(labelsize=8)
 
@@ -1833,6 +2044,7 @@ def _write_fig8_like_figure(
     mass_grid: np.ndarray,
     summary_payload: dict[str, dict[str, dict[str, np.ndarray]]],
     mass_definition: MassDefinition,
+    observed_points: dict[str, ObservedTrendSeries] | None = None,
 ) -> None:
     """Render the three-panel Fig. 8-like trend figure."""
 
@@ -1851,10 +2063,12 @@ def _write_fig8_like_figure(
             detectable_summary=summary_payload[quantity_name]["detectable"],
             selected_summary=summary_payload[quantity_name]["selected"],
             y_label=y_label,
+            observed_series=None if observed_points is None else observed_points.get(quantity_name),
+            observed_label="Observed lenses" if observed_points is not None and quantity_name == mass_definition.label else None,
         )
 
     handles, labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(handles[:3], labels[:3], loc="upper left", fontsize=8, frameon=False)
+    axes[0].legend(handles, labels, loc="upper left", fontsize=8, frameon=False)
     axes[-1].set_xlabel(r"log $M_*/M_\odot$", fontsize=10)
     figure.tight_layout()
     figure.savefig(figure_path, dpi=180)
@@ -2168,6 +2382,124 @@ def run_posterior_trends(
             "parallel_strategy": parallelism.strategy,
             "worker_processes": int(parallelism.worker_processes),
             "parallelism": parallelism.to_dict(),
+        },
+    )
+
+
+def _discover_unarchived_trend_run_dirs(outputs_root: Path) -> list[tuple[str, Path]]:
+    """
+    Return all profile run directories whose Fig. 8 products live under `ppc/`.
+
+    The user only wants the active, unarchived runs under `outputs/devauc/*`
+    and `outputs/sersic/*`. This helper therefore ignores the `archived`
+    branch entirely and only returns directories that already contain the
+    trend-array artifact needed for redraw.
+    """
+
+    discovered: list[tuple[str, Path]] = []
+    for profile_name in ("devauc", "sersic"):
+        profile_root = outputs_root / profile_name
+        if not profile_root.exists():
+            continue
+        for run_dir in sorted(profile_root.iterdir()):
+            if not run_dir.is_dir() or run_dir.name in {"archived", "latest"}:
+                continue
+            ppc_dir = run_dir / "ppc"
+            if (ppc_dir / "fig8_like_curves.npz").exists() and (ppc_dir / "fig8_like.png").exists():
+                discovered.append((profile_name, run_dir))
+    return discovered
+
+
+def _backup_existing_figure(figure_path: Path, backup_prefix: str) -> Path:
+    """
+    Copy the current PNG aside before overwriting it.
+
+    The redraw workflow is intentionally destructive in-place because the user
+    wants the same figure path to keep working. Creating a timestamped backup
+    first preserves the old render for audit and comparison.
+    """
+
+    timestamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%dT%H%M%S")
+    backup_path = figure_path.with_name(f"{figure_path.stem}.{backup_prefix}.{timestamp}.bak{figure_path.suffix}")
+    shutil.copy2(figure_path, backup_path)
+    return backup_path
+
+
+def annotate_existing_fig8_like_figures_with_observations(
+    outputs_root: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
+    raw_devauc_path: str | Path = "/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_mass_grids.hdf5",
+    raw_sersic_path: str | Path = "/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5",
+    backup_prefix: str = "pre_observed_points",
+) -> Fig8ObservationAnnotationResult:
+    """
+    Re-render existing Fig. 8-like figures with observed lens points overlaid.
+
+    This post-processing command exists specifically for the production use
+    case where trend draws are already saved under `fig8_like_curves.npz`.
+    Reusing those arrays avoids rerunning the expensive Monte Carlo trend
+    workflow while still letting the user iterate on figure presentation.
+    """
+
+    resolved_outputs_root = Path(outputs_root).expanduser().resolve()
+    raw_paths = {
+        "devauc": Path(raw_devauc_path).expanduser().resolve(),
+        "sersic": Path(raw_sersic_path).expanduser().resolve(),
+    }
+    processed_runs: list[dict[str, Any]] = []
+    skipped_runs: list[dict[str, Any]] = []
+
+    for profile_name, run_dir in _discover_unarchived_trend_run_dirs(resolved_outputs_root):
+        ppc_dir = run_dir / "ppc"
+        npz_path = ppc_dir / "fig8_like_curves.npz"
+        figure_path = ppc_dir / "fig8_like.png"
+        try:
+            mass_grid, mass_definition, trend_summary = _load_trend_summary_from_npz(npz_path)
+            observed_points = _load_observed_trend_points(
+                observation_path=raw_paths[profile_name],
+                profile_name=profile_name,
+                mass_definition=mass_definition,
+            )
+            backup_path = _backup_existing_figure(figure_path=figure_path, backup_prefix=backup_prefix)
+            _write_fig8_like_figure(
+                figure_path=figure_path,
+                mass_grid=mass_grid,
+                summary_payload=trend_summary,
+                mass_definition=mass_definition,
+                observed_points=observed_points,
+            )
+            processed_runs.append(
+                {
+                    "profile_name": profile_name,
+                    "run_id": run_dir.name,
+                    "figure_path": str(figure_path),
+                    "backup_path": str(backup_path),
+                    "mass_quantity": mass_definition.label,
+                    "observed_mass_points": int(observed_points[mass_definition.label].x.size),
+                    "observed_gamma_points": int(observed_points["gamma"].x.size),
+                    "observed_sigma_points": int(observed_points["sigma_ap"].x.size),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - exercised through CLI result surface
+            skipped_runs.append(
+                {
+                    "profile_name": profile_name,
+                    "run_id": run_dir.name,
+                    "figure_path": str(figure_path),
+                    "reason": str(exc),
+                }
+            )
+
+    status = "completed" if processed_runs else "no_runs_processed"
+    return Fig8ObservationAnnotationResult(
+        status=status,
+        outputs_root=resolved_outputs_root,
+        processed_run_count=len(processed_runs),
+        processed_runs=processed_runs,
+        skipped_runs=skipped_runs,
+        metadata={
+            "raw_devauc_path": str(raw_paths["devauc"]),
+            "raw_sersic_path": str(raw_paths["sersic"]),
+            "backup_prefix": backup_prefix,
         },
     )
 

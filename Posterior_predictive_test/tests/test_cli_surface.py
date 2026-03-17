@@ -39,6 +39,11 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
             "posterior-predictive-monitor",
         ]
     )
+    annotate_args = parser.parse_args(
+        [
+            "annotate-fig8-observations",
+        ]
+    )
     notebook_comparison_args = parser.parse_args(
         [
             "notebook-comparison",
@@ -58,6 +63,7 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
     assert posterior_predictive_args.command == "posterior-predictive"
     assert posterior_trends_args.command == "posterior-trends"
     assert monitor_args.command == "posterior-predictive-monitor"
+    assert annotate_args.command == "annotate-fig8-observations"
     assert notebook_comparison_args.command == "notebook-comparison"
 
 
@@ -98,7 +104,15 @@ def test_standalone_cli_output_dir_explicit_override_wins() -> None:
             output_root,
         ]
     )
+    annotate_args = parser.parse_args(
+        [
+            "annotate-fig8-observations",
+            "--outputs-root",
+            output_root,
+        ]
+    )
 
     assert posterior_predictive_args.output_dir == output_root
     assert posterior_trends_args.output_dir == output_root
     assert monitor_args.output_dir == output_root
+    assert annotate_args.outputs_root == output_root

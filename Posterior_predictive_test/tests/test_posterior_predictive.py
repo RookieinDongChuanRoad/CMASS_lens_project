@@ -94,6 +94,17 @@ def _write_observation_file(path: Path, profile_name: str) -> Path:
 
             if lens_index < 7:
                 group.attrs["num_sigma"] = 1 if lens_index < 4 else 2
+                mass_mid = 11.20 + 0.03 * lens_index
+                group.attrs["m5_mid"] = mass_mid
+                group.attrs["m5_lower"] = mass_mid - 0.08
+                group.attrs["m5_upper"] = mass_mid + 0.06
+                group.attrs["m10_mid"] = mass_mid + 0.12
+                group.attrs["m10_lower"] = mass_mid + 0.03
+                group.attrs["m10_upper"] = mass_mid + 0.20
+                gamma_mid = 2.00 - 0.02 * lens_index
+                group.attrs["gamma_mid"] = gamma_mid
+                group.attrs["gamma_lower"] = gamma_mid - 0.12
+                group.attrs["gamma_upper"] = gamma_mid + 0.10
                 if lens_index < 4:
                     group.attrs["sigma"] = np.asarray([250.0 + 5.0 * lens_index], dtype=float)
                     group.attrs["sigma_err"] = np.asarray([12.0 + lens_index], dtype=float)
@@ -1849,6 +1860,68 @@ def test_cli_surface_exposes_canonical_trend_defaults() -> None:
     assert Path(args.output_dir) == DEFAULT_PPC_OUTPUT_ROOT_DIR
     assert inspect.signature(run_posterior_trends).parameters["n_posterior_draws"].default is None
     assert inspect.signature(run_posterior_trends).parameters["worker_processes"].default is None
+
+
+def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_path: Path) -> None:
+    """The figure annotator should back up the old PNG and rewrite it in place."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
+    output_root = tmp_path / "outputs"
+    trend_result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(output_root),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=131,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    figure_path = trend_result.result_dir / "fig8_like.png"
+    before_bytes = figure_path.read_bytes()
+    raw_observation_path = run_dir.parent.parent.parent / "data" / "devauc_observations.hdf5"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cmass_posterior_predictive.cli",
+            "annotate-fig8-observations",
+            "--outputs-root",
+            str(output_root),
+            "--raw-devauc",
+            str(raw_observation_path),
+            "--raw-sersic",
+            str(raw_observation_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["status"] == "completed"
+    assert payload["processed_run_count"] == 1
+    assert payload["processed_runs"][0]["profile_name"] == "devauc"
+    assert payload["processed_runs"][0]["mass_quantity"] == "m10"
+    assert payload["processed_runs"][0]["observed_mass_points"] == 7
+    assert payload["processed_runs"][0]["observed_gamma_points"] == 7
+    assert payload["processed_runs"][0]["observed_sigma_points"] == 10
+
+    after_bytes = figure_path.read_bytes()
+    backup_paths = sorted(trend_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
+
+    assert backup_paths
+    assert backup_paths[0].read_bytes() == before_bytes
+    assert after_bytes != before_bytes
 
 
 def test_cli_posterior_trends_rejects_removed_conditional_curve_arguments(tmp_path: Path) -> None:

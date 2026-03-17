@@ -22,6 +22,7 @@ from .predictive import (
     DEFAULT_TREND_MASS_BIN_MIN,
     DEFAULT_TREND_PARENT_SAMPLE_SIZE,
     DEFAULT_TREND_POSTERIOR_DRAWS,
+    annotate_existing_fig8_like_figures_with_observations,
     run_posterior_predictive,
     wait_for_external_sigma_tables_and_run,
 )
@@ -95,6 +96,25 @@ def build_argument_parser() -> argparse.ArgumentParser:
     monitor_parser.add_argument("--seed", type=int, default=20260309)
     monitor_parser.add_argument("--candidate-pool-size", type=int, default=None)
     monitor_parser.add_argument("--worker-processes", type=int, default=None)
+
+    annotate_parser = subparsers.add_parser(
+        "annotate-fig8-observations",
+        help="Backup and rewrite existing Fig. 8-like PNGs with observed lens points",
+    )
+    annotate_parser.add_argument(
+        "--outputs-root",
+        default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
+        help=f"Root directory containing profile run trees (default: {DEFAULT_PPC_OUTPUT_ROOT_DIR})",
+    )
+    annotate_parser.add_argument(
+        "--raw-devauc",
+        default="/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_mass_grids.hdf5",
+    )
+    annotate_parser.add_argument(
+        "--raw-sersic",
+        default="/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5",
+    )
+    annotate_parser.add_argument("--backup-prefix", default="pre_observed_points")
 
     comparison_parser = subparsers.add_parser("notebook-comparison", help="Compare notebook and standalone PPT")
     comparison_parser.add_argument("--chain-path", required=True)
@@ -181,6 +201,13 @@ def main() -> None:
             random_seed=args.seed,
             candidate_pool_size=args.candidate_pool_size,
             worker_processes=args.worker_processes,
+        )
+    elif args.command == "annotate-fig8-observations":
+        result = annotate_existing_fig8_like_figures_with_observations(
+            outputs_root=args.outputs_root,
+            raw_devauc_path=args.raw_devauc,
+            raw_sersic_path=args.raw_sersic,
+            backup_prefix=args.backup_prefix,
         )
     else:
         result = run_notebook_pipeline_comparison(
