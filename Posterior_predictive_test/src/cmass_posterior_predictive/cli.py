@@ -107,6 +107,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help=f"Root directory containing profile run trees (default: {DEFAULT_PPC_OUTPUT_ROOT_DIR})",
     )
     annotate_parser.add_argument(
+        "--run-dir",
+        action="append",
+        default=None,
+        help="Explicit run directory to process. May be provided multiple times.",
+    )
+    annotate_parser.add_argument(
         "--raw-devauc",
         default="/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_mass_grids.hdf5",
     )
@@ -205,6 +211,7 @@ def main() -> None:
     elif args.command == "annotate-fig8-observations":
         result = annotate_existing_fig8_like_figures_with_observations(
             outputs_root=args.outputs_root,
+            run_dirs=args.run_dir,
             raw_devauc_path=args.raw_devauc,
             raw_sersic_path=args.raw_sersic,
             backup_prefix=args.backup_prefix,

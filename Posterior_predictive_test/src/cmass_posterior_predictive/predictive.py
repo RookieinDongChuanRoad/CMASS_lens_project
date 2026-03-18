@@ -2457,6 +2457,60 @@ def _discover_unarchived_trend_run_dirs(outputs_root: Path) -> list[tuple[str, P
     return discovered
 
 
+def _resolve_profile_name_for_annotation_run(run_dir: Path, outputs_root: Path) -> str:
+    """
+    Infer the profile branch for one explicit run directory.
+
+    Explicit `--run-dir` inputs should still share the same raw-observation
+    routing as auto-discovered runs. We resolve the profile from the path under
+    the configured outputs root so callers do not need to repeat it manually.
+    """
+
+    resolved_run_dir = run_dir.expanduser().resolve()
+    resolved_outputs_root = outputs_root.expanduser().resolve()
+    try:
+        relative_parts = resolved_run_dir.relative_to(resolved_outputs_root).parts
+    except ValueError as exc:
+        raise ValueError(
+            f"Run directory '{resolved_run_dir}' is not located under outputs root '{resolved_outputs_root}'."
+        ) from exc
+    if len(relative_parts) < 2 or relative_parts[0] not in {"devauc", "sersic"}:
+        raise ValueError(
+            f"Run directory '{resolved_run_dir}' does not follow the expected '<outputs>/<profile>/<run>' layout."
+        )
+    return relative_parts[0]
+
+
+def _resolve_requested_annotation_runs(
+    outputs_root: Path,
+    run_dirs: list[str] | None,
+) -> list[tuple[str, Path]]:
+    """
+    Resolve either explicit run selections or the legacy auto-discovery set.
+
+    The redraw command originally processed every unarchived run. Supporting
+    `--run-dir` should not break that workflow, so explicit run lists simply
+    override the discovery step while preserving the same `(profile, run_dir)`
+    contract for downstream code.
+    """
+
+    if not run_dirs:
+        return _discover_unarchived_trend_run_dirs(outputs_root)
+
+    resolved_pairs: list[tuple[str, Path]] = []
+    for raw_run_dir in run_dirs:
+        run_dir = Path(raw_run_dir).expanduser().resolve()
+        if not run_dir.exists() or not run_dir.is_dir():
+            raise ValueError(f"Explicit run directory '{run_dir}' does not exist or is not a directory.")
+        ppc_dir = run_dir / "ppc"
+        if not (ppc_dir / "fig8_like_curves.npz").exists() or not (ppc_dir / "fig8_like.png").exists():
+            raise ValueError(
+                f"Explicit run directory '{run_dir}' is missing 'ppc/fig8_like_curves.npz' or 'ppc/fig8_like.png'."
+            )
+        resolved_pairs.append((_resolve_profile_name_for_annotation_run(run_dir, outputs_root), run_dir))
+    return resolved_pairs
+
+
 def _backup_existing_figure(figure_path: Path, backup_prefix: str) -> Path:
     """
     Copy the current PNG aside before overwriting it.
@@ -2474,6 +2528,7 @@ def _backup_existing_figure(figure_path: Path, backup_prefix: str) -> Path:
 
 def annotate_existing_fig8_like_figures_with_observations(
     outputs_root: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
+    run_dirs: list[str] | None = None,
     raw_devauc_path: str | Path = "/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_mass_grids.hdf5",
     raw_sersic_path: str | Path = "/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5",
     backup_prefix: str = "pre_observed_points",
@@ -2495,7 +2550,7 @@ def annotate_existing_fig8_like_figures_with_observations(
     processed_runs: list[dict[str, Any]] = []
     skipped_runs: list[dict[str, Any]] = []
 
-    for profile_name, run_dir in _discover_unarchived_trend_run_dirs(resolved_outputs_root):
+    for profile_name, run_dir in _resolve_requested_annotation_runs(resolved_outputs_root, run_dirs):
         ppc_dir = run_dir / "ppc"
         npz_path = ppc_dir / "fig8_like_curves.npz"
         figure_path = ppc_dir / "fig8_like.png"
@@ -2547,6 +2602,7 @@ def annotate_existing_fig8_like_figures_with_observations(
             "raw_devauc_path": str(raw_paths["devauc"]),
             "raw_sersic_path": str(raw_paths["sersic"]),
             "backup_prefix": backup_prefix,
+            "requested_run_dirs": [] if not run_dirs else [str(Path(path).expanduser().resolve()) for path in run_dirs],
         },
     )
 

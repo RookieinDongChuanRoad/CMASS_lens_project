@@ -42,6 +42,10 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
     annotate_args = parser.parse_args(
         [
             "annotate-fig8-observations",
+            "--run-dir",
+            "/tmp/run-a",
+            "--run-dir",
+            "/tmp/run-b",
         ]
     )
     notebook_comparison_args = parser.parse_args(
@@ -64,6 +68,7 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
     assert posterior_trends_args.command == "posterior-trends"
     assert monitor_args.command == "posterior-predictive-monitor"
     assert annotate_args.command == "annotate-fig8-observations"
+    assert annotate_args.run_dir == ["/tmp/run-a", "/tmp/run-b"]
     assert notebook_comparison_args.command == "notebook-comparison"
 
 

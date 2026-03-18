@@ -2100,6 +2100,120 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
     assert after_bytes != before_bytes
 
 
+def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Path) -> None:
+    """Explicit `--run-dir` arguments should limit annotation to the requested runs only."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    devauc_run_dir, devauc_sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="devauc",
+        mass_radius_kpc=10,
+    )
+    sersic_run_dir, sersic_sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        mass_radius_kpc=10,
+    )
+    extra_run_dir, extra_sigma_table_path = _build_completed_run(
+        tmp_path / "extra_case",
+        profile_name="devauc",
+        mass_radius_kpc=10,
+    )
+    renamed_extra_run_dir = extra_run_dir.with_name(f"{extra_run_dir.name}_extra")
+    extra_run_dir.rename(renamed_extra_run_dir)
+    extra_run_dir = renamed_extra_run_dir
+    output_root = tmp_path / "outputs"
+
+    devauc_result = run_posterior_trends(
+        run_dir=str(devauc_run_dir),
+        sigma_table_path=str(devauc_sigma_table_path),
+        output_root_dir=str(output_root),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=141,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+    sersic_result = run_posterior_trends(
+        run_dir=str(sersic_run_dir),
+        sigma_table_path=str(sersic_sigma_table_path),
+        output_root_dir=str(output_root),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=143,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+    extra_result = run_posterior_trends(
+        run_dir=str(extra_run_dir),
+        sigma_table_path=str(extra_sigma_table_path),
+        output_root_dir=str(output_root),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=145,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    devauc_before = (devauc_result.result_dir / "fig8_like.png").read_bytes()
+    sersic_before = (sersic_result.result_dir / "fig8_like.png").read_bytes()
+    extra_before = (extra_result.result_dir / "fig8_like.png").read_bytes()
+    devauc_raw = devauc_run_dir.parent.parent.parent / "data" / "devauc_observations.hdf5"
+    sersic_raw = sersic_run_dir.parent.parent.parent / "data" / "sersic_observations.hdf5"
+    devauc_output_run_dir = devauc_result.result_dir.parent
+    sersic_output_run_dir = sersic_result.result_dir.parent
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cmass_posterior_predictive.cli",
+            "annotate-fig8-observations",
+            "--outputs-root",
+            str(output_root),
+            "--run-dir",
+            str(devauc_output_run_dir),
+            "--run-dir",
+            str(sersic_output_run_dir),
+            "--raw-devauc",
+            str(devauc_raw),
+            "--raw-sersic",
+            str(sersic_raw),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["status"] == "completed"
+    assert payload["processed_run_count"] == 2
+    assert {run["run_id"] for run in payload["processed_runs"]} == {
+        devauc_output_run_dir.name,
+        sersic_output_run_dir.name,
+    }
+    assert not payload["skipped_runs"]
+
+    assert (devauc_result.result_dir / "fig8_like.png").read_bytes() != devauc_before
+    assert (sersic_result.result_dir / "fig8_like.png").read_bytes() != sersic_before
+    assert (extra_result.result_dir / "fig8_like.png").read_bytes() == extra_before
+    assert sorted(devauc_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
+    assert sorted(sersic_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
+    assert not sorted(extra_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
+
+
 def test_cli_posterior_trends_rejects_removed_conditional_curve_arguments(tmp_path: Path) -> None:
     """The CLI should fail loudly when callers use the retired mass-grid arguments."""
 
