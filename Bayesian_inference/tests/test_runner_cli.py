@@ -25,6 +25,7 @@ from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 from cmass_lens_inference.outputs import create_run_layout, save_checkpoint
 from cmass_lens_inference.runner import resume_inference, run_inference
+from cmass_lens_inference.sampler import _summarize_recent_blobs
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +99,71 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
         assert "chain" not in handle
         assert "log_prob" not in handle
         assert "mcmc" in handle
+
+
+def test_log_prob_blob_dtype_includes_fp_prior_diagnostics() -> None:
+    """The sampler blob schema should reserve stable fields for FP diagnostics."""
+
+    assert set(LOG_PROB_BLOB_DTYPE.names or ()) >= {
+        "fp_prior_seconds",
+        "fp_prior_log_term",
+        "fpfit_mu",
+        "fpfit_beta",
+        "fpfit_xi",
+        "fpfit_scatter",
+    }
+
+
+def test_progress_summary_includes_fp_prior_stage_timing() -> None:
+    """
+    Stage-timing summaries should expose FP time as a separate number.
+
+    The performance regression that motivated this refactor was hard to diagnose
+    because FP summary work was silently folded into the generic normalization
+    bucket. Keeping `fp` visible in the run log makes future regressions much
+    easier to localize.
+    """
+
+    class ParallelismStub:
+        worker_processes = 0
+        kernel_threads_per_process = 12
+        strategy = "kernel_only"
+
+    blobs = np.zeros(2, dtype=LOG_PROB_BLOB_DTYPE)
+    blobs["total_log_prob_seconds"] = [1.0, 2.0]
+    blobs["likelihood_seconds"] = [0.2, 0.4]
+    blobs["normalization_seconds"] = [0.3, 0.5]
+    blobs["fp_prior_seconds"] = [0.7, 0.9]
+
+    summary_line = _summarize_recent_blobs(list(blobs), 25, 100, ParallelismStub())
+
+    assert "lp 1.50s" in summary_line
+    assert "lens 0.30s" in summary_line
+    assert "norm 0.40s" in summary_line
+    assert "fp 0.80s" in summary_line
+    assert "strategy kernel_only" in summary_line
+
+
+def test_run_inference_serializes_fp_prior_metadata(
+    synthetic_fp_prior_config_path: Path,
+) -> None:
+    """FP-enabled runs should persist the sigma-table contract in both metadata files."""
+
+    runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
+    run_result = run_inference(str(synthetic_fp_prior_config_path))
+
+    metadata_payload = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
+    run_result_payload = json.loads((run_result.run_dir / "run_result.json").read_text(encoding="utf-8"))
+
+    assert run_result.metadata["fp_prior"]["enabled"] is True
+    assert run_result.metadata["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
+    assert run_result.metadata["sigma_table_mass_definition"] == runtime_config.mass_definition.label
+    assert metadata_payload["fp_prior"]["enabled"] is True
+    assert metadata_payload["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
+    assert metadata_payload["sigma_table_mass_definition"] == runtime_config.mass_definition.label
+    assert run_result_payload["metadata"]["fp_prior"]["enabled"] is True
+    assert run_result_payload["metadata"]["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
+    assert run_result_payload["metadata"]["sigma_table_mass_definition"] == runtime_config.mass_definition.label
 
 
 def test_chain_h5_is_readable_by_emcee_hdf_backend(synthetic_config_path: Path) -> None:
@@ -306,6 +372,32 @@ def test_run_inference_supports_process_pool_strategy(synthetic_config_path: Pat
     assert run_result.metadata["parallelism"]["worker_processes"] == 2
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
     assert "strategy process_pool" in run_log_text
+
+
+def test_run_inference_supports_process_pool_strategy_with_fp_prior(
+    synthetic_fp_prior_config_path: Path,
+) -> None:
+    """
+    FP-enabled runs should stay compatible with the process-pool strategy.
+
+    The main performance target is `kernel_only`, but keeping `fp_prior=true`
+    functional under spawn-based walker parallelism protects an existing public
+    runtime option and guards against nested-thread regressions.
+    """
+
+    config_text = synthetic_fp_prior_config_path.read_text(encoding="utf-8")
+    config_text = config_text.replace("parallel_strategy: auto", "parallel_strategy: process_pool")
+    config_text = config_text.replace("num_threads: 0", "num_threads: 2")
+    synthetic_fp_prior_config_path.write_text(config_text, encoding="utf-8")
+
+    run_result = run_inference(str(synthetic_fp_prior_config_path))
+
+    assert run_result.metadata["parallelism"]["strategy"] == "process_pool"
+    assert run_result.metadata["parallelism"]["worker_processes"] == 2
+    assert run_result.metadata["fp_prior"]["enabled"] is True
+    run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
+    assert "strategy process_pool" in run_log_text
+    assert "fp " in run_log_text
 
 
 def test_run_inference_serializes_m10_mass_definition_metadata(

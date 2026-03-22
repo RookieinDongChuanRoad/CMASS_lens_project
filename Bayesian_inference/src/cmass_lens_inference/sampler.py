@@ -39,7 +39,10 @@ class LogProbEvaluator:
     def close(self) -> None:
         """Provide a stable close hook for caller symmetry."""
 
-    def __call__(self, theta_vector: np.ndarray) -> tuple[float, float, float, float, float, bytes]:
+    def __call__(
+        self,
+        theta_vector: np.ndarray,
+    ) -> tuple[float, float, float, float, float, float, float, float, float, float, float, bytes]:
         if self.runtime_context.compiled_model is None:
             raise RuntimeError("RuntimeContext is missing the compiled model required by the sampler.")
         log_prob_value, blob = compiled_model_log_prob(
@@ -51,7 +54,13 @@ class LogProbEvaluator:
             float(blob["total_log_prob_seconds"]),
             float(blob["likelihood_seconds"]),
             float(blob["normalization_seconds"]),
+            float(blob["fp_prior_seconds"]),
             float(blob["normalization_value"]),
+            float(blob["fp_prior_log_term"]),
+            float(blob["fpfit_mu"]),
+            float(blob["fpfit_beta"]),
+            float(blob["fpfit_xi"]),
+            float(blob["fpfit_scatter"]),
             bytes(blob["parallel_strategy"]),
         )
 
@@ -64,7 +73,9 @@ def _worker_initializer(runtime_context: RuntimeContext) -> None:
     _PROCESS_LOCAL_EVALUATOR = LogProbEvaluator(runtime_context)
 
 
-def _process_local_log_prob(theta_vector: np.ndarray) -> tuple[float, float, float, float, float, bytes]:
+def _process_local_log_prob(
+    theta_vector: np.ndarray,
+) -> tuple[float, float, float, float, float, float, float, float, float, float, float, bytes]:
     """Delegate process-pool log-prob evaluation to worker-local state."""
 
     if _PROCESS_LOCAL_EVALUATOR is None:
@@ -281,11 +292,13 @@ def _summarize_recent_blobs(
     total_times = np.array([float(blob["total_log_prob_seconds"]) for blob in recent_blobs], dtype=float)
     likelihood_times = np.array([float(blob["likelihood_seconds"]) for blob in recent_blobs], dtype=float)
     normalization_times = np.array([float(blob["normalization_seconds"]) for blob in recent_blobs], dtype=float)
+    fp_prior_times = np.array([float(blob["fp_prior_seconds"]) for blob in recent_blobs], dtype=float)
     return (
         f"step {current_step}/{total_steps} | "
         f"lp {total_times.mean():.2f}s | "
         f"lens {likelihood_times.mean():.2f}s | "
         f"norm {normalization_times.mean():.2f}s | "
+        f"fp {fp_prior_times.mean():.2f}s | "
         f"workers {parallelism.worker_processes or parallelism.kernel_threads_per_process} | "
         f"strategy {parallelism.strategy}"
     )

@@ -58,6 +58,100 @@ def interp1d_clip(x: float, xp: np.ndarray, fp: np.ndarray) -> float:
     return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
 
 
+@nb.njit(cache=True, inline="always")
+def _interp_axis_bracket_clip(x: float, axis: np.ndarray) -> tuple[int, int, float]:
+    """
+    Return the clipped interpolation bracket and weight for one monotonic axis.
+
+    Why this helper exists:
+    - the FP prior needs multilinear interpolation on precomputed Jeans tables
+    - numba does not provide a reusable high-level interpolator for mixed 3-D
+      and 4-D grids
+    - keeping the axis search in one primitive avoids duplicating binary-search
+      logic across the normalization and future diagnostic kernels
+    """
+
+    n = axis.shape[0]
+    if n <= 1:
+        return 0, 0, 0.0
+    if x <= axis[0]:
+        return 0, 0, 0.0
+    if x >= axis[n - 1]:
+        return n - 1, n - 1, 0.0
+
+    lo = 0
+    hi = n - 1
+    while hi - lo > 1:
+        mid = (hi + lo) // 2
+        if axis[mid] <= x:
+            lo = mid
+        else:
+            hi = mid
+
+    x0 = axis[lo]
+    x1 = axis[hi]
+    if x1 <= x0:
+        return lo, hi, 0.0
+    return lo, hi, (x - x0) / (x1 - x0)
+
+
+@nb.njit(cache=True)
+def interp_sigma_unit_clip(
+    gamma: float,
+    zd: float,
+    log_re_kpc: float,
+    n_value: float,
+    gamma_axis: np.ndarray,
+    zd_axis: np.ndarray,
+    log_re_kpc_axis: np.ndarray,
+    n_axis: np.ndarray,
+    sigma_unit_grid: np.ndarray,
+    has_n_axis: int,
+) -> float:
+    """
+    Multilinear interpolation on the FP sigma-unit grid with boundary clipping.
+
+    The legacy FP prior reads a precomputed Jeans table rather than solving the
+    dynamics model inside the sampler. This helper preserves that contract in a
+    `numba`-friendly way for both supported profile families:
+    - `sersic`: full 4-D interpolation over `(gamma, zd, logRe, n)`
+    - `devauc`: the same code path with a degenerate length-one `n` axis
+    """
+
+    gamma_lo, gamma_hi, gamma_weight = _interp_axis_bracket_clip(gamma, gamma_axis)
+    zd_lo, zd_hi, zd_weight = _interp_axis_bracket_clip(zd, zd_axis)
+    log_re_lo, log_re_hi, log_re_weight = _interp_axis_bracket_clip(log_re_kpc, log_re_kpc_axis)
+
+    if has_n_axis == 1:
+        n_lo, n_hi, n_weight = _interp_axis_bracket_clip(n_value, n_axis)
+    else:
+        n_lo = 0
+        n_hi = 0
+        n_weight = 0.0
+
+    result = 0.0
+    for gamma_corner in range(2):
+        gamma_index = gamma_lo if gamma_corner == 0 else gamma_hi
+        gamma_factor = (1.0 - gamma_weight) if gamma_corner == 0 else gamma_weight
+        for zd_corner in range(2):
+            zd_index = zd_lo if zd_corner == 0 else zd_hi
+            zd_factor = (1.0 - zd_weight) if zd_corner == 0 else zd_weight
+            for log_re_corner in range(2):
+                log_re_index = log_re_lo if log_re_corner == 0 else log_re_hi
+                log_re_factor = (1.0 - log_re_weight) if log_re_corner == 0 else log_re_weight
+                for n_corner in range(2):
+                    n_index = n_lo if n_corner == 0 else n_hi
+                    n_factor = (1.0 - n_weight) if n_corner == 0 else n_weight
+                    result += (
+                        gamma_factor
+                        * zd_factor
+                        * log_re_factor
+                        * n_factor
+                        * sigma_unit_grid[gamma_index, zd_index, log_re_index, n_index]
+                    )
+    return result
+
+
 @nb.njit(cache=True)
 def normal_pdf(x: float, mu: float, sigma: float) -> float:
     """Gaussian density used throughout the hierarchy."""

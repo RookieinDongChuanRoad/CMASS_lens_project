@@ -26,7 +26,7 @@ from .mass_definition import (
     convert_sigma_unit_grid,
     get_mass_definition,
 )
-from .types import CrossSectionGrid, ObservationRecord, ProfileSpec
+from .types import CrossSectionGrid, ObservationRecord, ProfileSpec, SigmaUnitTable
 
 
 def _resolve_attribute(group: h5py.Group, aliases: tuple[str, ...]) -> float:
@@ -36,6 +36,16 @@ def _resolve_attribute(group: h5py.Group, aliases: tuple[str, ...]) -> float:
         if field_name in group.attrs:
             return float(group.attrs[field_name])
     raise KeyError(f"None of the attribute aliases were found: {aliases}")
+
+
+def _decode_hdf5_scalar_string(raw_value: object) -> str:
+    """Normalize the scalar string encodings returned by HDF5."""
+
+    if isinstance(raw_value, bytes):
+        return raw_value.decode("utf-8")
+    if isinstance(raw_value, np.ndarray) and raw_value.shape == ():
+        return _decode_hdf5_scalar_string(raw_value.item())
+    return str(raw_value)
 
 
 def load_cross_section_grid(file_path: str | Path) -> CrossSectionGrid:
@@ -55,6 +65,76 @@ def load_cross_section_grid(file_path: str | Path) -> CrossSectionGrid:
         return CrossSectionGrid(
             gamma_grid=np.asarray(compressed[gamma_dataset_name][()], dtype=float),
             cs_over_theta_ein=np.asarray(compressed[cs_dataset_name][()], dtype=float),
+        )
+
+
+def load_sigma_unit_table(
+    file_path: str | Path,
+    profile_spec: ProfileSpec,
+    mass_definition: MassDefinition,
+) -> SigmaUnitTable:
+    """
+    Load and validate the sigma-unit table used by the optional FP prior.
+
+    Validation lives here because a mismatched profile or mass definition is a
+    data-contract error, not a numerical-kernel concern.
+    """
+
+    path = Path(file_path).expanduser().resolve()
+    with h5py.File(path, "r") as handle:
+        required_dataset_names = {
+            "profile_name",
+            "gamma_axis",
+            "zd_axis",
+            "log_re_kpc_axis",
+            "s_unit_grid",
+        }
+        missing = sorted(required_dataset_names.difference(handle.keys()))
+        if missing:
+            raise ValueError(
+                f"Sigma table '{path}' does not match the required HDF5 schema. "
+                f"Missing datasets: {missing}."
+            )
+
+        profile_name = _decode_hdf5_scalar_string(handle["profile_name"][()])
+        if profile_name != profile_spec.name:
+            raise ValueError(
+                f"Sigma table profile '{profile_name}' does not match active profile "
+                f"'{profile_spec.name}'."
+            )
+
+        mass_definition_label = _decode_hdf5_scalar_string(
+            handle.attrs.get("mass_definition_label", mass_definition.label)
+        )
+        mass_radius_kpc = float(handle.attrs.get("mass_radius_kpc", float(mass_definition.radius_kpc)))
+        if (
+            mass_definition_label != mass_definition.label
+            or not np.isclose(mass_radius_kpc, float(mass_definition.radius_kpc))
+        ):
+            raise ValueError(
+                f"Sigma table mass definition '{mass_definition_label}' ({mass_radius_kpc:g} kpc) "
+                f"does not match active mass definition '{mass_definition.label}' "
+                f"({mass_definition.radius_kpc:g} kpc)."
+            )
+
+        n_axis = np.asarray(handle["n_axis"][()], dtype=float) if "n_axis" in handle else None
+        if profile_spec.uses_observed_n_in_likelihood and n_axis is None:
+            raise ValueError(
+                f"Sigma table '{path}' is missing n_axis for the sersic profile schema."
+            )
+
+        return SigmaUnitTable(
+            profile_name=profile_name,
+            mass_definition_label=mass_definition_label,
+            mass_radius_kpc=mass_radius_kpc,
+            units=_decode_hdf5_scalar_string(
+                handle.attrs.get("units", mass_definition.sigma_unit_units)
+            ),
+            gamma_axis=np.asarray(handle["gamma_axis"][()], dtype=float),
+            zd_axis=np.asarray(handle["zd_axis"][()], dtype=float),
+            log_re_kpc_axis=np.asarray(handle["log_re_kpc_axis"][()], dtype=float),
+            sigma_unit_grid=np.asarray(handle["s_unit_grid"][()], dtype=float),
+            n_axis=n_axis,
         )
 
 

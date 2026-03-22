@@ -30,7 +30,8 @@
 
 本项目对 2024 框架的明确修改:
 
-- 删除 Fundamental Plane 先验。
+- Fundamental Plane 先验改为可选项，默认关闭；开启时复用当前 CMASS parent-population normalization Monte Carlo，不回退到 legacy `mz_distribution.draw_mz(...)` 抽样框架。
+- 开启 Fundamental Plane 先验时，必须提供与当前 profile 和质量定义匹配的 sigma-unit table（`jeans_*_{m5,m10}_grid.h5`）。
 - 不引入 source brightness 项。
 - 不在群体分布里显式建模 redshift 的复杂联合分布；与 redshift 相关的观测近似为精确值（单镜头似然里直接用观测 `z_d,z_s`）。
 - 样本归一化使用 Monte Carlo（而不是高维解析/全网格积分）。
@@ -399,7 +400,8 @@ MC 抽样变量:
 - `gamma` 和 `m*` 积分均用 200 点。
 - 使用 `|dm_R/dthetaein|`。
 - 不引入 source brightness。
-- 删除 Fundamental Plane 先验。
+- Fundamental Plane 先验保留为 optional prior，默认关闭；若显式开启，则通过同一轮 population MC 额外拟合
+  `log10(sigma_model) = a + b (m* - 11.3) + c Delta_r`，并只对 `a`、`b`、`scatter` 加全局先验惩罚。
 
 ## 16. 术语对照
 

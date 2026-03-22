@@ -36,14 +36,15 @@
 2. `runner.py` 调用 `config.py` 读取 YAML，并进入 `_build_runtime_context()`。
 3. `_build_runtime_context()` 通过 `compiled_context.py` 一次性完成：
    - `profiles.py` 选择 `devauc` / `sersic` 固定常数和字段别名
-   - `io.py` 读取 HDF5 观测与截面网格
+   - `io.py` 读取 HDF5 观测、截面网格，以及可选的 FP sigma-unit table
    - `cosmology.py` 建距离表
-   - `compiled_context.py` 把高层对象压平成 `numba` 友好的数组上下文
+   - `compiled_context.py` 把高层对象压平成 `numba` 友好的数组上下文，并在启用 FP prior 时附带 sigma-table 轴和 grid
 4. `runner.py` 同时调用 `parallel.py` 解析线程/进程策略，并组装 `CompiledModel`。
 5. `sampler.py` 启动 `emcee`，把每个 walker 的参数向量交给 `model.py:log_prob()`。
 6. `model.py` 做 box prior 检查，然后依次调用：
-   - `kernels/normalization.py` 估计 Monte Carlo 归一化
+   - `kernels/normalization.py` 估计 Monte Carlo 归一化；若启用 FP prior，则在同一轮 population MC 里额外累计 FP 回归 sufficient statistics
    - `kernels/likelihood.py` 计算全样本对数似然
+   - `model.py` 在 Python 层对 FP sufficient statistics 做一次小型 OLS 解算，并把可选的 global FP prior 合并回 posterior
 7. 两个 kernel 共同复用 `kernels/primitives.py` 中的底层数学原语。
 8. `outputs.py` 负责把运行目录、checkpoint、metadata、run result 持久化到磁盘。
 
@@ -226,11 +227,11 @@ flowchart TB
 
 #### `src/cmass_lens_inference/io.py`
 
-- 作用：读取观测 HDF5 和截面 HDF5，并把不同 schema/别名归一化成稳定的 `ObservationRecord`、`CrossSectionGrid`。
+- 作用：读取观测 HDF5、截面 HDF5 和可选的 FP sigma-unit table，并把不同 schema/别名归一化成稳定的 `ObservationRecord`、`CrossSectionGrid`、`SigmaUnitTable`。
 - 直接依赖：`mass_definition.py`、`types.py`
 - 被谁依赖：`compiled_context.py`
 - 是否在主热路径：是（主流程但非热点）
-- 关键备注：它承担新旧 HDF5 布局兼容，尤其是 `mass_definitions/<label>/` 新结构和 legacy `m5_*` 数据集之间的桥接。
+- 关键备注：它承担新旧 HDF5 布局兼容，尤其是 `mass_definitions/<label>/` 新结构和 legacy `m5_*` 数据集之间的桥接；启用 FP prior 时，也由这里强校验 sigma-table 的 profile 与 `m5/m10` 质量定义是否匹配当前 run。
 
 #### `src/cmass_lens_inference/cosmology.py`
 
@@ -242,11 +243,11 @@ flowchart TB
 
 #### `src/cmass_lens_inference/compiled_context.py`
 
-- 作用：把 profile、观测、截面、宇宙学和随机基底一次性压平成 `CompiledModelContext`，供 `numba` kernel 直接消费。
+- 作用：把 profile、观测、截面、宇宙学、随机基底和可选 FP sigma-table 一次性压平成 `CompiledModelContext`，供 `numba` kernel 直接消费。
 - 直接依赖：`cosmology.py`、`io.py`、`profiles.py`、`types.py`
 - 被谁依赖：`runner.py`、`model.py`、`normalization.py`
 - 是否在主热路径：是（主流程但非热点）
-- 关键备注：这是 Python 对象世界和 `numba` 数组世界的转换层；热路径优化的关键前提就是把工作尽可能前移到这里。
+- 关键备注：这是 Python 对象世界和 `numba` 数组世界的转换层；热路径优化的关键前提就是把工作尽可能前移到这里。FP prior 的 sigma-table 轴、grid 和 prior 常数也在这一层完成编译期整理。
 
 ### C. 共享数据契约与物理定义层
 
@@ -270,15 +271,15 @@ flowchart TB
 
 #### `src/cmass_lens_inference/model.py`
 
-- 作用：生产版 `log_prob` 入口；做 12 维参数检查、box prior 过滤、归一化计算、样本似然计算，并生成 HDF5-safe timing blob。
+- 作用：生产版 `log_prob` 入口；做 12/11/10 维参数检查、box prior 过滤、归一化计算、样本似然计算，并在启用时把 optional FP global prior 合并到 posterior，同时生成 HDF5-safe timing blob。
 - 直接依赖：`compiled_context.py`、`kernels/likelihood.py`、`kernels/normalization.py`、`parallel.py`、`types.py`
 - 被谁依赖：`sampler.py`
 - 是否在主热路径：是（数值热路径）
-- 关键备注：它是“采样器”和“内核”之间唯一的正式边界；如果要分析单次 `log_prob` 的行为，先从这里看。
+- 关键备注：它是“采样器”和“内核”之间唯一的正式边界；如果要分析单次 `log_prob` 的行为，先从这里看。FP prior 的 OLS 解算也被刻意放在这里，而不是塞进 numba kernel。
 
 #### `src/cmass_lens_inference/kernels/primitives.py`
 
-- 作用：放置被多个 kernel 共享的底层 `numba` 原语，如 PDF/CDF、采样、距离表查值、`theta_ein_arcsec()`、`p_find()`、`mu_r()`。
+- 作用：放置被多个 kernel 共享的底层 `numba` 原语，如 PDF/CDF、采样、距离表查值、`theta_ein_arcsec()`、`p_find()`、`mu_r()` 和 FP sigma-table 插值。
 - 直接依赖：无内部依赖
 - 被谁依赖：`kernels/likelihood.py`、`kernels/normalization.py`、`kernels/__init__.py`
 - 是否在主热路径：是（数值热路径）
@@ -294,11 +295,11 @@ flowchart TB
 
 #### `src/cmass_lens_inference/kernels/normalization.py`
 
-- 作用：单个 monolithic `numba` kernel，使用固定随机基底做 Monte Carlo 归一化估计。
+- 作用：单个 monolithic `numba` kernel，使用固定随机基底做 Monte Carlo 归一化估计；启用 FP prior 时，额外在同一轮 parent-population MC 里累计 OLS sufficient statistics。
 - 直接依赖：`kernels/primitives.py`
 - 被谁依赖：`model.py`、`normalization.py`、`kernels/__init__.py`
 - 是否在主热路径：是（数值热路径）
-- 关键备注：它和 `likelihood.py` 共同组成生产版 `log_prob` 的两大数值核心。
+- 关键备注：它和 `likelihood.py` 共同组成生产版 `log_prob` 的两大数值核心。这里不直接做 FP 拟合，只输出最小充分统计量，把线性代数留给 Python 层的 `model.py`。
 
 #### `src/cmass_lens_inference/kernels/__init__.py`
 
@@ -423,4 +424,4 @@ flowchart TB
 
 如果只看最核心的生产链，可以把这个子项目理解成：
 
-`cli/runner` 负责组织运行，`config + profiles + io + cosmology + compiled_context` 负责把高层输入预处理成数组，`sampler` 负责把参数向量不断送进 `model.log_prob()`，而 `model` 再把所有真正昂贵的工作下放给 `kernels/likelihood.py` 和 `kernels/normalization.py`；`types / mass_definition / parallel / outputs` 则是横切整个系统的基础设施层。
+`cli/runner` 负责组织运行，`config + profiles + io + cosmology + compiled_context` 负责把高层输入预处理成数组，`sampler` 负责把参数向量不断送进 `model.log_prob()`，而 `model` 再把所有真正昂贵的工作下放给 `kernels/likelihood.py` 和 `kernels/normalization.py`；如果启用 FP prior，则 `normalization` 额外产出一组 FP sufficient statistics，`model` 用它们做一次小型 OLS 并把 global prior 加回 posterior；`types / mass_definition / parallel / outputs` 则是横切整个系统的基础设施层。

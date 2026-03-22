@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.io import load_cross_section_grid, load_observations
+from cmass_lens_inference.io import load_cross_section_grid, load_observations, load_sigma_unit_table
 from cmass_lens_inference.mass_definition import convert_log_enclosed_mass, get_mass_definition
 from cmass_lens_inference.profiles import build_profile_spec
 
@@ -48,6 +48,54 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     assert runtime_config.runtime.reserve_cores == 2
     assert runtime_config.runtime.progress_summary_every == 1
     assert runtime_config.runtime.show_stage_timing is True
+    assert runtime_config.fp_prior.enabled is False
+    assert runtime_config.data.sigma_table_path is None
+
+
+def test_load_runtime_config_requires_sigma_table_path_when_fp_prior_enabled(
+    synthetic_config_path: Path,
+) -> None:
+    """FP prior cannot be enabled without an explicit sigma-table input path."""
+
+    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    payload["fp_prior"] = {"enabled": True}
+    missing_sigma_table_path = synthetic_config_path.parent / "missing_sigma_table_path.yaml"
+    missing_sigma_table_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="sigma_table_path"):
+        load_runtime_config(missing_sigma_table_path)
+
+
+def test_load_runtime_config_builds_fp_prior_config_when_enabled(
+    synthetic_config_path: Path,
+    synthetic_sersic_sigma_table_file: Path,
+) -> None:
+    """The loader should preserve the optional FP-prior configuration surface."""
+
+    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    payload["data"]["sigma_table_path"] = str(synthetic_sersic_sigma_table_file)
+    payload["fp_prior"] = {"enabled": True}
+    fp_enabled_path = synthetic_config_path.parent / "fp_enabled.yaml"
+    fp_enabled_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    runtime_config = load_runtime_config(fp_enabled_path)
+
+    assert runtime_config.fp_prior.enabled is True
+    assert runtime_config.data.sigma_table_path == synthetic_sersic_sigma_table_file
+    assert runtime_config.fp_prior.fit_mstar_min == pytest.approx(11.0)
+    assert runtime_config.fp_prior.pivot_mstar == pytest.approx(11.3)
+    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.047)
+    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.008)
+    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.341871, abs=1.0e-6)
+    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.03)
+    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.25774, abs=1.0e-5)
+    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.03)
 
 
 def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Path) -> None:
@@ -472,6 +520,54 @@ def test_load_observations_uses_devauc_aliases(
     assert observation.effective_radius_arcsec == 1.4
     assert observation.n_observed == 4.0
     assert observation.num_sigma == 0
+
+
+def test_load_sigma_unit_table_reads_supported_hdf5_schema(
+    synthetic_sersic_sigma_table_file: Path,
+) -> None:
+    """The sigma-table loader should return the normalized HDF5 schema verbatim."""
+
+    sigma_table = load_sigma_unit_table(
+        synthetic_sersic_sigma_table_file,
+        build_profile_spec("sersic"),
+        get_mass_definition(5),
+    )
+
+    assert sigma_table.profile_name == "sersic"
+    assert sigma_table.mass_definition_label == "m5"
+    assert sigma_table.mass_radius_kpc == pytest.approx(5.0)
+    assert sigma_table.gamma_axis.shape == (5,)
+    assert sigma_table.zd_axis.shape == (4,)
+    assert sigma_table.log_re_kpc_axis.shape == (3,)
+    assert sigma_table.n_axis is not None
+    assert sigma_table.n_axis.shape == (4,)
+    assert sigma_table.sigma_unit_grid.shape == (5, 4, 3, 4)
+
+
+def test_load_sigma_unit_table_rejects_profile_mismatch(
+    synthetic_devauc_sigma_table_file: Path,
+) -> None:
+    """A `devauc` sigma table must not be silently accepted for a `sersic` run."""
+
+    with pytest.raises(ValueError, match="profile"):
+        load_sigma_unit_table(
+            synthetic_devauc_sigma_table_file,
+            build_profile_spec("sersic"),
+            get_mass_definition(5),
+        )
+
+
+def test_load_sigma_unit_table_rejects_mass_definition_mismatch(
+    synthetic_sersic_m10_sigma_table_file: Path,
+) -> None:
+    """The sigma-table loader must fail fast on `m5` versus `m10` mismatches."""
+
+    with pytest.raises(ValueError, match="mass definition"):
+        load_sigma_unit_table(
+            synthetic_sersic_m10_sigma_table_file,
+            build_profile_spec("sersic"),
+            get_mass_definition(5),
+        )
 
 
 def test_load_observations_converts_legacy_m5_grid_to_selected_mass_definition(
