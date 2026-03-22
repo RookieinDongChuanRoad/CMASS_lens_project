@@ -76,7 +76,7 @@ SIGMA_STAR_DEPENDENT_PARAMETER_ORDER = (
 )
 
 
-def _write_observation_file(path: Path, profile_name: str) -> Path:
+def _write_observation_file(path: Path, profile_name: str, observation_flavor: str = "slit") -> Path:
     """
     Create a 23-lens synthetic observation file with exactly 7 sigma lenses.
 
@@ -105,6 +105,10 @@ def _write_observation_file(path: Path, profile_name: str) -> Path:
             if profile_name == "devauc":
                 group.attrs["logmchab_deV"] = group.attrs["logmchab"] + 0.08
                 group.attrs["reff_deV"] = 0.9 + 0.03 * lens_index
+            if observation_flavor == "boss":
+                group.attrs["aperture_shape"] = "circular"
+                group.attrs["aperture_radius_arcsec"] = 1.0
+                group.attrs["seeing_fwhm_arcsec"] = 0.9
 
             if lens_index < 7:
                 group.attrs["num_sigma"] = 1 if lens_index < 4 else 2
@@ -382,6 +386,81 @@ def _write_sigma_table_hdf5(path: Path, profile_name: str, mass_radius_kpc: int 
     return path
 
 
+def _write_sigma_bundle_hdf5(
+    path: Path,
+    profile_name: str,
+    observation_flavors: tuple[str, ...] = ("slit", "boss"),
+    mass_radii_kpc: tuple[int, ...] = (5, 10),
+    boss_aperture_radius_arcsec: float = 1.0,
+) -> Path:
+    """Create one synthetic bundle file with multiple flavor/mass leaves."""
+
+    gamma_axis = np.linspace(1.2, 2.8, 9)
+    zd_axis = np.linspace(0.43, 0.82, 7)
+    log_re_axis = np.linspace(0.45, 1.40, 8)
+    n_axis = np.linspace(2.5, 10.5, 6)
+
+    with h5py.File(path, "w") as handle:
+        handle.attrs["schema_version"] = "sigma_unit_bundle_hdf5_v2"
+        handle.attrs["quantity_name"] = "S_unit"
+        handle.create_dataset("profile_name", data=np.bytes_(profile_name))
+
+        for observation_flavor in observation_flavors:
+            flavor_group = handle.create_group(observation_flavor)
+            for mass_radius_kpc in mass_radii_kpc:
+                mass_label = f"m{int(mass_radius_kpc)}"
+                leaf = flavor_group.create_group(mass_label)
+                leaf.attrs["mass_definition_label"] = mass_label
+                leaf.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
+                leaf.attrs["units"] = f"km2 s-2 per 10**{mass_label}"
+                leaf.attrs["observation_flavor"] = observation_flavor
+                if observation_flavor == "boss":
+                    leaf.attrs["aperture_shape"] = "circular"
+                    leaf.attrs["aperture_radius_arcsec"] = float(boss_aperture_radius_arcsec)
+                    leaf.attrs["seeing_fwhm_arcsec"] = 0.9
+                else:
+                    leaf.attrs["aperture_shape"] = "rectangular"
+                    leaf.attrs["aperture_width_arcsec"] = 1.6
+                    leaf.attrs["aperture_height_arcsec"] = 0.9
+                    leaf.attrs["seeing_fwhm_arcsec"] = 0.9
+                leaf.create_dataset("gamma_axis", data=gamma_axis)
+                leaf.create_dataset("zd_axis", data=zd_axis)
+                leaf.create_dataset("log_re_kpc_axis", data=log_re_axis)
+
+                flavor_offset = 0.013 if observation_flavor == "boss" else 0.0
+                mass_offset = 0.002 * int(mass_radius_kpc)
+                if profile_name == "devauc":
+                    gamma_mesh, zd_mesh, log_re_mesh = np.meshgrid(
+                        gamma_axis,
+                        zd_axis,
+                        log_re_axis,
+                        indexing="ij",
+                    )
+                    values = 0.04 + flavor_offset + mass_offset + 0.005 * gamma_mesh + 0.003 * zd_mesh + 0.002 * log_re_mesh
+                    leaf.create_dataset("s_unit_grid", data=values)
+                    continue
+
+                gamma_mesh, zd_mesh, log_re_mesh, n_mesh = np.meshgrid(
+                    gamma_axis,
+                    zd_axis,
+                    log_re_axis,
+                    n_axis,
+                    indexing="ij",
+                )
+                values = (
+                    0.03
+                    + flavor_offset
+                    + mass_offset
+                    + 0.004 * gamma_mesh
+                    + 0.002 * zd_mesh
+                    + 0.002 * log_re_mesh
+                    + 0.001 * n_mesh
+                )
+                leaf.create_dataset("n_axis", data=n_axis)
+                leaf.create_dataset("s_unit_grid", data=values)
+    return path
+
+
 def _write_external_sigma_table_hdf5(path: Path, profile_name: str, mass_radius_kpc: int = 5) -> Path:
     """
     Create an HDF5 sigma table under the fixed external filenames.
@@ -454,6 +533,7 @@ def _build_completed_run(
     profile_name: str,
     n_steps: int = 5,
     mass_radius_kpc: int = 5,
+    observation_flavor: str = "slit",
     gamma_mode: str = "dependent",
     beta_gamma: float = 0.10,
     xi_gamma: float = -0.67,
@@ -466,7 +546,16 @@ def _build_completed_run(
     data_dir.mkdir(parents=True, exist_ok=True)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    observation_path = _write_observation_file(data_dir / f"{profile_name}_observations.hdf5", profile_name=profile_name)
+    observation_filename = (
+        f"{profile_name}_{observation_flavor}_observations.hdf5"
+        if observation_flavor != "slit"
+        else f"{profile_name}_observations.hdf5"
+    )
+    observation_path = _write_observation_file(
+        data_dir / observation_filename,
+        profile_name=profile_name,
+        observation_flavor=observation_flavor,
+    )
     cross_section_path = _write_cross_section_file(data_dir / "cs_grid_power.h5")
     config_path = _write_config(
         run_dir / "config_snapshot.yaml",
@@ -728,6 +817,34 @@ def test_sigma_unit_table_from_hdf5_preserves_mass_definition_metadata(tmp_path:
     assert table.mass_definition_label == "m10"
     assert table.mass_radius_kpc == 10.0
     assert table.units == "km2 s-2 per 10**m10"
+
+
+def test_sigma_unit_table_from_bundle_selects_requested_boss_leaf(tmp_path: Path) -> None:
+    """Bundle loaders must pick the requested flavor/mass leaf and expose its metadata."""
+
+    from cmass_lens_inference.mass_definition import get_mass_definition
+    from cmass_posterior_predictive.predictive import SigmaUnitTable
+
+    table_path = _write_sigma_bundle_hdf5(tmp_path / "jeans_sers_sigma_bundle.h5", profile_name="sersic")
+    table = SigmaUnitTable.from_path(
+        table_path,
+        mass_definition=get_mass_definition(10),
+        observation_flavor="boss",
+    )
+
+    actual = table.evaluate(
+        gamma=np.array([1.3, 1.8, 2.7]),
+        zd=np.array([0.45, 0.60, 0.79]),
+        log_re_kpc=np.array([0.55, 0.90, 1.20]),
+        n_values=np.array([2.8, 6.0, 9.5]),
+    )
+
+    assert table.profile_name == "sersic"
+    assert table.mass_definition_label == "m10"
+    assert table.observation_flavor == "boss"
+    assert table.aperture_shape == "circular"
+    assert table.aperture_radius_arcsec == 1.0
+    assert np.isfinite(actual).all()
 
 
 def test_histogram_panel_writes_left_and_right_tail_labels() -> None:
@@ -1052,6 +1169,70 @@ def test_run_posterior_predictive_rejects_sigma_tables_with_wrong_mass_definitio
         )
 
 
+def test_run_posterior_predictive_uses_bundle_and_records_boss_leaf_metadata(tmp_path: Path) -> None:
+    """BOSS runs should auto-select the `/boss/<mass>` bundle leaf from observation metadata."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, _ = _build_completed_run(
+        tmp_path,
+        profile_name="devauc",
+        mass_radius_kpc=10,
+        observation_flavor="boss",
+    )
+    sigma_bundle_path = _write_sigma_bundle_hdf5(
+        tmp_path / "jeans_deV_sigma_bundle.h5",
+        profile_name="devauc",
+    )
+
+    result = run_posterior_predictive(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_bundle_path),
+        output_root_dir=str(tmp_path / "ppc_output"),
+        n_replicates=3,
+        burn_in=1,
+        random_seed=73,
+        candidate_pool_size=64,
+    )
+
+    payload = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
+
+    assert payload["observation_flavor"] == "boss"
+    assert payload["sigma_table_leaf_path"] == "/boss/m10"
+    assert manifest["observation_flavor"] == "boss"
+    assert manifest["sigma_table_leaf_path"] == "/boss/m10"
+
+
+def test_run_posterior_predictive_rejects_legacy_single_table_for_boss_observations(tmp_path: Path) -> None:
+    """Legacy single-table files should not satisfy the BOSS circular-aperture contract."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, _ = _build_completed_run(
+        tmp_path,
+        profile_name="sersic",
+        mass_radius_kpc=10,
+        observation_flavor="boss",
+    )
+    legacy_sigma_table_path = _write_sigma_table_hdf5(
+        tmp_path / "sersic_sigma_table_m10.h5",
+        profile_name="sersic",
+        mass_radius_kpc=10,
+    )
+
+    with pytest.raises(ValueError, match="observation flavor|aperture"):
+        run_posterior_predictive(
+            run_dir=str(run_dir),
+            sigma_table_path=str(legacy_sigma_table_path),
+            output_root_dir=str(tmp_path / "ppc_output"),
+            n_replicates=2,
+            burn_in=1,
+            random_seed=79,
+            candidate_pool_size=64,
+        )
+
+
 def test_draw_candidate_population_matches_zero_slope_dependent_gamma_mode(tmp_path: Path) -> None:
     """Independent PPC generation should match dependent mode when the gamma slopes are explicitly zero."""
 
@@ -1198,19 +1379,25 @@ def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tabl
 
     from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
-    devauc_run_dir, _ = _build_completed_run(tmp_path / "devauc_case", profile_name="devauc")
-    sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
+    devauc_run_dir, _ = _build_completed_run(
+        tmp_path / "devauc_case",
+        profile_name="devauc",
+        observation_flavor="boss",
+    )
+    sersic_run_dir, _ = _build_completed_run(
+        tmp_path / "sersic_case",
+        profile_name="sersic",
+        observation_flavor="boss",
+    )
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_deV_m5_grid.h5",
+    devauc_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_deV_sigma_bundle.h5",
         profile_name="devauc",
-        mass_radius_kpc=5,
     )
-    sersic_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_sers_m5_grid.h5",
+    sersic_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_sers_sigma_bundle.h5",
         profile_name="sersic",
-        mass_radius_kpc=5,
     )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
@@ -1238,6 +1425,12 @@ def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tabl
     assert result.sersic_result is not None
     assert result.devauc_result.result_dir.exists()
     assert result.sersic_result.result_dir.exists()
+    devauc_summary = json.loads((result.devauc_result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    sersic_summary = json.loads((result.sersic_result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    assert devauc_summary["observation_flavor"] == "boss"
+    assert sersic_summary["observation_flavor"] == "boss"
+    assert devauc_summary["sigma_table_leaf_path"] == "/boss/m5"
+    assert sersic_summary["sigma_table_leaf_path"] == "/boss/m5"
 
 
 def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> None:
@@ -1249,15 +1442,13 @@ def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> 
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_deV_m5_grid.h5",
+    devauc_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_deV_sigma_bundle.h5",
         profile_name="devauc",
-        mass_radius_kpc=5,
     )
-    sersic_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_sers_m5_grid.h5",
+    sersic_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_sers_sigma_bundle.h5",
         profile_name="sersic",
-        mass_radius_kpc=5,
     )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
@@ -1442,15 +1633,13 @@ def test_monitor_defaults_to_tail_capped_common_draw_count(tmp_path: Path) -> No
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic", n_steps=5)
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_deV_m5_grid.h5",
+    devauc_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_deV_sigma_bundle.h5",
         profile_name="devauc",
-        mass_radius_kpc=5,
     )
-    sersic_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_sers_m5_grid.h5",
+    sersic_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_sers_sigma_bundle.h5",
         profile_name="sersic",
-        mass_radius_kpc=5,
     )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
@@ -1487,15 +1676,13 @@ def test_cli_posterior_predictive_monitor_command_waits_and_runs_both_profiles(t
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
     external_dir = tmp_path / "external"
     external_dir.mkdir(parents=True, exist_ok=True)
-    devauc_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_deV_m5_grid.h5",
+    devauc_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_deV_sigma_bundle.h5",
         profile_name="devauc",
-        mass_radius_kpc=5,
     )
-    sersic_table_path = _write_external_sigma_table_hdf5(
-        external_dir / "jeans_sers_m5_grid.h5",
+    sersic_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_sers_sigma_bundle.h5",
         profile_name="sersic",
-        mass_radius_kpc=5,
     )
 
     not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
@@ -2046,7 +2233,7 @@ def test_cli_surface_exposes_canonical_trend_defaults() -> None:
 
 
 def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_path: Path) -> None:
-    """The figure annotator should back up the old PNG and rewrite it in place."""
+    """The figure annotator should resolve raw observations from each run config by default."""
 
     from cmass_posterior_predictive.predictive import run_posterior_trends
 
@@ -2068,8 +2255,6 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
 
     figure_path = trend_result.result_dir / "fig8_like.png"
     before_bytes = figure_path.read_bytes()
-    raw_observation_path = run_dir.parent.parent.parent / "data" / "devauc_observations.hdf5"
-
     completed = subprocess.run(
         [
             sys.executable,
@@ -2078,10 +2263,6 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
             "annotate-fig8-observations",
             "--outputs-root",
             str(output_root),
-            "--raw-devauc",
-            str(raw_observation_path),
-            "--raw-sersic",
-            str(raw_observation_path),
         ],
         check=False,
         capture_output=True,

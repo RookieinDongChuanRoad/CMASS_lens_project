@@ -69,6 +69,11 @@ BOSS_CIRCULAR_APERTURE_POLICY = AperturePolicy.circular(
     radius_arcsec=1.0,
     seeing_fwhm_arcsec=SEEING_FWHM_ARCSEC,
 )
+SUPPORTED_OBSERVATION_FLAVORS = ("slit", "boss")
+OBSERVATION_FLAVOR_APERTURE_POLICIES = {
+    "slit": DEFAULT_PRODUCTION_APERTURE_POLICY,
+    "boss": BOSS_CIRCULAR_APERTURE_POLICY,
+}
 
 # BOSS observation-file rebuild inputs and outputs.
 BOSS_SUMMARY_FILENAME = "summary_table_deV.txt"
@@ -89,6 +94,7 @@ DEFAULT_DERIVATIVE_THETA_SAMPLES = 10_000
 # These grids intentionally follow the PPT requirements exactly so upstream and
 # downstream code do not need to infer bounds from old files.
 SIGMA_UNIT_SCHEMA_VERSION = "sigma_unit_hdf5_v1"
+SIGMA_UNIT_BUNDLE_SCHEMA_VERSION = "sigma_unit_bundle_hdf5_v2"
 SIGMA_UNIT_QUANTITY_NAME = "S_unit"
 SIGMA_UNIT_UNITS = "km2 s-2 per 10**m5"
 SIGMA_UNIT_PROFILE_FILENAMES = {
@@ -96,6 +102,10 @@ SIGMA_UNIT_PROFILE_FILENAMES = {
     ("devauc", 10.0): "jeans_deV_m10_grid.h5",
     ("sersic", 5.0): "jeans_sers_m5_grid.h5",
     ("sersic", 10.0): "jeans_sers_m10_grid.h5",
+}
+SIGMA_UNIT_BUNDLE_FILENAMES = {
+    "devauc": "jeans_deV_sigma_bundle.h5",
+    "sersic": "jeans_sers_sigma_bundle.h5",
 }
 SIGMA_UNIT_GAMMA_AXIS = GAMMA_GRID.copy()
 SIGMA_UNIT_ZD_AXIS = np.linspace(0.43, 0.82, 21, dtype=float)

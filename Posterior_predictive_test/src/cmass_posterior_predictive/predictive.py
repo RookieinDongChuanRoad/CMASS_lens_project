@@ -41,7 +41,12 @@ from scipy.special import ndtr, ndtri
 from cmass_lens_inference.compiled_context import build_compiled_context
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.profiles import build_profile_spec
-from cmass_lens_inference.mass_definition import MassDefinition, get_mass_definition, mass_definition_metadata
+from cmass_lens_inference.mass_definition import (
+    MassDefinition,
+    get_mass_definition,
+    mass_definition_metadata,
+    sigma_bundle_filename,
+)
 from cmass_lens_inference.parameter_schema import (
     GAMMA_MODE_DEPENDENT,
     GAMMA_MODE_DEPENDENT_CODE,
@@ -81,6 +86,13 @@ DEFAULT_PPC_OUTPUT_ROOT_DIR = Path("/Users/liurongfu/Work/CMASS_lens_project/out
 DEFAULT_MONITOR_NOT_BEFORE = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
 _MAX_ALLOWED_NEGATIVE_FRACTION = 0.05
 _MAX_ALLOWED_NEGATIVE_ABSOLUTE_VALUE = 1.0e-4
+SIGMA_UNIT_BUNDLE_SCHEMA_VERSION = "sigma_unit_bundle_hdf5_v2"
+SLIT_OBSERVATION_FLAVOR = "slit"
+BOSS_OBSERVATION_FLAVOR = "boss"
+DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC = 1.6
+DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC = 0.9
+DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC = 1.0
+DEFAULT_SEEING_FWHM_ARCSEC = 0.9
 DEFAULT_TREND_POSTERIOR_DRAWS: int | None = None
 DEFAULT_TREND_PARENT_SAMPLE_SIZE = 100000
 DEFAULT_TREND_MASS_BIN_COUNT = 19
@@ -170,6 +182,13 @@ class SigmaUnitTable:
     log_re_kpc_axis: np.ndarray
     values: np.ndarray
     n_axis: np.ndarray | None = None
+    observation_flavor: str = SLIT_OBSERVATION_FLAVOR
+    aperture_shape: str = "rectangular"
+    aperture_width_arcsec: float | None = DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC
+    aperture_height_arcsec: float | None = DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC
+    aperture_radius_arcsec: float | None = None
+    seeing_fwhm_arcsec: float = DEFAULT_SEEING_FWHM_ARCSEC
+    bundle_leaf_path: str = "/"
 
     def __post_init__(self) -> None:
         axes = (self.gamma_axis, self.zd_axis, self.log_re_kpc_axis)
@@ -190,7 +209,13 @@ class SigmaUnitTable:
         object.__setattr__(self, "_interpolator", interpolator)
 
     @classmethod
-    def from_path(cls, table_path: str | Path) -> "SigmaUnitTable":
+    def from_path(
+        cls,
+        table_path: str | Path,
+        *,
+        mass_definition: MassDefinition | None = None,
+        observation_flavor: str | None = None,
+    ) -> "SigmaUnitTable":
         """
         Load a sigma-unit interpolation table from `.npz` or HDF5.
 
@@ -203,7 +228,11 @@ class SigmaUnitTable:
         if path.suffix.lower() == ".npz":
             return cls._from_npz(path)
         if path.suffix.lower() in {".h5", ".hdf5"}:
-            return cls._from_hdf5(path)
+            return cls._from_hdf5(
+                path,
+                mass_definition=mass_definition,
+                observation_flavor=observation_flavor,
+            )
         raise ValueError(f"Unsupported sigma table format for '{path}'. Expected .npz, .h5, or .hdf5.")
 
     @classmethod
@@ -235,40 +264,156 @@ class SigmaUnitTable:
                 log_re_kpc_axis=np.asarray(payload["log_re_kpc_axis"], dtype=float),
                 values=_validate_sigma_unit_grid(np.asarray(payload["s_unit_grid"], dtype=float), source_path=path),
                 n_axis=None if n_axis is None else np.asarray(n_axis, dtype=float),
+                observation_flavor=SLIT_OBSERVATION_FLAVOR,
+                aperture_shape="rectangular",
+                aperture_width_arcsec=DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC,
+                aperture_height_arcsec=DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC,
+                aperture_radius_arcsec=None,
+                seeing_fwhm_arcsec=DEFAULT_SEEING_FWHM_ARCSEC,
+                bundle_leaf_path="/",
             )
 
     @classmethod
-    def _from_hdf5(cls, path: Path) -> "SigmaUnitTable":
-        """Load the explicit HDF5 sigma-table schema shared with the producer."""
+    def _from_hdf5(
+        cls,
+        path: Path,
+        *,
+        mass_definition: MassDefinition | None = None,
+        observation_flavor: str | None = None,
+    ) -> "SigmaUnitTable":
+        """Load either the legacy single-table schema or the new bundle schema."""
 
         with h5py.File(path, "r") as handle:
-            dataset_names = set(handle.keys())
-            required_dataset_names = {"profile_name", "gamma_axis", "zd_axis", "log_re_kpc_axis", "s_unit_grid"}
-            missing = sorted(required_dataset_names.difference(dataset_names))
-            if missing:
-                raise ValueError(
-                    f"HDF5 sigma table '{path}' does not match the required sigma-unit schema. "
-                    f"Missing datasets: {missing}."
+            schema_version = _decode_hdf5_string(handle.attrs.get("schema_version", ""))
+            if schema_version == SIGMA_UNIT_BUNDLE_SCHEMA_VERSION:
+                if mass_definition is None or observation_flavor is None:
+                    raise ValueError(
+                        f"Sigma bundle '{path}' requires both `mass_definition` and `observation_flavor` "
+                        "to select one leaf."
+                    )
+                return cls._from_hdf5_bundle(
+                    path,
+                    handle,
+                    mass_definition=mass_definition,
+                    observation_flavor=observation_flavor,
                 )
+            return cls._from_hdf5_single_table(path, handle)
 
-            raw_profile_name = handle["profile_name"][()]
-            profile_name = _decode_hdf5_string(raw_profile_name)
-            default_mass_definition = _sigma_table_metadata_defaults()
-            raw_mass_label = handle.attrs.get("mass_definition_label", default_mass_definition.label)
-            raw_mass_radius = handle.attrs.get("mass_radius_kpc", float(default_mass_definition.radius_kpc))
-            raw_units = handle.attrs.get("units", default_mass_definition.sigma_unit_units)
-            n_axis = np.asarray(handle["n_axis"], dtype=float) if "n_axis" in handle else None
-            return cls(
-                profile_name=profile_name,
-                mass_definition_label=_decode_hdf5_string(raw_mass_label),
-                mass_radius_kpc=float(raw_mass_radius),
-                units=_decode_hdf5_string(raw_units),
-                gamma_axis=np.asarray(handle["gamma_axis"], dtype=float),
-                zd_axis=np.asarray(handle["zd_axis"], dtype=float),
-                log_re_kpc_axis=np.asarray(handle["log_re_kpc_axis"], dtype=float),
-                values=_validate_sigma_unit_grid(np.asarray(handle["s_unit_grid"], dtype=float), source_path=path),
-                n_axis=n_axis,
+    @classmethod
+    def _from_hdf5_single_table(cls, path: Path, handle: h5py.File) -> "SigmaUnitTable":
+        """Load the legacy single-table HDF5 schema."""
+
+        dataset_names = set(handle.keys())
+        required_dataset_names = {"profile_name", "gamma_axis", "zd_axis", "log_re_kpc_axis", "s_unit_grid"}
+        missing = sorted(required_dataset_names.difference(dataset_names))
+        if missing:
+            raise ValueError(
+                f"HDF5 sigma table '{path}' does not match the required sigma-unit schema. "
+                f"Missing datasets: {missing}."
             )
+
+        raw_profile_name = handle["profile_name"][()]
+        profile_name = _decode_hdf5_string(raw_profile_name)
+        default_mass_definition = _sigma_table_metadata_defaults()
+        raw_mass_label = handle.attrs.get("mass_definition_label", default_mass_definition.label)
+        raw_mass_radius = handle.attrs.get("mass_radius_kpc", float(default_mass_definition.radius_kpc))
+        raw_units = handle.attrs.get("units", default_mass_definition.sigma_unit_units)
+        n_axis = np.asarray(handle["n_axis"], dtype=float) if "n_axis" in handle else None
+        raw_observation_flavor = handle.attrs.get("observation_flavor", SLIT_OBSERVATION_FLAVOR)
+        observation_flavor = _decode_hdf5_string(raw_observation_flavor).strip().lower()
+        if observation_flavor == BOSS_OBSERVATION_FLAVOR:
+            aperture_shape = _decode_hdf5_string(handle.attrs.get("aperture_shape", "circular"))
+            aperture_radius_arcsec = _optional_hdf5_float(handle.attrs.get("aperture_radius_arcsec", DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC))
+            aperture_width_arcsec = None
+            aperture_height_arcsec = None
+        else:
+            observation_flavor = SLIT_OBSERVATION_FLAVOR
+            aperture_shape = _decode_hdf5_string(handle.attrs.get("aperture_shape", "rectangular"))
+            aperture_width_arcsec = _optional_hdf5_float(
+                handle.attrs.get("aperture_width_arcsec", DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC)
+            )
+            aperture_height_arcsec = _optional_hdf5_float(
+                handle.attrs.get("aperture_height_arcsec", DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC)
+            )
+            aperture_radius_arcsec = _optional_hdf5_float(handle.attrs.get("aperture_radius_arcsec"))
+        seeing_fwhm_arcsec = _optional_hdf5_float(handle.attrs.get("seeing_fwhm_arcsec", DEFAULT_SEEING_FWHM_ARCSEC))
+        return cls(
+            profile_name=profile_name,
+            mass_definition_label=_decode_hdf5_string(raw_mass_label),
+            mass_radius_kpc=float(raw_mass_radius),
+            units=_decode_hdf5_string(raw_units),
+            gamma_axis=np.asarray(handle["gamma_axis"], dtype=float),
+            zd_axis=np.asarray(handle["zd_axis"], dtype=float),
+            log_re_kpc_axis=np.asarray(handle["log_re_kpc_axis"], dtype=float),
+            values=_validate_sigma_unit_grid(np.asarray(handle["s_unit_grid"], dtype=float), source_path=path),
+            n_axis=n_axis,
+            observation_flavor=observation_flavor,
+            aperture_shape=aperture_shape,
+            aperture_width_arcsec=aperture_width_arcsec,
+            aperture_height_arcsec=aperture_height_arcsec,
+            aperture_radius_arcsec=aperture_radius_arcsec,
+            seeing_fwhm_arcsec=float(seeing_fwhm_arcsec or DEFAULT_SEEING_FWHM_ARCSEC),
+            bundle_leaf_path="/",
+        )
+
+    @classmethod
+    def _from_hdf5_bundle(
+        cls,
+        path: Path,
+        handle: h5py.File,
+        *,
+        mass_definition: MassDefinition,
+        observation_flavor: str,
+    ) -> "SigmaUnitTable":
+        """Load one selected leaf from the v2 per-profile bundle schema."""
+
+        normalized_observation_flavor = observation_flavor.strip().lower()
+        if normalized_observation_flavor not in {SLIT_OBSERVATION_FLAVOR, BOSS_OBSERVATION_FLAVOR}:
+            raise ValueError(f"Unsupported observation flavor '{observation_flavor}' for sigma bundle '{path}'.")
+        if normalized_observation_flavor not in handle:
+            raise ValueError(
+                f"Sigma bundle '{path}' does not contain the observation flavor '{normalized_observation_flavor}'."
+            )
+        flavor_group = handle[normalized_observation_flavor]
+        if mass_definition.label not in flavor_group:
+            raise ValueError(
+                f"Sigma bundle '{path}' does not contain the mass-definition leaf "
+                f"'{normalized_observation_flavor}/{mass_definition.label}'."
+            )
+
+        leaf = flavor_group[mass_definition.label]
+        dataset_names = set(leaf.keys())
+        required_dataset_names = {"gamma_axis", "zd_axis", "log_re_kpc_axis", "s_unit_grid"}
+        missing = sorted(required_dataset_names.difference(dataset_names))
+        if missing:
+            raise ValueError(
+                f"Sigma bundle leaf '{path}:{normalized_observation_flavor}/{mass_definition.label}' is missing datasets: {missing}."
+            )
+
+        raw_profile_name = handle["profile_name"][()]
+        profile_name = _decode_hdf5_string(raw_profile_name)
+        raw_mass_label = leaf.attrs.get("mass_definition_label", mass_definition.label)
+        raw_mass_radius = leaf.attrs.get("mass_radius_kpc", float(mass_definition.radius_kpc))
+        raw_units = leaf.attrs.get("units", mass_definition.sigma_unit_units)
+        n_axis = np.asarray(leaf["n_axis"], dtype=float) if "n_axis" in leaf else None
+        return cls(
+            profile_name=profile_name,
+            mass_definition_label=_decode_hdf5_string(raw_mass_label),
+            mass_radius_kpc=float(raw_mass_radius),
+            units=_decode_hdf5_string(raw_units),
+            gamma_axis=np.asarray(leaf["gamma_axis"], dtype=float),
+            zd_axis=np.asarray(leaf["zd_axis"], dtype=float),
+            log_re_kpc_axis=np.asarray(leaf["log_re_kpc_axis"], dtype=float),
+            values=_validate_sigma_unit_grid(np.asarray(leaf["s_unit_grid"], dtype=float), source_path=path),
+            n_axis=n_axis,
+            observation_flavor=normalized_observation_flavor,
+            aperture_shape=_decode_hdf5_string(leaf.attrs.get("aperture_shape", "")),
+            aperture_width_arcsec=_optional_hdf5_float(leaf.attrs.get("aperture_width_arcsec")),
+            aperture_height_arcsec=_optional_hdf5_float(leaf.attrs.get("aperture_height_arcsec")),
+            aperture_radius_arcsec=_optional_hdf5_float(leaf.attrs.get("aperture_radius_arcsec")),
+            seeing_fwhm_arcsec=float(_optional_hdf5_float(leaf.attrs.get("seeing_fwhm_arcsec")) or np.nan),
+            bundle_leaf_path=f"/{normalized_observation_flavor}/{mass_definition.label}",
+        )
 
     def evaluate(
         self,
@@ -304,6 +449,7 @@ def _assert_sigma_table_matches_run(
     sigma_table: SigmaUnitTable,
     profile_name: str,
     mass_definition: MassDefinition,
+    observation_flavor: str,
 ) -> None:
     """Fail fast when the loaded sigma table does not match the active run."""
 
@@ -319,6 +465,32 @@ def _assert_sigma_table_matches_run(
             f"Sigma table mass definition '{sigma_table.mass_definition_label}' ({sigma_table.mass_radius_kpc:g} kpc) "
             f"does not match run mass definition '{mass_definition.label}' ({mass_definition.radius_kpc:g} kpc)."
         )
+    normalized_observation_flavor = observation_flavor.strip().lower()
+    if sigma_table.observation_flavor != normalized_observation_flavor:
+        raise ValueError(
+            f"Sigma table observation flavor '{sigma_table.observation_flavor}' does not match "
+            f"run observation flavor '{normalized_observation_flavor}'."
+        )
+    if normalized_observation_flavor == BOSS_OBSERVATION_FLAVOR:
+        if sigma_table.aperture_shape != "circular" or not np.isclose(
+            sigma_table.aperture_radius_arcsec if sigma_table.aperture_radius_arcsec is not None else np.nan,
+            DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC,
+        ):
+            raise ValueError("Sigma table aperture metadata does not match the BOSS circular-aperture contract.")
+    else:
+        if sigma_table.aperture_shape != "rectangular" or not np.isclose(
+            sigma_table.aperture_width_arcsec if sigma_table.aperture_width_arcsec is not None else np.nan,
+            DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC,
+        ) or not np.isclose(
+            sigma_table.aperture_height_arcsec if sigma_table.aperture_height_arcsec is not None else np.nan,
+            DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC,
+        ):
+            raise ValueError("Sigma table aperture metadata does not match the slit rectangular-aperture contract.")
+    if not np.isclose(
+        sigma_table.seeing_fwhm_arcsec,
+        DEFAULT_SEEING_FWHM_ARCSEC,
+    ):
+        raise ValueError("Sigma table seeing metadata does not match the expected production value.")
 
 
 def _decode_hdf5_string(raw_value: Any) -> str:
@@ -329,6 +501,19 @@ def _decode_hdf5_string(raw_value: Any) -> str:
     if isinstance(raw_value, np.ndarray) and raw_value.shape == ():
         return _decode_hdf5_string(raw_value.item())
     return str(raw_value)
+
+
+def _optional_hdf5_float(raw_value: Any) -> float | None:
+    """Decode optional numeric HDF5 attrs into Python floats."""
+
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, np.ndarray) and raw_value.shape == ():
+        return _optional_hdf5_float(raw_value.item())
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _validate_sigma_unit_grid(values: np.ndarray, source_path: Path) -> np.ndarray:
@@ -375,17 +560,34 @@ def _parse_not_before(not_before: datetime | str | None) -> datetime:
     return parsed
 
 
+def _detect_observation_flavor_from_path(observation_path: str | Path) -> str:
+    """Infer the observation flavor from the raw HDF5 aperture metadata."""
+
+    path = Path(observation_path).expanduser().resolve()
+    with h5py.File(path, "r") as handle:
+        group_names = sorted(handle.keys())
+        if not group_names:
+            raise ValueError(f"Observation file '{path}' contains no lens groups.")
+        sample_group = handle[group_names[0]]
+        aperture_shape = _decode_hdf5_string(sample_group.attrs.get("aperture_shape", "")).strip().lower()
+        aperture_radius_arcsec = _optional_hdf5_float(sample_group.attrs.get("aperture_radius_arcsec"))
+        if aperture_shape == "circular" and aperture_radius_arcsec is not None and np.isclose(
+            aperture_radius_arcsec,
+            DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC,
+        ):
+            return BOSS_OBSERVATION_FLAVOR
+    return SLIT_OBSERVATION_FLAVOR
+
+
 def _resolve_external_sigma_table_paths(
     external_dir: str | Path,
-    devauc_mass_definition: MassDefinition,
-    sersic_mass_definition: MassDefinition,
 ) -> dict[str, Path]:
-    """Return the monitored table paths implied by the two run definitions."""
+    """Return the monitored per-profile bundle paths."""
 
     resolved_dir = Path(external_dir).expanduser().resolve()
     return {
-        "devauc": resolved_dir / devauc_mass_definition.sigma_table_filename("devauc"),
-        "sersic": resolved_dir / sersic_mass_definition.sigma_table_filename("sersic"),
+        "devauc": resolved_dir / sigma_bundle_filename("devauc"),
+        "sersic": resolved_dir / sigma_bundle_filename("sersic"),
     }
 
 
@@ -393,6 +595,7 @@ def _inspect_sigma_table_candidate(
     table_path: Path,
     expected_profile: str,
     expected_mass_definition: MassDefinition,
+    expected_observation_flavor: str,
     not_before: datetime,
 ) -> dict[str, Any]:
     """
@@ -413,11 +616,16 @@ def _inspect_sigma_table_candidate(
             f"(mtime={mtime.isoformat()})."
         )
 
-    table = SigmaUnitTable.from_path(table_path)
+    table = SigmaUnitTable.from_path(
+        table_path,
+        mass_definition=expected_mass_definition,
+        observation_flavor=expected_observation_flavor,
+    )
     _assert_sigma_table_matches_run(
         sigma_table=table,
         profile_name=expected_profile,
         mass_definition=expected_mass_definition,
+        observation_flavor=expected_observation_flavor,
     )
 
     axis_summary = {
@@ -429,6 +637,8 @@ def _inspect_sigma_table_candidate(
         "min_value": float(np.min(table.values)),
         "max_value": float(np.max(table.values)),
         "mass_definition": mass_definition_metadata(expected_mass_definition),
+        "observation_flavor": expected_observation_flavor,
+        "bundle_leaf_path": table.bundle_leaf_path,
     }
     return {
         "path": table_path.resolve(),
@@ -465,11 +675,9 @@ def wait_for_external_sigma_tables_and_run(
     resolved_not_before = _parse_not_before(not_before)
     devauc_runtime_config = load_runtime_config(Path(devauc_run_dir).expanduser().resolve() / "config_snapshot.yaml")
     sersic_runtime_config = load_runtime_config(Path(sersic_run_dir).expanduser().resolve() / "config_snapshot.yaml")
-    table_paths = _resolve_external_sigma_table_paths(
-        external_dir,
-        devauc_mass_definition=devauc_runtime_config.mass_definition,
-        sersic_mass_definition=sersic_runtime_config.mass_definition,
-    )
+    devauc_observation_flavor = _detect_observation_flavor_from_path(devauc_runtime_config.data.observation_path)
+    sersic_observation_flavor = _detect_observation_flavor_from_path(sersic_runtime_config.data.observation_path)
+    table_paths = _resolve_external_sigma_table_paths(external_dir)
     started_at = time.monotonic()
     last_error_message = "monitor has not inspected any candidate tables yet"
 
@@ -479,12 +687,14 @@ def wait_for_external_sigma_tables_and_run(
                 table_path=table_paths["devauc"],
                 expected_profile="devauc",
                 expected_mass_definition=devauc_runtime_config.mass_definition,
+                expected_observation_flavor=devauc_observation_flavor,
                 not_before=resolved_not_before,
             )
             sersic_candidate = _inspect_sigma_table_candidate(
                 table_path=table_paths["sersic"],
                 expected_profile="sersic",
                 expected_mass_definition=sersic_runtime_config.mass_definition,
+                expected_observation_flavor=sersic_observation_flavor,
                 not_before=resolved_not_before,
             )
             break
@@ -1203,6 +1413,7 @@ def _simulate_trend_chunk(
     context,
     mass_definition: MassDefinition,
     sigma_table_path: str,
+    observation_flavor: str,
     mass_bin_edges: np.ndarray,
     n_parent_sample: int,
     random_seed: int,
@@ -1218,7 +1429,11 @@ def _simulate_trend_chunk(
     """
 
     apply_thread_limits(1)
-    sigma_table = SigmaUnitTable.from_path(sigma_table_path)
+    sigma_table = SigmaUnitTable.from_path(
+        sigma_table_path,
+        mass_definition=mass_definition,
+        observation_flavor=observation_flavor,
+    )
     chunk_draw_count = int(posterior_draws.shape[0])
     n_mass_bins = int(mass_bin_edges.size - 1)
     quantity_names = _trend_quantity_names(mass_definition)
@@ -1300,6 +1515,7 @@ def _run_trend_draws(
     context,
     mass_definition: MassDefinition,
     sigma_table_path: str,
+    observation_flavor: str,
     mass_bin_edges: np.ndarray,
     n_parent_sample: int,
     random_seed: int,
@@ -1329,6 +1545,7 @@ def _run_trend_draws(
                     context=context,
                     mass_definition=mass_definition,
                     sigma_table_path=sigma_table_path,
+                    observation_flavor=observation_flavor,
                     mass_bin_edges=mass_bin_edges,
                     n_parent_sample=n_parent_sample,
                     random_seed=random_seed,
@@ -1355,6 +1572,7 @@ def _run_trend_draws(
                 context,
                 mass_definition,
                 sigma_table_path,
+                observation_flavor,
                 mass_bin_edges,
                 n_parent_sample,
                 random_seed,
@@ -1480,6 +1698,7 @@ def _simulate_ppc_chunk(
     context,
     mass_definition: MassDefinition,
     sigma_table_path: str,
+    observation_flavor: str,
     candidate_pool_size: int,
     random_seed: int,
 ) -> dict[str, Any]:
@@ -1492,7 +1711,11 @@ def _simulate_ppc_chunk(
     """
 
     apply_thread_limits(1)
-    sigma_table = SigmaUnitTable.from_path(sigma_table_path)
+    sigma_table = SigmaUnitTable.from_path(
+        sigma_table_path,
+        mass_definition=mass_definition,
+        observation_flavor=observation_flavor,
+    )
     chunk_draw_count = int(posterior_draws.shape[0])
     theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats = _allocate_replicated_arrays(
         chunk_draw_count,
@@ -1597,6 +1820,7 @@ def _run_ppc_replicates(
     context,
     mass_definition: MassDefinition,
     sigma_table_path: str,
+    observation_flavor: str,
     candidate_pool_size: int,
     random_seed: int,
     parallelism: ResolvedParallelism,
@@ -1623,6 +1847,7 @@ def _run_ppc_replicates(
                     context=context,
                     mass_definition=mass_definition,
                     sigma_table_path=sigma_table_path,
+                    observation_flavor=observation_flavor,
                     candidate_pool_size=candidate_pool_size,
                     random_seed=random_seed,
                 )
@@ -1647,6 +1872,7 @@ def _run_ppc_replicates(
                 context,
                 mass_definition,
                 sigma_table_path,
+                observation_flavor,
                 candidate_pool_size,
                 random_seed,
             )
@@ -2391,11 +2617,17 @@ def run_posterior_trends(
     n_posterior_draws_used = int(posterior_draws.shape[0])
 
     compiled_context, profile_spec, _, _, _, _ = build_compiled_context(runtime_config)
-    sigma_table = SigmaUnitTable.from_path(sigma_table_path)
+    observation_flavor = _detect_observation_flavor_from_path(runtime_config.data.observation_path)
+    sigma_table = SigmaUnitTable.from_path(
+        sigma_table_path,
+        mass_definition=mass_definition,
+        observation_flavor=observation_flavor,
+    )
     _assert_sigma_table_matches_run(
         sigma_table=sigma_table,
         profile_name=profile_spec.name,
         mass_definition=mass_definition,
+        observation_flavor=observation_flavor,
     )
 
     mass_bin_edges = np.linspace(mass_bin_min, mass_bin_max, n_mass_bins + 1, dtype=float)
@@ -2412,6 +2644,7 @@ def run_posterior_trends(
         context=compiled_context,
         mass_definition=mass_definition,
         sigma_table_path=str(Path(sigma_table_path).expanduser().resolve()),
+        observation_flavor=observation_flavor,
         mass_bin_edges=mass_bin_edges,
         n_parent_sample=n_parent_sample,
         random_seed=random_seed,
@@ -2447,6 +2680,8 @@ def run_posterior_trends(
         "gamma_mode": runtime_config.gamma_model.mode,
         "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
         "input_run_dir": str(resolved_run_dir),
+        "observation_path": str(runtime_config.data.observation_path),
+        "observation_flavor": observation_flavor,
         "result_dir": str(result_dir),
         "burn_in_applied": burn_in_steps,
         "requested_n_posterior_draws": None if n_posterior_draws is None else int(n_posterior_draws),
@@ -2454,6 +2689,7 @@ def run_posterior_trends(
         "n_posterior_draws_used": n_posterior_draws_used,
         "posterior_draw_mode": posterior_draw_mode,
         "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
+        "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
         "n_parent_sample": int(n_parent_sample),
         "n_mass_bins": int(n_mass_bins),
         "mass_bin_min": float(mass_bin_min),
@@ -2514,6 +2750,9 @@ def run_posterior_trends(
             "n_posterior_draws_used": n_posterior_draws_used,
             "posterior_draw_mode": posterior_draw_mode,
             "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
+            "observation_path": str(runtime_config.data.observation_path),
+            "observation_flavor": observation_flavor,
+            "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
             "gamma_mode": runtime_config.gamma_model.mode,
             "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
             "n_parent_sample": int(n_parent_sample),
@@ -2623,11 +2862,49 @@ def _backup_existing_figure(figure_path: Path, backup_prefix: str) -> Path:
     return backup_path
 
 
+def _resolve_annotation_observation_path(
+    profile_name: str,
+    run_dir: Path,
+    raw_devauc_path: str | Path | None,
+    raw_sersic_path: str | Path | None,
+) -> Path:
+    """Resolve the observation file for annotation from overrides or run config."""
+
+    override_path: str | Path | None
+    if profile_name == "devauc":
+        override_path = raw_devauc_path
+    elif profile_name == "sersic":
+        override_path = raw_sersic_path
+    else:
+        raise ValueError(f"Unsupported annotation profile '{profile_name}'.")
+
+    if override_path is not None:
+        return Path(override_path).expanduser().resolve()
+    config_snapshot_path = run_dir / "config_snapshot.yaml"
+    if not config_snapshot_path.exists():
+        fig8_summary_path = run_dir / "ppc" / "fig8_like_summary.json"
+        if not fig8_summary_path.exists():
+            raise FileNotFoundError(
+                f"Cannot resolve observation path for '{run_dir}': missing both "
+                f"'{config_snapshot_path}' and '{fig8_summary_path}'."
+            )
+        fig8_summary = json.loads(fig8_summary_path.read_text(encoding="utf-8"))
+        input_run_dir = fig8_summary.get("input_run_dir")
+        if not input_run_dir:
+            raise ValueError(
+                f"Fig. 8 summary '{fig8_summary_path}' does not record `input_run_dir`, "
+                "so the annotation command cannot infer the observation file."
+            )
+        config_snapshot_path = Path(str(input_run_dir)).expanduser().resolve() / "config_snapshot.yaml"
+    runtime_config = load_runtime_config(config_snapshot_path)
+    return Path(runtime_config.data.observation_path).expanduser().resolve()
+
+
 def annotate_existing_fig8_like_figures_with_observations(
     outputs_root: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
     run_dirs: list[str] | None = None,
-    raw_devauc_path: str | Path = "/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_mass_grids.hdf5",
-    raw_sersic_path: str | Path = "/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5",
+    raw_devauc_path: str | Path | None = None,
+    raw_sersic_path: str | Path | None = None,
     backup_prefix: str = "pre_observed_points",
 ) -> Fig8ObservationAnnotationResult:
     """
@@ -2640,10 +2917,6 @@ def annotate_existing_fig8_like_figures_with_observations(
     """
 
     resolved_outputs_root = Path(outputs_root).expanduser().resolve()
-    raw_paths = {
-        "devauc": Path(raw_devauc_path).expanduser().resolve(),
-        "sersic": Path(raw_sersic_path).expanduser().resolve(),
-    }
     processed_runs: list[dict[str, Any]] = []
     skipped_runs: list[dict[str, Any]] = []
 
@@ -2662,8 +2935,14 @@ def annotate_existing_fig8_like_figures_with_observations(
                 mass_definition=mass_definition,
                 gamma_mode=gamma_mode,
             )
+            resolved_observation_path = _resolve_annotation_observation_path(
+                profile_name=profile_name,
+                run_dir=run_dir,
+                raw_devauc_path=raw_devauc_path,
+                raw_sersic_path=raw_sersic_path,
+            )
             observed_points = _load_observed_trend_points(
-                observation_path=raw_paths[profile_name],
+                observation_path=resolved_observation_path,
                 profile_name=profile_name,
                 mass_definition=mass_definition,
             )
@@ -2682,6 +2961,7 @@ def annotate_existing_fig8_like_figures_with_observations(
                     "run_id": run_dir.name,
                     "figure_path": str(figure_path),
                     "backup_path": str(backup_path),
+                    "observation_path": str(resolved_observation_path),
                     "gamma_mode": gamma_mode,
                     "figure_title": figure_title,
                     "mass_quantity": mass_definition.label,
@@ -2708,8 +2988,8 @@ def annotate_existing_fig8_like_figures_with_observations(
         processed_runs=processed_runs,
         skipped_runs=skipped_runs,
         metadata={
-            "raw_devauc_path": str(raw_paths["devauc"]),
-            "raw_sersic_path": str(raw_paths["sersic"]),
+            "raw_devauc_path": None if raw_devauc_path is None else str(Path(raw_devauc_path).expanduser().resolve()),
+            "raw_sersic_path": None if raw_sersic_path is None else str(Path(raw_sersic_path).expanduser().resolve()),
             "backup_prefix": backup_prefix,
             "requested_run_dirs": [] if not run_dirs else [str(Path(path).expanduser().resolve()) for path in run_dirs],
         },
@@ -2781,11 +3061,17 @@ def run_posterior_predictive(
     n_posterior_draws_used = int(posterior_draws.shape[0])
 
     compiled_context, profile_spec, _, _, _, observations = build_compiled_context(runtime_config)
-    sigma_table = SigmaUnitTable.from_path(sigma_table_path)
+    observation_flavor = _detect_observation_flavor_from_path(runtime_config.data.observation_path)
+    sigma_table = SigmaUnitTable.from_path(
+        sigma_table_path,
+        mass_definition=mass_definition,
+        observation_flavor=observation_flavor,
+    )
     _assert_sigma_table_matches_run(
         sigma_table=sigma_table,
         profile_name=profile_spec.name,
         mass_definition=mass_definition,
+        observation_flavor=observation_flavor,
     )
 
     effective_candidate_pool_size = _resolve_candidate_pool_size(
@@ -2803,6 +3089,7 @@ def run_posterior_predictive(
         context=compiled_context,
         mass_definition=mass_definition,
         sigma_table_path=str(Path(sigma_table_path).expanduser().resolve()),
+        observation_flavor=observation_flavor,
         candidate_pool_size=effective_candidate_pool_size,
         random_seed=random_seed,
         parallelism=parallelism,
@@ -2820,11 +3107,14 @@ def run_posterior_predictive(
         "gamma_mode": runtime_config.gamma_model.mode,
         "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
         "input_run_dir": str(resolved_run_dir),
+        "observation_path": str(runtime_config.data.observation_path),
+        "observation_flavor": observation_flavor,
         "result_dir": str(result_dir),
         "burn_in_applied": burn_in_steps,
         "requested_n_replicates": None if n_replicates is None else int(n_replicates),
         "n_posterior_draws_used": n_posterior_draws_used,
         "posterior_draw_mode": posterior_draw_mode,
+        "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
         "mass_definition": mass_definition_metadata(mass_definition),
         "sample_sizes": {"theta_ein": THETA_SAMPLE_SIZE, "sigma": SIGMA_SAMPLE_SIZE},
         "statistics": {"theta_ein": theta_summary, "sigma": sigma_summary},
@@ -2839,7 +3129,10 @@ def run_posterior_predictive(
         "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
         "config_snapshot_path": str(config_snapshot_path),
         "chain_path": str(chain_path),
+        "observation_path": str(runtime_config.data.observation_path),
+        "observation_flavor": observation_flavor,
         "sigma_table_path": str(Path(sigma_table_path).expanduser().resolve()),
+        "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
         "candidate_pool_size": effective_candidate_pool_size,
         "normalization_samples": int(runtime_config.integration.normalization_samples),
         "burn_in_applied": burn_in_steps,
@@ -2904,6 +3197,9 @@ def run_posterior_predictive(
             "posterior_draw_mode": posterior_draw_mode,
             "candidate_pool_size": effective_candidate_pool_size,
             "normalization_samples": runtime_config.integration.normalization_samples,
+            "observation_path": str(runtime_config.data.observation_path),
+            "observation_flavor": observation_flavor,
+            "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
             "gamma_mode": runtime_config.gamma_model.mode,
             "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
             "mass_definition": mass_definition_metadata(mass_definition),
