@@ -9,6 +9,87 @@ import numpy as np
 
 
 @dataclass(frozen=True)
+class AperturePolicy:
+    """Typed description of the aperture geometry used by Jeans solves.
+
+    The upstream ``spherical_jeans`` dependency accepts two distinct aperture
+    representations:
+    - a scalar radius for a centered circular aperture
+    - a length-2 sequence for a centered rectangular aperture
+
+    The project needs both because the legacy production workflow uses a fixed
+    rectangular slit, while the new BOSS rebuild uses a circular aperture with
+    a 1 arcsec radius. Carrying that choice as explicit data prevents hidden
+    global coupling inside the physics layer.
+    """
+
+    shape: str
+    seeing_fwhm_arcsec: float
+    width_arcsec: float | None = None
+    height_arcsec: float | None = None
+    radius_arcsec: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the geometry so invalid policies fail early and clearly."""
+
+        normalized_shape = self.shape.strip().lower()
+        object.__setattr__(self, "shape", normalized_shape)
+
+        if self.seeing_fwhm_arcsec <= 0.0:
+            raise ValueError("AperturePolicy requires a strictly positive seeing_fwhm_arcsec.")
+
+        if normalized_shape == "rectangular":
+            if self.width_arcsec is None or self.height_arcsec is None:
+                raise ValueError("Rectangular AperturePolicy requires width_arcsec and height_arcsec.")
+            if self.width_arcsec <= 0.0 or self.height_arcsec <= 0.0:
+                raise ValueError("Rectangular AperturePolicy dimensions must be strictly positive.")
+            if self.radius_arcsec is not None:
+                raise ValueError("Rectangular AperturePolicy must not define radius_arcsec.")
+            return
+
+        if normalized_shape == "circular":
+            if self.radius_arcsec is None:
+                raise ValueError("Circular AperturePolicy requires radius_arcsec.")
+            if self.radius_arcsec <= 0.0:
+                raise ValueError("Circular AperturePolicy radius must be strictly positive.")
+            if self.width_arcsec is not None or self.height_arcsec is not None:
+                raise ValueError("Circular AperturePolicy must not define width_arcsec or height_arcsec.")
+            return
+
+        raise ValueError(f"Unsupported AperturePolicy shape: {self.shape}")
+
+    @classmethod
+    def rectangular(
+        cls,
+        width_arcsec: float,
+        height_arcsec: float,
+        seeing_fwhm_arcsec: float,
+    ) -> "AperturePolicy":
+        """Construct the centered rectangular policy used by existing products."""
+
+        return cls(
+            shape="rectangular",
+            width_arcsec=float(width_arcsec),
+            height_arcsec=float(height_arcsec),
+            seeing_fwhm_arcsec=float(seeing_fwhm_arcsec),
+        )
+
+    @classmethod
+    def circular(
+        cls,
+        radius_arcsec: float,
+        seeing_fwhm_arcsec: float,
+    ) -> "AperturePolicy":
+        """Construct the centered circular policy required by the BOSS files."""
+
+        return cls(
+            shape="circular",
+            radius_arcsec=float(radius_arcsec),
+            seeing_fwhm_arcsec=float(seeing_fwhm_arcsec),
+        )
+
+
+@dataclass(frozen=True)
 class GalaxyInputs:
     """Physical inputs extracted from one HDF5 group.
 

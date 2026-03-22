@@ -5,7 +5,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from interpolation_grids.config import DEFAULT_INPUT_FILENAMES, EXTERNAL_DATA_DIRECTORY, RAW_DATA_DIRECTORY
+from interpolation_grids.config import (
+    BOSS_SUMMARY_FILENAME,
+    DEFAULT_INPUT_FILENAMES,
+    EXTERNAL_DATA_DIRECTORY,
+    RAW_DATA_DIRECTORY,
+)
+from interpolation_grids.io.boss_observations import build_boss_observation_hdf5_files
 from interpolation_grids.io.hdf5 import process_hdf5_file
 from interpolation_grids.io.sigma_tables import build_default_sigma_unit_hdf5_tables
 
@@ -50,6 +56,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the PPT sigma-unit interpolation HDF5 tables under the chosen output directory.",
     )
     parser.add_argument(
+        "--build-boss-observation-hdf5",
+        action="store_true",
+        help="Build the two BOSS raw observation HDF5 files from the summary table.",
+    )
+    parser.add_argument(
+        "--summary-table",
+        type=Path,
+        default=None,
+        help=f"Override the BOSS summary-table path. Defaults to data/raw/{BOSS_SUMMARY_FILENAME}.",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=None,
@@ -69,6 +86,21 @@ def main() -> int:
 
     parser = build_parser()
     args = parser.parse_args()
+
+    selected_build_modes = int(args.build_sigma_unit_hdf5) + int(args.build_boss_observation_hdf5)
+    if selected_build_modes > 1:
+        parser.error("Choose only one special build mode at a time.")
+
+    if args.build_boss_observation_hdf5:
+        output_dir = args.output_dir or RAW_DATA_DIRECTORY
+        summary_path = args.summary_table or RAW_DATA_DIRECTORY / BOSS_SUMMARY_FILENAME
+        output_paths = build_boss_observation_hdf5_files(
+            summary_path=summary_path,
+            output_directory=output_dir,
+        )
+        for profile_name, output_path in output_paths.items():
+            print(f"{profile_name}: wrote {output_path}")
+        return 0
 
     if args.build_sigma_unit_hdf5:
         output_dir = args.output_dir or EXTERNAL_DATA_DIRECTORY
