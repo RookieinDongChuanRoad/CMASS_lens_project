@@ -1666,7 +1666,7 @@ def test_write_trend_panel_uses_distinct_band_solid_and_dashed_encodings() -> No
     they are difficult to distinguish. The intended mapping is therefore:
     - parent population: magenta `p16-p84` uncertainty band
     - detectable lenses: black solid `p16` and `p84` boundary lines
-    - SLACS-like selected: blue dashed `p16` and `p84` boundary lines
+    - full_selection: blue dashed `p16` and `p84` boundary lines
     """
 
     from cmass_posterior_predictive.predictive import _write_trend_panel
@@ -1744,6 +1744,7 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert payload["worker_processes"] == 0
     assert payload["n_parent_sample"] == 96
     assert payload["n_mass_bins"] == 6
+    assert payload["figure_title"] == "m5 | dependent gamma"
     assert len(payload["mass_bin_edges"]) == 7
     assert len(payload["mass_bin_centers"]) == 6
     assert set(payload["quantities"].keys()) == {"m5", "gamma", "sigma_ap"}
@@ -1766,6 +1767,7 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert result.metadata["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
     assert result.metadata["parallel_strategy"] == "off"
     assert result.metadata["worker_processes"] == 0
+    assert result.metadata["figure_title"] == "m5 | dependent gamma"
 
 
 def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) -> None:
@@ -1796,6 +1798,7 @@ def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) ->
     arrays = np.load(result.result_dir / "fig8_like_curves.npz")
 
     assert payload["mass_definition"]["label"] == "m10"
+    assert payload["figure_title"] == "m10 | dependent gamma"
     assert set(payload["quantities"].keys()) == {"m10", "gamma", "sigma_ap"}
     assert arrays["parent_m10_draws"].shape == (3, 5)
     assert "parent_m5_draws" not in arrays.files
@@ -1828,9 +1831,11 @@ def test_run_posterior_trends_records_independent_gamma_mode_and_parameter_order
     payload = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
 
     assert payload["gamma_mode"] == "independent"
+    assert payload["figure_title"] == "m5 | independent gamma"
     assert payload["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
     assert result.metadata["gamma_mode"] == "independent"
     assert result.metadata["parameter_order"] == list(INDEPENDENT_PARAMETER_ORDER)
+    assert result.metadata["figure_title"] == "m5 | independent gamma"
 
 
 def test_run_posterior_trends_records_sigma_star_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
@@ -1860,9 +1865,11 @@ def test_run_posterior_trends_records_sigma_star_gamma_mode_and_parameter_order(
     payload = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
 
     assert payload["gamma_mode"] == "sigma_star_dependent"
+    assert payload["figure_title"] == "m5 | Sigma_* dependent gamma"
     assert payload["parameter_order"] == list(SIGMA_STAR_DEPENDENT_PARAMETER_ORDER)
     assert result.metadata["gamma_mode"] == "sigma_star_dependent"
     assert result.metadata["parameter_order"] == list(SIGMA_STAR_DEPENDENT_PARAMETER_ORDER)
+    assert result.metadata["figure_title"] == "m5 | Sigma_* dependent gamma"
 
 
 def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:
@@ -2087,6 +2094,8 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
     assert payload["status"] == "completed"
     assert payload["processed_run_count"] == 1
     assert payload["processed_runs"][0]["profile_name"] == "devauc"
+    assert payload["processed_runs"][0]["gamma_mode"] == "dependent"
+    assert payload["processed_runs"][0]["figure_title"] == "m10 | dependent gamma"
     assert payload["processed_runs"][0]["mass_quantity"] == "m10"
     assert payload["processed_runs"][0]["observed_mass_points"] == 7
     assert payload["processed_runs"][0]["observed_gamma_points"] == 7
@@ -2212,6 +2221,59 @@ def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Pat
     assert sorted(devauc_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
     assert sorted(sersic_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
     assert not sorted(extra_result.result_dir.glob("fig8_like.pre_observed_points.*.bak.png"))
+
+
+def test_annotate_fig8_observations_uses_legacy_fallback_when_gamma_metadata_missing(tmp_path: Path) -> None:
+    """Missing gamma metadata in both summary and config should fall back to dependent mode."""
+
+    from cmass_posterior_predictive.predictive import (
+        annotate_existing_fig8_like_figures_with_observations,
+        run_posterior_trends,
+    )
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
+    output_root = tmp_path / "outputs"
+    trend_result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(output_root),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=151,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    fig8_summary_path = trend_result.result_dir / "fig8_like_summary.json"
+    fig8_summary_payload = json.loads(fig8_summary_path.read_text(encoding="utf-8"))
+    fig8_summary_payload.pop("gamma_mode", None)
+    fig8_summary_path.write_text(
+        json.dumps(fig8_summary_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    config_snapshot_path = run_dir / "config_snapshot.yaml"
+    config_payload = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8"))
+    assert isinstance(config_payload, dict)
+    config_payload.pop("gamma_model", None)
+    config_snapshot_path.write_text(yaml.safe_dump(config_payload, sort_keys=False), encoding="utf-8")
+
+    raw_observation_path = run_dir.parent.parent.parent / "data" / "devauc_observations.hdf5"
+    annotation_result = annotate_existing_fig8_like_figures_with_observations(
+        outputs_root=output_root,
+        run_dirs=[str(trend_result.result_dir.parent)],
+        raw_devauc_path=raw_observation_path,
+        raw_sersic_path=raw_observation_path,
+    )
+
+    assert annotation_result.status == "completed"
+    assert annotation_result.processed_run_count == 1
+    processed = annotation_result.processed_runs[0]
+    assert processed["gamma_mode"] == "dependent"
+    assert processed["figure_title"] == "m10 | dependent gamma"
 
 
 def test_cli_posterior_trends_rejects_removed_conditional_curve_arguments(tmp_path: Path) -> None:

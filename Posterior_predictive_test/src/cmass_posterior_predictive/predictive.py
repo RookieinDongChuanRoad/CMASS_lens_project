@@ -34,6 +34,7 @@ import emcee
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 from scipy.interpolate import RegularGridInterpolator
 from scipy.special import ndtr, ndtri
 
@@ -42,8 +43,11 @@ from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.profiles import build_profile_spec
 from cmass_lens_inference.mass_definition import MassDefinition, get_mass_definition, mass_definition_metadata
 from cmass_lens_inference.parameter_schema import (
+    GAMMA_MODE_DEPENDENT,
     GAMMA_MODE_DEPENDENT_CODE,
+    GAMMA_MODE_INDEPENDENT,
     GAMMA_MODE_INDEPENDENT_CODE,
+    GAMMA_MODE_SIGMA_STAR_DEPENDENT,
     GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE,
 )
 from cmass_lens_inference.parallel import apply_thread_limits
@@ -84,6 +88,19 @@ DEFAULT_TREND_MASS_BIN_MIN = 10.15
 DEFAULT_TREND_MASS_BIN_MAX = 12.05
 TREND_CATEGORY_NAMES = ("parent", "detectable", "selected")
 LOG10_2PI = math.log10(2.0 * math.pi)
+_GAMMA_MODE_ALIASES = {
+    GAMMA_MODE_DEPENDENT: GAMMA_MODE_DEPENDENT,
+    GAMMA_MODE_INDEPENDENT: GAMMA_MODE_INDEPENDENT,
+    GAMMA_MODE_SIGMA_STAR_DEPENDENT: GAMMA_MODE_SIGMA_STAR_DEPENDENT,
+    "sigma-star-dependent": GAMMA_MODE_SIGMA_STAR_DEPENDENT,
+    "sigma_star": GAMMA_MODE_SIGMA_STAR_DEPENDENT,
+    "sigma-star": GAMMA_MODE_SIGMA_STAR_DEPENDENT,
+}
+_GAMMA_MODE_TITLE_LABELS = {
+    GAMMA_MODE_DEPENDENT: "dependent",
+    GAMMA_MODE_INDEPENDENT: "independent",
+    GAMMA_MODE_SIGMA_STAR_DEPENDENT: "Sigma_* dependent",
+}
 
 
 @dataclass(frozen=True)
@@ -1875,6 +1892,74 @@ def _load_trend_summary_from_npz(npz_path: Path) -> tuple[np.ndarray, MassDefini
     return mass_grid, mass_definition, summary_payload
 
 
+def _normalize_gamma_mode(raw_mode: Any) -> str | None:
+    """Normalize a raw mode string into one of the supported gamma modes."""
+
+    if not isinstance(raw_mode, str):
+        return None
+    return _GAMMA_MODE_ALIASES.get(raw_mode.strip().lower())
+
+
+def _infer_gamma_mode_from_run_name(run_name: str) -> str:
+    """
+    Infer gamma mode from legacy run-name conventions when metadata is absent.
+
+    Legacy run trees may predate explicit `gamma_mode` serialization. This
+    fallback keeps redraws deterministic without mutating historical files.
+    """
+
+    lowered = run_name.lower()
+    if "sigma_star" in lowered or "sigma-star" in lowered:
+        return GAMMA_MODE_SIGMA_STAR_DEPENDENT
+    if "independent" in lowered:
+        return GAMMA_MODE_INDEPENDENT
+    return GAMMA_MODE_DEPENDENT
+
+
+def _resolve_gamma_mode_for_fig8_run(run_dir: Path, fig8_summary_path: Path) -> str:
+    """
+    Resolve one run's gamma mode without triggering config migration side effects.
+
+    Resolution order:
+    1) `ppc/fig8_like_summary.json` `gamma_mode`
+    2) `config_snapshot.yaml` `gamma_model.mode` (read-only YAML parse)
+    3) run-name fallback (`independent` / `sigma_star` / default dependent)
+    """
+
+    if fig8_summary_path.exists():
+        try:
+            summary_payload = json.loads(fig8_summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            summary_payload = None
+        if isinstance(summary_payload, dict):
+            from_summary = _normalize_gamma_mode(summary_payload.get("gamma_mode"))
+            if from_summary is not None:
+                return from_summary
+
+    config_snapshot_path = run_dir / "config_snapshot.yaml"
+    if config_snapshot_path.exists():
+        try:
+            raw_config = yaml.safe_load(config_snapshot_path.read_text(encoding="utf-8"))
+        except Exception:
+            raw_config = None
+        if isinstance(raw_config, dict):
+            gamma_model = raw_config.get("gamma_model")
+            if isinstance(gamma_model, dict):
+                from_config = _normalize_gamma_mode(gamma_model.get("mode"))
+                if from_config is not None:
+                    return from_config
+
+    return _infer_gamma_mode_from_run_name(run_dir.name)
+
+
+def _format_fig8_like_title(mass_definition: MassDefinition, gamma_mode: str) -> str:
+    """Build the user-facing figure title for one Fig. 8-like render."""
+
+    normalized_mode = _normalize_gamma_mode(gamma_mode) or GAMMA_MODE_DEPENDENT
+    mode_label = _GAMMA_MODE_TITLE_LABELS[normalized_mode]
+    return f"{mass_definition.label} | {mode_label} gamma"
+
+
 def _resolve_first_matching_attr(group: h5py.Group, aliases: tuple[str, ...]) -> float:
     """
     Resolve the first available HDF5 attribute among a set of aliases.
@@ -2024,7 +2109,7 @@ def _write_trend_panel(
     three model categories remain distinguishable when their envelopes overlap:
     - parent population: magenta uncertainty band spanning `p16-p84`
     - detectable lenses: black solid boundary lines at `p16` and `p84`
-    - SLACS-like selected: blue dashed boundary lines at `p16` and `p84`
+    - full_selection: blue dashed boundary lines at `p16` and `p84`
     """
 
     ax.fill_between(
@@ -2056,7 +2141,7 @@ def _write_trend_panel(
         color="#1565c0",
         linewidth=2.0,
         linestyle="--",
-        label="SLACS-like selected",
+        label="full_selection",
     )
     ax.plot(
         mass_grid,
@@ -2092,6 +2177,7 @@ def _write_fig8_like_figure(
     summary_payload: dict[str, dict[str, dict[str, np.ndarray]]],
     mass_definition: MassDefinition,
     observed_points: dict[str, ObservedTrendSeries] | None = None,
+    figure_title: str | None = None,
 ) -> None:
     """Render the three-panel Fig. 8-like trend figure."""
 
@@ -2117,7 +2203,11 @@ def _write_fig8_like_figure(
     handles, labels = axes[0].get_legend_handles_labels()
     axes[0].legend(handles, labels, loc="upper left", fontsize=8, frameon=False)
     axes[-1].set_xlabel(r"log $M_*/M_\odot$", fontsize=10)
-    figure.tight_layout()
+    if figure_title:
+        figure.suptitle(figure_title, fontsize=13)
+        figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
+    else:
+        figure.tight_layout()
     figure.savefig(figure_path, dpi=180)
     plt.close(figure)
 
@@ -2335,6 +2425,10 @@ def run_posterior_trends(
         }
         for quantity_name in trend_quantity_names
     }
+    figure_title = _format_fig8_like_title(
+        mass_definition=mass_definition,
+        gamma_mode=runtime_config.gamma_model.mode,
+    )
 
     result_dir = _materialize_result_dir(Path(output_root_dir), runtime_config.profile.name, resolved_run_dir.name)
     serializable_summary = {
@@ -2371,11 +2465,12 @@ def run_posterior_trends(
         "parallel_strategy": parallelism.strategy,
         "worker_processes": int(parallelism.worker_processes),
         "parallelism": parallelism.to_dict(),
+        "figure_title": figure_title,
         "quantities": {name: {"label": name} for name in trend_quantity_names},
         "categories": {
             "parent": {"label": "Parent population"},
             "detectable": {"label": "Detectable lenses"},
-            "selected": {"label": "SLACS-like selected"},
+            "selected": {"label": "full_selection"},
         },
         "bands": serializable_summary,
     }
@@ -2401,6 +2496,7 @@ def run_posterior_trends(
         mass_grid=mass_bin_centers,
         summary_payload=trend_summary,
         mass_definition=mass_definition,
+        figure_title=figure_title,
     )
 
     return PosteriorTrendResult(
@@ -2429,6 +2525,7 @@ def run_posterior_trends(
             "parallel_strategy": parallelism.strategy,
             "worker_processes": int(parallelism.worker_processes),
             "parallelism": parallelism.to_dict(),
+            "figure_title": figure_title,
         },
     )
 
@@ -2554,8 +2651,17 @@ def annotate_existing_fig8_like_figures_with_observations(
         ppc_dir = run_dir / "ppc"
         npz_path = ppc_dir / "fig8_like_curves.npz"
         figure_path = ppc_dir / "fig8_like.png"
+        fig8_summary_path = ppc_dir / "fig8_like_summary.json"
         try:
             mass_grid, mass_definition, trend_summary = _load_trend_summary_from_npz(npz_path)
+            gamma_mode = _resolve_gamma_mode_for_fig8_run(
+                run_dir=run_dir,
+                fig8_summary_path=fig8_summary_path,
+            )
+            figure_title = _format_fig8_like_title(
+                mass_definition=mass_definition,
+                gamma_mode=gamma_mode,
+            )
             observed_points = _load_observed_trend_points(
                 observation_path=raw_paths[profile_name],
                 profile_name=profile_name,
@@ -2568,6 +2674,7 @@ def annotate_existing_fig8_like_figures_with_observations(
                 summary_payload=trend_summary,
                 mass_definition=mass_definition,
                 observed_points=observed_points,
+                figure_title=figure_title,
             )
             processed_runs.append(
                 {
@@ -2575,6 +2682,8 @@ def annotate_existing_fig8_like_figures_with_observations(
                     "run_id": run_dir.name,
                     "figure_path": str(figure_path),
                     "backup_path": str(backup_path),
+                    "gamma_mode": gamma_mode,
+                    "figure_title": figure_title,
                     "mass_quantity": mass_definition.label,
                     "observed_mass_points": int(observed_points[mass_definition.label].x.size),
                     "observed_gamma_points": int(observed_points["gamma"].x.size),
