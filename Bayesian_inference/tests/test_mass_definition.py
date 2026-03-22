@@ -16,6 +16,7 @@ import numpy as np
 from cmass_lens_inference.mass_definition import (
     convert_log_enclosed_mass,
     get_mass_definition,
+    sigma_bundle_filename,
 )
 
 
@@ -34,6 +35,13 @@ def test_get_mass_definition_exposes_public_labels_and_units() -> None:
     assert m10.radius_kpc == 10.0
     assert m10.public_parameter_names == ("mu10_0", "beta10", "xi10", "sigma10")
     assert m10.sigma_unit_units == "km2 s-2 per 10**m10"
+
+
+def test_sigma_bundle_filename_exposes_canonical_per_profile_names() -> None:
+    """The bundle helper should keep PPT and asset-build naming in lockstep."""
+
+    assert sigma_bundle_filename("devauc") == "jeans_deV_sigma_bundle.h5"
+    assert sigma_bundle_filename("sersic") == "jeans_sers_sigma_bundle.h5"
 
 
 def test_convert_log_enclosed_mass_matches_exact_power_law_relation() -> None:

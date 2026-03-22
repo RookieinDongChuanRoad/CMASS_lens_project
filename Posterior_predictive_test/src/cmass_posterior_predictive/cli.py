@@ -114,11 +114,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     annotate_parser.add_argument(
         "--raw-devauc",
-        default="/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_mass_grids.hdf5",
+        default=None,
     )
     annotate_parser.add_argument(
         "--raw-sersic",
-        default="/Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5",
+        default=None,
     )
     annotate_parser.add_argument("--backup-prefix", default="pre_observed_points")
 

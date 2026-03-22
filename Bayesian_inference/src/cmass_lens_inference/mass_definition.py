@@ -109,6 +109,11 @@ _MASS_DEFINITIONS_BY_RADIUS = {
     ),
 }
 
+_SIGMA_BUNDLE_FILENAMES = {
+    "devauc": "jeans_deV_sigma_bundle.h5",
+    "sersic": "jeans_sers_sigma_bundle.h5",
+}
+
 
 def get_mass_definition(radius_kpc: float | int) -> MassDefinition:
     """Return the supported mass definition matching `radius_kpc`."""
@@ -120,6 +125,16 @@ def get_mass_definition(radius_kpc: float | int) -> MassDefinition:
         raise ValueError(
             f"Unsupported enclosed mass radius {radius_kpc}. Supported radii are 5 and 10 kpc."
         ) from exc
+
+
+def sigma_bundle_filename(profile_name: str) -> str:
+    """Return the canonical per-profile sigma bundle filename."""
+
+    normalized_profile = profile_name.strip().lower()
+    try:
+        return _SIGMA_BUNDLE_FILENAMES[normalized_profile]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported sigma-bundle profile: {profile_name}") from exc
 
 
 def convert_log_enclosed_mass(

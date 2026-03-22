@@ -169,6 +169,15 @@ class SigmaUnitTable:
         build one unambiguous interpolator.
     n_axis:
         Optional Sersic-index axis. It must be absent for the deV table.
+    observation_flavor:
+        Observation flavor associated with this table. The current supported
+        values are `slit` for the legacy rectangular aperture and `boss` for
+        the circular 1 arcsec aperture.
+    aperture_shape, aperture_width_arcsec, aperture_height_arcsec,
+    aperture_radius_arcsec, seeing_fwhm_arcsec:
+        Explicit aperture metadata written into bundle leaves so downstream
+        PPC code can validate that the selected table matches the run's raw
+        observation contract.
     """
 
     profile_name: str
@@ -179,3 +188,9 @@ class SigmaUnitTable:
     log_re_kpc_axis: np.ndarray
     values: np.ndarray
     n_axis: np.ndarray | None = None
+    observation_flavor: str = "slit"
+    aperture_shape: str = "rectangular"
+    aperture_width_arcsec: float | None = 1.6
+    aperture_height_arcsec: float | None = 0.9
+    aperture_radius_arcsec: float | None = None
+    seeing_fwhm_arcsec: float = 0.9

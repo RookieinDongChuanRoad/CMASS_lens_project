@@ -13,7 +13,10 @@ from interpolation_grids.config import (
 )
 from interpolation_grids.io.boss_observations import build_boss_observation_hdf5_files
 from interpolation_grids.io.hdf5 import process_hdf5_file
-from interpolation_grids.io.sigma_tables import build_default_sigma_unit_hdf5_tables
+from interpolation_grids.io.sigma_tables import (
+    build_default_sigma_unit_hdf5_tables,
+    repack_legacy_sigma_unit_hdf5_tables_into_bundles,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build the two BOSS raw observation HDF5 files from the summary table.",
     )
     parser.add_argument(
+        "--repack-legacy-sigma-unit-hdf5",
+        action="store_true",
+        help="Copy existing legacy slit sigma-unit HDF5 files into the new per-profile bundle schema without recomputing.",
+    )
+    parser.add_argument(
         "--summary-table",
         type=Path,
         default=None,
@@ -78,6 +86,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="Limit sigma-unit HDF5 generation to one profile, or build both tables.",
     )
+    parser.add_argument(
+        "--observation-flavor",
+        choices=("slit", "boss", "all"),
+        default="all",
+        help="Limit sigma-bundle generation to one observation flavor, or build both.",
+    )
+    parser.add_argument(
+        "--legacy-sigma-input-dir",
+        type=Path,
+        default=None,
+        help="Directory containing the old flat sigma-unit HDF5 files when using --repack-legacy-sigma-unit-hdf5.",
+    )
     return parser
 
 
@@ -87,7 +107,11 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    selected_build_modes = int(args.build_sigma_unit_hdf5) + int(args.build_boss_observation_hdf5)
+    selected_build_modes = (
+        int(args.build_sigma_unit_hdf5)
+        + int(args.build_boss_observation_hdf5)
+        + int(args.repack_legacy_sigma_unit_hdf5)
+    )
     if selected_build_modes > 1:
         parser.error("Choose only one special build mode at a time.")
 
@@ -102,12 +126,33 @@ def main() -> int:
             print(f"{profile_name}: wrote {output_path}")
         return 0
 
+    if args.repack_legacy_sigma_unit_hdf5:
+        if args.observation_flavor != "all":
+            parser.error("--repack-legacy-sigma-unit-hdf5 only supports the existing slit legacy files, so do not pass --observation-flavor.")
+        output_dir = args.output_dir or EXTERNAL_DATA_DIRECTORY
+        # In worktree-based runs the canonical legacy files still live under the
+        # main repository's external-data directory. Defaulting the repack input
+        # to `output_dir` therefore matches the user's intent better than
+        # blindly using this worktree's `EXTERNAL_DATA_DIRECTORY`.
+        input_dir = args.legacy_sigma_input_dir or output_dir
+        requested_profiles = None if args.profile == "all" else (args.profile,)
+        output_paths = repack_legacy_sigma_unit_hdf5_tables_into_bundles(
+            input_directory=input_dir,
+            output_directory=output_dir,
+            profiles=requested_profiles,
+        )
+        for profile_name, output_path in output_paths.items():
+            print(f"{profile_name}: wrote {output_path}")
+        return 0
+
     if args.build_sigma_unit_hdf5:
         output_dir = args.output_dir or EXTERNAL_DATA_DIRECTORY
         requested_profiles = None if args.profile == "all" else (args.profile,)
+        requested_observation_flavors = None if args.observation_flavor == "all" else (args.observation_flavor,)
         output_paths = build_default_sigma_unit_hdf5_tables(
             output_directory=output_dir,
             profiles=requested_profiles,
+            observation_flavors=requested_observation_flavors,
             workers=args.workers,
         )
         for profile_name, output_path in output_paths.items():
