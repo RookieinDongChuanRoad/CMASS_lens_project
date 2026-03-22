@@ -27,6 +27,55 @@ if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 
+def _write_synthetic_sigma_table(
+    path: Path,
+    *,
+    profile_name: str,
+    mass_definition_label: str,
+    mass_radius_kpc: float,
+) -> Path:
+    """
+    Write a tiny sigma-unit table using the shared HDF5 schema.
+
+    The fixtures only need enough structure to exercise configuration and
+    schema-validation logic, so the numerical values are deliberately simple
+    and monotonic.
+    """
+
+    gamma_axis = np.linspace(1.2, 2.8, 5)
+    zd_axis = np.linspace(0.43, 0.82, 4)
+    log_re_kpc_axis = np.linspace(0.45, 1.20, 3)
+
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("profile_name", data=np.bytes_(profile_name))
+        handle.create_dataset("gamma_axis", data=gamma_axis)
+        handle.create_dataset("zd_axis", data=zd_axis)
+        handle.create_dataset("log_re_kpc_axis", data=log_re_kpc_axis)
+        handle.attrs["schema_version"] = "sigma_unit_hdf5_v1"
+        handle.attrs["mass_definition_label"] = mass_definition_label
+        handle.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
+        handle.attrs["units"] = f"km2 s-2 per 10**{mass_definition_label}"
+
+        if profile_name == "sersic":
+            n_axis = np.linspace(2.5, 10.5, 4)
+            handle.create_dataset("n_axis", data=n_axis)
+            values = np.linspace(
+                0.4,
+                1.0,
+                gamma_axis.size * zd_axis.size * log_re_kpc_axis.size * n_axis.size,
+            ).reshape(gamma_axis.size, zd_axis.size, log_re_kpc_axis.size, n_axis.size)
+        else:
+            values = np.linspace(
+                0.4,
+                1.0,
+                gamma_axis.size * zd_axis.size * log_re_kpc_axis.size,
+            ).reshape(gamma_axis.size, zd_axis.size, log_re_kpc_axis.size)
+
+        handle.create_dataset("s_unit_grid", data=values)
+
+    return path
+
+
 @pytest.fixture
 def synthetic_observation_file(tmp_path: Path) -> Path:
     """
@@ -164,6 +213,42 @@ def synthetic_cross_section_file(tmp_path: Path) -> Path:
         group.create_dataset("gamma_grids", data=np.linspace(1.2, 2.8, 25))
         group.create_dataset("cs_over_theta_ein_grid", data=np.linspace(0.6, 1.4, 25))
     return path
+
+
+@pytest.fixture
+def synthetic_sersic_sigma_table_file(tmp_path: Path) -> Path:
+    """Create a tiny `sersic + m5` sigma-unit table for FP-prior tests."""
+
+    return _write_synthetic_sigma_table(
+        tmp_path / "synthetic_sersic_sigma_table.h5",
+        profile_name="sersic",
+        mass_definition_label="m5",
+        mass_radius_kpc=5.0,
+    )
+
+
+@pytest.fixture
+def synthetic_sersic_m10_sigma_table_file(tmp_path: Path) -> Path:
+    """Create a tiny `sersic + m10` sigma-unit table for mismatch tests."""
+
+    return _write_synthetic_sigma_table(
+        tmp_path / "synthetic_sersic_sigma_table_m10.h5",
+        profile_name="sersic",
+        mass_definition_label="m10",
+        mass_radius_kpc=10.0,
+    )
+
+
+@pytest.fixture
+def synthetic_devauc_sigma_table_file(tmp_path: Path) -> Path:
+    """Create a tiny `devauc + m5` sigma-unit table for mismatch tests."""
+
+    return _write_synthetic_sigma_table(
+        tmp_path / "synthetic_devauc_sigma_table.h5",
+        profile_name="devauc",
+        mass_definition_label="m5",
+        mass_radius_kpc=5.0,
+    )
 
 
 @pytest.fixture
@@ -448,6 +533,122 @@ def synthetic_sigma_star_dependent_config_path(
         "output": {
             "root_dir": str(tmp_path / "outputs"),
             "run_label": "synthetic-gamma-sigma-star",
+            "overwrite_latest": True,
+        },
+    }
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_fp_prior_config_path(
+    synthetic_config_path: Path,
+    synthetic_sersic_sigma_table_file: Path,
+) -> Path:
+    """Create a `sersic + m5` config with the optional FP prior enabled."""
+
+    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    payload["data"]["sigma_table_path"] = str(synthetic_sersic_sigma_table_file)
+    payload["fp_prior"] = {"enabled": True}
+    path = synthetic_config_path.parent / "synthetic_sersic_fp_prior.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_fp_prior_independent_config_path(
+    synthetic_independent_config_path: Path,
+    synthetic_sersic_sigma_table_file: Path,
+) -> Path:
+    """Create an `independent` gamma-mode config with FP prior enabled."""
+
+    payload = yaml.safe_load(synthetic_independent_config_path.read_text(encoding="utf-8"))
+    payload["data"]["sigma_table_path"] = str(synthetic_sersic_sigma_table_file)
+    payload["fp_prior"] = {"enabled": True}
+    path = synthetic_independent_config_path.parent / "synthetic_sersic_fp_prior_independent.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_fp_prior_sigma_star_zero_slope_config_path(
+    synthetic_sigma_star_dependent_config_path: Path,
+    synthetic_sersic_sigma_table_file: Path,
+) -> Path:
+    """Create a zero-slope sigma-star config with the FP prior enabled."""
+
+    payload = yaml.safe_load(synthetic_sigma_star_dependent_config_path.read_text(encoding="utf-8"))
+    payload["sampling"]["initial_center"]["beta_sigma_star_gamma"] = 0.0
+    payload["data"]["sigma_table_path"] = str(synthetic_sersic_sigma_table_file)
+    payload["fp_prior"] = {"enabled": True}
+    path = synthetic_sigma_star_dependent_config_path.parent / "synthetic_sersic_fp_prior_sigma_star_zero.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_devauc_fp_prior_config_path(
+    tmp_path: Path,
+    synthetic_devauc_observation_file: Path,
+    synthetic_cross_section_file: Path,
+    synthetic_devauc_sigma_table_file: Path,
+) -> Path:
+    """Create a `devauc + m5` config with the optional FP prior enabled."""
+
+    path = tmp_path / "synthetic_devauc_fp_prior.yaml"
+    config = {
+        "profile": {"name": "devauc"},
+        "mass_definition": {"enclosed_radius_kpc": 5},
+        "gamma_model": {"mode": "dependent"},
+        "fp_prior": {"enabled": True},
+        "data": {
+            "observation_path": str(synthetic_devauc_observation_file),
+            "cross_section_path": str(synthetic_cross_section_file),
+            "sigma_table_path": str(synthetic_devauc_sigma_table_file),
+        },
+        "sampling": {
+            "n_walkers": 24,
+            "n_steps": 3,
+            "warmup": 1,
+            "random_seed": 7,
+            "initial_center": {
+                "mu5_0": 11.32,
+                "beta5": 0.59,
+                "xi5": -0.11,
+                "sigma5": 0.06,
+                "mu_gamma_0": 1.99,
+                "beta_gamma": 0.1,
+                "xi_gamma": -0.67,
+                "sigma_gamma": 0.149,
+                "mu_zs": 1.8,
+                "sigma_zs": 0.215,
+                "theta0": 0.93,
+                "loga": 1.0,
+            },
+            "initial_jitter_scale": 1.0e-3,
+        },
+        "integration": {
+            "gamma_points": 200,
+            "mstar_points": 200,
+            "normalization_samples": 128,
+        },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
+        "runtime": {
+            "checkpoint_every": 1,
+            "parallel_strategy": "auto",
+            "progress": False,
+            "progress_summary_every": 1,
+            "show_stage_timing": True,
+            "disable_hdf5_file_locking": False,
+            "num_threads": 0,
+            "reserve_cores": 2,
+        },
+        "output": {
+            "root_dir": str(tmp_path / "outputs"),
+            "run_label": "synthetic-devauc-fp",
             "overwrite_latest": True,
         },
     }

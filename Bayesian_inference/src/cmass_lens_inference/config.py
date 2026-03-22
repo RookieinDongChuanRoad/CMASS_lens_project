@@ -16,6 +16,7 @@ from .parameter_schema import GammaModelConfig, build_parameter_schema
 from .types import (
     CosmologyConfig,
     DataConfig,
+    FPPriorConfig,
     HyperParams,
     IntegrationConfig,
     OutputConfig,
@@ -60,6 +61,33 @@ def _load_gamma_model_section(path: Path, raw_data: dict) -> GammaModelConfig:
     return GammaModelConfig(mode=str(gamma_model_raw["mode"]))
 
 
+def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
+    """
+    Load the optional FP-prior section with legacy-calibrated defaults.
+
+    The section is intentionally optional so existing configurations keep the
+    same posterior unless users opt in explicitly.
+    """
+
+    fp_prior_raw = raw_data.get("fp_prior")
+    if fp_prior_raw is None:
+        return FPPriorConfig(enabled=False)
+    if not isinstance(fp_prior_raw, dict):
+        raise TypeError("Config section 'fp_prior' must be a mapping.")
+
+    return FPPriorConfig(
+        enabled=bool(fp_prior_raw.get("enabled", False)),
+        fit_mstar_min=float(fp_prior_raw.get("fit_mstar_min", 11.0)),
+        pivot_mstar=float(fp_prior_raw.get("pivot_mstar", 11.3)),
+        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", 0.047)),
+        scatter_error=float(fp_prior_raw.get("scatter_error", 0.008)),
+        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", 2.341871)),
+        mu_v_error=float(fp_prior_raw.get("mu_v_error", 0.03)),
+        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", 0.25774)),
+        beta_v_error=float(fp_prior_raw.get("beta_v_error", 0.03)),
+    )
+
+
 def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     """
     Load, validate, and normalize the project YAML configuration.
@@ -84,6 +112,16 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     runtime_raw = _require_section(raw_data, "runtime")
     output_raw = _require_section(raw_data, "output")
     gamma_model = _load_gamma_model_section(path, raw_data)
+    fp_prior = _load_fp_prior_section(raw_data)
+
+    sigma_table_path_raw = data_raw.get("sigma_table_path")
+    sigma_table_path = (
+        Path(sigma_table_path_raw).expanduser().resolve()
+        if sigma_table_path_raw is not None
+        else None
+    )
+    if fp_prior.enabled and sigma_table_path is None:
+        raise ValueError("FP prior requires data.sigma_table_path when fp_prior.enabled is true.")
 
     mass_definition = get_mass_definition(mass_definition_raw["enclosed_radius_kpc"])
     initial_center_raw = _require_section(sampling_raw, "initial_center")
@@ -101,9 +139,11 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
         mass_definition=mass_definition,
         gamma_model=gamma_model,
         parameter_schema=parameter_schema,
+        fp_prior=fp_prior,
         data=DataConfig(
             observation_path=Path(data_raw["observation_path"]).expanduser().resolve(),
             cross_section_path=Path(data_raw["cross_section_path"]).expanduser().resolve(),
+            sigma_table_path=sigma_table_path,
         ),
         sampling=SamplingConfig(
             n_walkers=int(sampling_raw["n_walkers"]),

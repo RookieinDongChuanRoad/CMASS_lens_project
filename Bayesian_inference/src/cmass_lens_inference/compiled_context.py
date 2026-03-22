@@ -14,7 +14,7 @@ import math
 import numpy as np
 
 from .cosmology import FlatLambdaCDM
-from .io import load_cross_section_grid, load_observations
+from .io import load_cross_section_grid, load_observations, load_sigma_unit_table
 from .profiles import build_profile_spec
 from .types import CompiledModelContext, RandomBasis, RuntimeConfig
 
@@ -58,6 +58,15 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         runtime_config.mass_definition,
     )
     cross_section_grid = load_cross_section_grid(runtime_config.data.cross_section_path)
+    sigma_table = None
+    if runtime_config.fp_prior.enabled:
+        if runtime_config.data.sigma_table_path is None:
+            raise ValueError("FP prior is enabled but no sigma table path was configured.")
+        sigma_table = load_sigma_unit_table(
+            runtime_config.data.sigma_table_path,
+            profile,
+            runtime_config.mass_definition,
+        )
     cosmology = FlatLambdaCDM(
         h0=runtime_config.cosmology.h0,
         omega_m=runtime_config.cosmology.omega_m,
@@ -180,6 +189,26 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
             # handle quadrature weights explicitly from `mstar_grid`.
             mstar_integrand_base[lens_index, mstar_index] = p_mobs * p_s * p_r
 
+    if sigma_table is None:
+        fp_gamma_axis = np.zeros(1, dtype=np.float64)
+        fp_zd_axis = np.zeros(1, dtype=np.float64)
+        fp_log_re_kpc_axis = np.zeros(1, dtype=np.float64)
+        fp_n_axis = np.zeros(1, dtype=np.float64)
+        fp_sigma_unit_grid = np.zeros((1, 1, 1, 1), dtype=np.float64)
+        fp_has_n_axis = 0
+    else:
+        fp_gamma_axis = np.asarray(sigma_table.gamma_axis, dtype=np.float64)
+        fp_zd_axis = np.asarray(sigma_table.zd_axis, dtype=np.float64)
+        fp_log_re_kpc_axis = np.asarray(sigma_table.log_re_kpc_axis, dtype=np.float64)
+        if sigma_table.n_axis is None:
+            fp_n_axis = np.asarray([profile.fixed_n if profile.fixed_n is not None else 4.0], dtype=np.float64)
+            fp_sigma_unit_grid = np.asarray(sigma_table.sigma_unit_grid, dtype=np.float64)[..., None]
+            fp_has_n_axis = 0
+        else:
+            fp_n_axis = np.asarray(sigma_table.n_axis, dtype=np.float64)
+            fp_sigma_unit_grid = np.asarray(sigma_table.sigma_unit_grid, dtype=np.float64)
+            fp_has_n_axis = 1
+
     context = CompiledModelContext(
         z_grid=np.ascontiguousarray(cosmology.z_table, dtype=np.float64),
         chi_kpc_grid=np.ascontiguousarray(cosmology.comoving_distance_table_mpc * 1000.0, dtype=np.float64),
@@ -222,5 +251,20 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         gamma_trunc_high=2.8,
         normalization_min_value=1.0e-10,
         gamma_mode_code=runtime_config.parameter_schema.gamma_mode_code,
+        fp_enabled=1 if runtime_config.fp_prior.enabled else 0,
+        fp_fit_mstar_min=runtime_config.fp_prior.fit_mstar_min,
+        fp_pivot_mstar=runtime_config.fp_prior.pivot_mstar,
+        fp_fiducial_scatter=runtime_config.fp_prior.fiducial_scatter,
+        fp_scatter_error=runtime_config.fp_prior.scatter_error,
+        fp_mu_v_prior=runtime_config.fp_prior.mu_v_prior,
+        fp_mu_v_error=runtime_config.fp_prior.mu_v_error,
+        fp_beta_v_prior=runtime_config.fp_prior.beta_v_prior,
+        fp_beta_v_error=runtime_config.fp_prior.beta_v_error,
+        fp_gamma_axis=np.ascontiguousarray(fp_gamma_axis, dtype=np.float64),
+        fp_zd_axis=np.ascontiguousarray(fp_zd_axis, dtype=np.float64),
+        fp_log_re_kpc_axis=np.ascontiguousarray(fp_log_re_kpc_axis, dtype=np.float64),
+        fp_n_axis=np.ascontiguousarray(fp_n_axis, dtype=np.float64),
+        fp_sigma_unit_grid=np.ascontiguousarray(fp_sigma_unit_grid, dtype=np.float64),
+        fp_has_n_axis=fp_has_n_axis,
     )
     return context, profile, cross_section_grid, cosmology, random_basis, observations

@@ -133,6 +133,28 @@ class DataConfig:
 
     observation_path: Path
     cross_section_path: Path
+    sigma_table_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class FPPriorConfig:
+    """
+    Optional population-level Fundamental Plane prior configuration.
+
+    The values mirror the legacy SLACS reference implementation, but the prior
+    remains disabled by default so existing CMASS inference runs preserve their
+    historical behavior unless users opt in explicitly.
+    """
+
+    enabled: bool
+    fit_mstar_min: float = 11.0
+    pivot_mstar: float = 11.3
+    fiducial_scatter: float = 0.047
+    scatter_error: float = 0.008
+    mu_v_prior: float = 2.341871
+    mu_v_error: float = 0.03
+    beta_v_prior: float = 0.25774
+    beta_v_error: float = 0.03
 
 
 @dataclass(frozen=True)
@@ -201,6 +223,7 @@ class RuntimeConfig:
     mass_definition: MassDefinition
     gamma_model: GammaModelConfig
     parameter_schema: ParameterSchema
+    fp_prior: FPPriorConfig
     data: DataConfig
     sampling: SamplingConfig
     integration: IntegrationConfig
@@ -261,6 +284,27 @@ class CrossSectionGrid:
 
     gamma_grid: np.ndarray
     cs_over_theta_ein: np.ndarray
+
+
+@dataclass(frozen=True)
+class SigmaUnitTable:
+    """
+    Normalized sigma-unit interpolation table consumed by the FP prior.
+
+    The table stores `sigma^2 / 10**m_R` on an explicit profile- and
+    mass-definition-aware grid. Validation lives in the I/O layer so later
+    compiled-context code can assume the table matches the active run.
+    """
+
+    profile_name: str
+    mass_definition_label: str
+    mass_radius_kpc: float
+    units: str
+    gamma_axis: np.ndarray
+    zd_axis: np.ndarray
+    log_re_kpc_axis: np.ndarray
+    sigma_unit_grid: np.ndarray
+    n_axis: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -351,6 +395,21 @@ class CompiledModelContext:
     gamma_trunc_high: float
     normalization_min_value: float
     gamma_mode_code: int
+    fp_enabled: int
+    fp_fit_mstar_min: float
+    fp_pivot_mstar: float
+    fp_fiducial_scatter: float
+    fp_scatter_error: float
+    fp_mu_v_prior: float
+    fp_mu_v_error: float
+    fp_beta_v_prior: float
+    fp_beta_v_error: float
+    fp_gamma_axis: np.ndarray
+    fp_zd_axis: np.ndarray
+    fp_log_re_kpc_axis: np.ndarray
+    fp_n_axis: np.ndarray
+    fp_sigma_unit_grid: np.ndarray
+    fp_has_n_axis: int
 
 
 @dataclass(frozen=True)

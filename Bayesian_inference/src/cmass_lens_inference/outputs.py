@@ -135,6 +135,9 @@ def write_metadata(
         "git": _collect_git_metadata(),
         "chain_storage": config_summary.get("chain_storage"),
         "parallelism": config_summary.get("parallelism", {}),
+        "fp_prior": config_summary.get("fp_prior", {}),
+        "sigma_table_path": config_summary.get("sigma_table_path"),
+        "sigma_table_mass_definition": config_summary.get("sigma_table_mass_definition"),
         "config_summary": config_summary,
     }
     path = run_dir / "metadata.json"

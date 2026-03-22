@@ -95,6 +95,27 @@ def _run_with_layout(
             "mstar_points": runtime_context.config.integration.mstar_points,
             "normalization_samples": runtime_context.config.integration.normalization_samples,
         },
+        "fp_prior": {
+            "enabled": runtime_context.config.fp_prior.enabled,
+            "fit_mstar_min": runtime_context.config.fp_prior.fit_mstar_min,
+            "pivot_mstar": runtime_context.config.fp_prior.pivot_mstar,
+            "fiducial_scatter": runtime_context.config.fp_prior.fiducial_scatter,
+            "scatter_error": runtime_context.config.fp_prior.scatter_error,
+            "mu_v_prior": runtime_context.config.fp_prior.mu_v_prior,
+            "mu_v_error": runtime_context.config.fp_prior.mu_v_error,
+            "beta_v_prior": runtime_context.config.fp_prior.beta_v_prior,
+            "beta_v_error": runtime_context.config.fp_prior.beta_v_error,
+        },
+        "sigma_table_path": (
+            str(runtime_context.config.data.sigma_table_path)
+            if runtime_context.config.data.sigma_table_path is not None
+            else None
+        ),
+        "sigma_table_mass_definition": (
+            runtime_context.config.mass_definition.label
+            if runtime_context.config.data.sigma_table_path is not None
+            else None
+        ),
         "parallelism": runtime_context.parallelism.to_dict(),
         "chain_storage": "emcee_hdf_backend",
     }
