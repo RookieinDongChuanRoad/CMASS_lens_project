@@ -23,12 +23,10 @@ from spherical_jeans import sigma_model, tracer_profiles
 from spherical_jeans.mass_profiles import powerlaw
 
 from interpolation_grids.config import (
-    APERTURE_HEIGHT_ARCSEC,
-    DEFAULT_APERTURE_WIDTH_ARCSEC,
     DEFAULT_RADIAL_GRID_SIZE,
-    SEEING_FWHM_ARCSEC,
+    DEFAULT_PRODUCTION_APERTURE_POLICY,
 )
-from interpolation_grids.models import GalaxyInputs
+from interpolation_grids.models import AperturePolicy, GalaxyInputs
 
 
 COSMOLOGY = FlatLambdaCDM(H0=70, Om0=0.3)
@@ -75,20 +73,32 @@ def uses_devaucouleurs_branch(source_filename: str) -> bool:
     return normalized_name.startswith("observations_deV_with_") and normalized_name.endswith("_grids.hdf5")
 
 
-def _build_aperture_and_seeing_kpc(zd: float) -> tuple[list[float], float]:
-    """Convert the fixed production aperture and seeing into physical kpc."""
+def _build_aperture_and_seeing_kpc(
+    zd: float,
+    aperture_policy: AperturePolicy | None = None,
+) -> tuple[float | list[float], float]:
+    """Convert one explicit aperture policy from arcsec into physical kpc.
+
+    The caller may override the project default when a workflow needs a
+    different physical aperture without mutating the behavior of every Jeans
+    calculation in the repository.
+    """
 
     physical_kpc_per_arcsec = kpc_per_arcsec(zd)
+    resolved_policy = aperture_policy or DEFAULT_PRODUCTION_APERTURE_POLICY
 
-    # The upstream Jeans package interprets a length-2 list as a centered
-    # rectangular aperture ordered as [height, width]. We intentionally keep
-    # that ordering while applying the project-wide fixed-width production
-    # policy requested for both per-galaxy and PPT sigma workflows.
-    aperture_kpc = [
-        APERTURE_HEIGHT_ARCSEC * physical_kpc_per_arcsec,
-        DEFAULT_APERTURE_WIDTH_ARCSEC * physical_kpc_per_arcsec,
-    ]
-    seeing_kpc = SEEING_FWHM_ARCSEC * physical_kpc_per_arcsec
+    if resolved_policy.shape == "circular":
+        aperture_kpc: float | list[float] = float(resolved_policy.radius_arcsec * physical_kpc_per_arcsec)
+    else:
+        # The upstream Jeans package interprets a length-2 list as a centered
+        # rectangular aperture ordered as [height, width]. We intentionally
+        # keep that ordering here so the new typed policy remains compatible
+        # with the external solver's API.
+        aperture_kpc = [
+            float(resolved_policy.height_arcsec * physical_kpc_per_arcsec),
+            float(resolved_policy.width_arcsec * physical_kpc_per_arcsec),
+        ]
+    seeing_kpc = float(resolved_policy.seeing_fwhm_arcsec * physical_kpc_per_arcsec)
     return aperture_kpc, seeing_kpc
 
 
@@ -123,7 +133,7 @@ def _resolve_tracer_setup(
 
 def _compute_sigma_unit_values_for_prepared_inputs(
     gamma_grid: np.ndarray,
-    aperture_kpc: list[float],
+    aperture_kpc: float | list[float],
     seeing_kpc: float,
     tracer_parameters: float | tuple[float, float],
     tracer_profile: object,
@@ -160,6 +170,7 @@ def compute_sigma_unit(
     re_kpc: float,
     n_value: float | None = None,
     mass_radius_kpc: float = 5.0,
+    aperture_policy: AperturePolicy | None = None,
 ) -> float:
     """Evaluate the unit-mass Jeans response for one physical lens coordinate.
 
@@ -174,7 +185,7 @@ def compute_sigma_unit(
     unit `10**m5` normalization.
     """
 
-    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd)
+    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd, aperture_policy=aperture_policy)
     tracer_parameters, tracer_profile, radial_grid = _resolve_tracer_setup(
         profile_name=profile_name,
         re_kpc=re_kpc,
@@ -199,10 +210,11 @@ def compute_sigma_unit_grid(
     re_kpc: float,
     n_value: float | None = None,
     mass_radius_kpc: float = 5.0,
+    aperture_policy: AperturePolicy | None = None,
 ) -> np.ndarray:
     """Evaluate `S_unit` over one gamma axis for fixed non-gamma lens inputs."""
 
-    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd)
+    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd, aperture_policy=aperture_policy)
     tracer_parameters, tracer_profile, radial_grid = _resolve_tracer_setup(
         profile_name=profile_name,
         re_kpc=re_kpc,
@@ -223,6 +235,7 @@ def compute_s2_grid(
     galaxy: GalaxyInputs,
     gamma_grid: np.ndarray,
     mass_radius_kpc: float = 5.0,
+    aperture_policy: AperturePolicy | None = None,
 ) -> np.ndarray:
     """Compute the per-galaxy `s2_grid` for the requested mass definition.
 
@@ -253,6 +266,7 @@ def compute_s2_grid(
             zd=galaxy.zd,
             re_kpc=galaxy.reff_dev_arcsec * physical_kpc_per_arcsec,
             mass_radius_kpc=mass_radius_kpc,
+            aperture_policy=aperture_policy,
         )
     else:
         if galaxy.re_arcsec is None or galaxy.nser is None:
@@ -264,4 +278,5 @@ def compute_s2_grid(
             re_kpc=galaxy.re_arcsec * physical_kpc_per_arcsec,
             n_value=galaxy.nser,
             mass_radius_kpc=mass_radius_kpc,
+            aperture_policy=aperture_policy,
         )

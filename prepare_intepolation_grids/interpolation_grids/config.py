@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
+from interpolation_grids.models import AperturePolicy
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RAW_DATA_DIRECTORY = PROJECT_ROOT.parent / "data" / "raw"
@@ -58,6 +60,22 @@ MASS_DEFINITION_LABELS = {
 DEFAULT_APERTURE_WIDTH_ARCSEC = 1.6
 APERTURE_HEIGHT_ARCSEC = 0.9
 SEEING_FWHM_ARCSEC = 0.9
+DEFAULT_PRODUCTION_APERTURE_POLICY = AperturePolicy.rectangular(
+    width_arcsec=DEFAULT_APERTURE_WIDTH_ARCSEC,
+    height_arcsec=APERTURE_HEIGHT_ARCSEC,
+    seeing_fwhm_arcsec=SEEING_FWHM_ARCSEC,
+)
+BOSS_CIRCULAR_APERTURE_POLICY = AperturePolicy.circular(
+    radius_arcsec=1.0,
+    seeing_fwhm_arcsec=SEEING_FWHM_ARCSEC,
+)
+
+# BOSS observation-file rebuild inputs and outputs.
+BOSS_SUMMARY_FILENAME = "summary_table_deV.txt"
+BOSS_OUTPUT_FILENAMES = {
+    "devauc": "observations_deV_with_BOSS_mass_grids.hdf5",
+    "sersic": "observations_with_BOSS_mass_grids_all.hdf5",
+}
 
 # The Jeans integration follows the legacy script and evaluates the 3D mass
 # profile over six dex around the tracer scale radius.

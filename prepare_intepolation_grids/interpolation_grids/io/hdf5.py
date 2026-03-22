@@ -28,7 +28,7 @@ from interpolation_grids.config import (
     S2_DATASET_NAME,
     SUPPORTED_MASS_RADII_KPC,
 )
-from interpolation_grids.models import GalaxyInputs, ProcessingSummary
+from interpolation_grids.models import AperturePolicy, GalaxyInputs, ProcessingSummary
 from interpolation_grids.physics.jeans import kpc_per_arcsec, compute_s2_grid
 from interpolation_grids.physics.m5 import compute_dmass_dthetaein_grid, compute_mass_grid
 
@@ -85,7 +85,13 @@ def _write_or_replace_dataset(group_handle: h5py.Group, dataset_name: str, value
     group_handle.create_dataset(dataset_name, data=values)
 
 
-def _process_group(group_name: str, group_handle: h5py.Group, source_filename: str, summary: ProcessingSummary) -> None:
+def _process_group(
+    group_name: str,
+    group_handle: h5py.Group,
+    source_filename: str,
+    summary: ProcessingSummary,
+    aperture_policy: AperturePolicy | None = None,
+) -> None:
     """Update all relevant grids for a single galaxy group."""
 
     galaxy = build_galaxy_inputs(
@@ -138,6 +144,7 @@ def _process_group(group_name: str, group_handle: h5py.Group, source_filename: s
                 galaxy=galaxy,
                 gamma_grid=np.asarray(gamma_grid, dtype=float),
                 mass_radius_kpc=mass_radius_kpc,
+                aperture_policy=aperture_policy,
             )
             subgroup = mass_definitions_handle[MASS_DEFINITION_LABELS[float(mass_radius_kpc)]]
             _write_or_replace_dataset(subgroup, S2_DATASET_NAME, s2_grid)
@@ -145,7 +152,12 @@ def _process_group(group_name: str, group_handle: h5py.Group, source_filename: s
         _write_or_replace_dataset(
             group_handle,
             S2_DATASET_NAME,
-            compute_s2_grid(galaxy=galaxy, gamma_grid=np.asarray(gamma_grid, dtype=float), mass_radius_kpc=5.0),
+            compute_s2_grid(
+                galaxy=galaxy,
+                gamma_grid=np.asarray(gamma_grid, dtype=float),
+                mass_radius_kpc=5.0,
+                aperture_policy=aperture_policy,
+            ),
         )
         summary.updated_s2 += 1
 
@@ -155,6 +167,7 @@ def process_hdf5_file(
     output_path: Path | str,
     overwrite_in_place: bool = False,
     group_names: tuple[str, ...] | None = None,
+    aperture_policy: AperturePolicy | None = None,
 ) -> ProcessingSummary:
     """Process one HDF5 file and write the updated result.
 
@@ -169,6 +182,10 @@ def process_hdf5_file(
     group_names:
         Optional whitelist of group names to process. This is primarily for
         debugging and targeted regression checks on one or a few galaxies.
+    aperture_policy:
+        Optional override for the aperture geometry used when refreshing
+        ``s2_grid``. When omitted, the existing rectangular production policy
+        remains in effect.
     """
 
     input_path = Path(input_path)
@@ -200,6 +217,7 @@ def process_hdf5_file(
                         group_handle=handle[group_name],
                         source_filename=input_path.name,
                         summary=summary,
+                        aperture_policy=aperture_policy,
                     )
                 except Exception as exc:  # noqa: BLE001 - we want per-group resilience.
                     summary.failures.append(f"{group_name}: {exc}")
