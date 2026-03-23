@@ -14,7 +14,7 @@ $$
 + \log p(\eta)
 $$
 
-推断超参数 $\eta$；最后，再从 $p(\eta \mid D)$ 前向生成 parent population、detectable population 和 selected population，用 replicated catalogs 与质量分箱趋势带检查模型是否能重现观测样本的整体统计特征。
+推断超参数 $\eta$；最后，再从 $p(\eta \mid D)$ 前向生成 parent population、detectable population 和 selected population，用 replicated catalogs 与质量分箱趋势带检查模型是否能重现观测样本的整体统计特征。当前主线在这个统一框架上又增加了两项能力：一是 `gamma_model.mode = sigma_star_dependent`，二是从 BOSS summary table 独立重建的 BOSS raw observation HDF5 产品；但本文的数值结果段仍只引用 `2026-03-17` 的 active `m10` dependent-gamma rerun，不把这些新增能力误写成已有新 posterior 结果。
 
 ## Data And Derived Quantities
 
@@ -43,6 +43,35 @@ $$
 - `sersic` 分支使用观测到的 $n_i^{\mathrm{obs}}$。
 
 这组观测量在统计上的角色并不对称。$z_d$ 与 $z_s$ 决定透镜几何，$\theta_E$ 决定质量轨迹 $m_R(\gamma)$，$\log M_\ast^{\mathrm{obs}}$ 与 $\log R_e^{\mathrm{obs}}$ 约束群体层关系中的 latent structural state，而 $\sigma_{\mathrm{ap}}^{\mathrm{obs}}$ 只在有动力学数据时参与单镜头似然。
+
+### BOSS observation products as a new upstream data branch
+
+当前主线除了历史 slit-like raw observation 文件之外，还支持两份新的 BOSS raw HDF5：
+
+- `data/raw/observations_deV_with_BOSS_mass_grids.hdf5`
+- `data/raw/observations_with_BOSS_mass_grids_all.hdf5`
+
+它们不是从旧 raw HDF5 克隆出来的副本，而是从 BOSS summary table 重新构建的独立观测产品族。这一点在方法上是重要的，因为它意味着主线现在显式支持两种不同的 observation contract：历史 slit 分支使用矩形 aperture，而 BOSS 分支使用圆形 aperture。对 BOSS raw 文件，主线约定
+
+$$
+\mathrm{aperture\_shape} = \mathrm{circular},
+\qquad
+\mathrm{aperture\_radius\_arcsec} = 1.0,
+\qquad
+\mathrm{seeing\_fwhm\_arcsec} = 1.5.
+$$
+
+因此，这两份 BOSS 文件虽然继续写入与透镜几何、质量定义和动力学相关的同类 attrs，但其观测几何与原 slit 分支并不相同。主线接口上，这条分支由 `python -m interpolation_grids --build-boss-observation-hdf5` 生成。
+
+BOSS raw 文件还显式写入
+
+$$
+\log \Sigma_\ast
+=
+\log M_\ast - \log_{10}(2\pi R_{e,\mathrm{kpc}}^2),
+$$
+
+即代码 attrs 中的 `log10_Sigma_star`。这个量本身不是新的 likelihood 项，但它为后续 `sigma_star_dependent` gamma-mode 提供了可直接解释的物理量基准。本文把它视为新增上游数据语义，而不是当前结果段已经切换到 BOSS sample 的证据。
 
 ### Lensing geometry and enclosed-mass definition
 
@@ -307,7 +336,7 @@ $$
 + \xi_{m_R}\Delta_R,
 $$
 
-$$ 
+$$
 \mu_{\gamma}(m_\ast, R_e, n; \eta)
 =
 \mu_{\gamma,0}
@@ -315,21 +344,22 @@ $$
 + \xi_{\gamma}\Delta_R.
 $$
 
-这就是当前活跃 `2026-03-17` rerun 使用的 dependent gamma 模式。主线源码还支持两种替代写法：
-
-$$
-\mu_\gamma = \mu_{\gamma,0}
-\qquad
-\text{(independent gamma)},
-$$
-
-以及
+这对应当前活跃 `2026-03-17` rerun 使用的 `dependent` gamma 模式。与此同时，主线源码现在把 $\mu_\gamma$ 的参数化显式推广成三种 mode-aware 写法：
 
 $$
 \mu_\gamma
 =
+\begin{cases}
 \mu_{\gamma,0}
-+ \beta_{\Sigma_\ast\gamma}\,(\log \Sigma_\ast - 9),
++ \beta_{\gamma}(m_\ast-11.4)
++ \xi_{\gamma}\Delta_R,
+& \texttt{dependent}, \\
+\mu_{\gamma,0},
+& \texttt{independent}, \\
+\mu_{\gamma,0}
++ \beta_{\Sigma_\ast,\gamma}\,(\log \Sigma_\ast - 9),
+& \texttt{sigma\_star\_dependent}.
+\end{cases}
 $$
 
 其中
@@ -337,10 +367,16 @@ $$
 $$
 \log \Sigma_\ast - 9
 =
-m_\ast - \log_{10}(2\pi) - 2\log_{10}R_{e,\mathrm{kpc}} - 9
+m_\ast - \log_{10}(2\pi) - 2\log_{10}R_{e,\mathrm{kpc}} - 9.
 $$
 
-对应 `sigma-star-dependent` 模式。但这两种模式不构成当前本地主结果的证据来源。
+这三种模式对应三套 sampled parameter schema：
+
+- `dependent`: 12 维
+- `independent`: 10 维
+- `sigma_star_dependent`: 11 维
+
+需要强调的是，`sigma_star_dependent` 改变的只是 $\mu_\gamma$ 的群体均值参数化；单镜头 likelihood 的积分结构、selection normalization 的定义，以及总体后验主公式都保持不变。它是当前主线已支持的模型能力，但不是本文当前本地主结果的证据来源。
 
 因此，群体层条件分布写成
 
@@ -614,6 +650,26 @@ $$
 x_j^{(s)} \sim p_{\mathrm{pop}}(x \mid \eta^{(s)}).
 $$
 
+这里的 posterior draw 不是被“扁平地”解释成一套固定参数名，而是按与 inference 完全一致的 mode-aware schema 解包。因此，在前向生成时，$\mu_\gamma$ 也复用与上文相同的三种写法：
+
+$$
+\mu_\gamma^{(s)}
+=
+\begin{cases}
+\mu_{\gamma,0}^{(s)}
++ \beta_{\gamma}^{(s)}(m_\ast-11.4)
++ \xi_{\gamma}^{(s)}\Delta_R,
+& \texttt{dependent}, \\
+\mu_{\gamma,0}^{(s)},
+& \texttt{independent}, \\
+\mu_{\gamma,0}^{(s)}
++ \beta_{\Sigma_\ast,\gamma}^{(s)}(\log \Sigma_\ast - 9),
+& \texttt{sigma\_star\_dependent}.
+\end{cases}
+$$
+
+也就是说，PPC 与 trend workflow 并没有引入另一套 $\gamma$ population law；它只是把与 inference 完全一致的 mode-aware 均值关系带进 posterior predictive forward model。
+
 对每个 $x_j^{(s)}$，代码会计算
 
 $$
@@ -745,7 +801,7 @@ $$
 
 ## Current Local Results
 
-本文结果段只使用 `2026-03-17` 的两个活跃 `m10` rerun，以及对应的 `chain.h5`、`ppc_summary.json` 和 `fig8_like_summary.json`。因此，下面三组结果分别对应上文的三个数学对象：
+本文结果段只使用 `2026-03-17` 的两个活跃 `m10` rerun，以及对应的 `chain.h5`、`ppc_summary.json` 和 `fig8_like_summary.json`。这两条 run 仍按 dependent gamma 模式解释，不把 `sigma_star_dependent` 或 BOSS observation 分支混入当前数值证据。因此，下面三组结果分别对应上文的三个数学对象：
 
 - 超参数表对应 $p(\eta \mid D)$ 的边缘 posterior 摘要；
 - PPC 对应 $T(D^{\mathrm{rep}})$ 与 $T(D_{\mathrm{obs}})$ 的比较；
@@ -832,7 +888,13 @@ $$
 
 第五，trend 图中的 $\sigma_{\mathrm{ap}}$ 观测点和 PPC 中用于计算 $T(D_{\mathrm{obs}})$ 的 7-lens sigma 样本不是同一个对象。前者在 overlay 里保留 raw HDF5 的逐测量点，`num_sigma=2` 的 lens 会画出两个点；后者则先把同一 lens 的多次 dispersion measurement 聚合成一个 lens-level 值，再进入 replicated-statistic 比较。
 
-第六，本文只讨论当前主线代码在本地已有 run 上表现如何，不延伸到与历史 notebook 或其它对照流程的数值一致性比较。
+第六，`sigma_star_dependent` 是新增支持的 gamma population mode，不等于本文已经给出了该模式下的新 posterior 结果。本文当前结果段仍然只对应 `2026-03-17` 的 dependent-gamma rerun。
+
+第七，BOSS raw observation HDF5 是新增上游数据分支，不等于本文当前结果已经切换到 BOSS sample。正文对 BOSS 的讨论只涉及主线现在支持什么 observation contract，以及这些 attrs 如何进入方法定义。
+
+第八，本文不展开最近其它工程演化，例如 `fig8 observation annotation workflow`、`sigma bundle / bundle-aware PPT loading` 和 `Avoid recomputing sigma tables for m10 mass radii`。这些变更可能影响工作流接口或数据搬运，但不属于本次方法论修订的主角。
+
+第九，本文只讨论当前主线代码在本地已有 run 上表现如何，不延伸到与历史 notebook 或其它对照流程的数值一致性比较。
 
 ## Notation And Code Mapping
 
@@ -847,13 +909,16 @@ $$
 | $\mu_r(m_\ast,n)$ | mean size relation | profile-specific structural constants |
 | $\Delta_R$ | size residual relative to $\mu_r$ | compiled context and PPC generator |
 | $\mu_{m_R}$ | 条件质量均值 | `mu5_0` or `mu10_0`, `beta*`, `xi*` |
-| $\mu_\gamma$ | 条件密度斜率均值 | `mu_gamma_0`, `beta_gamma`, `xi_gamma` |
+| $\mu_\gamma$ | 条件密度斜率均值 | mode-aware gamma population law |
+| $\Sigma_\ast$ | 物理 stellar surface density | raw BOSS attrs `log10_Sigma_star` |
+| $\beta_{\Sigma_\ast,\gamma}$ | `sigma_star_dependent` 模式中的 gamma-mean slope | `beta_sigma_star_gamma` |
 | $P_{\mathrm{find}}$ | 发现概率 sigmoid | `theta0`, `loga` |
 | $g(\theta_E,\gamma)$ | 强透镜截面项 | `cs_over_theta_ein` lookup |
 | $\mathcal L_i$ | 第 $i$ 个 lens 的单镜头似然 | likelihood kernel |
 | $Z_{\mathrm{norm}}$ | 选择归一化项 | normalization MC kernel |
 | $D^{\mathrm{rep}}$ | posterior predictive replicated catalog | PPC workflow |
 | `parent/detectable/selected` | 三层后验预测人群 | trend / PPC reducers |
+| `boss` observation branch | 圆形 aperture 的 BOSS raw observation contract | BOSS raw HDF5 / `--build-boss-observation-hdf5` |
 
 ## Implementation Anchors
 
