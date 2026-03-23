@@ -60,6 +60,10 @@ DEFAULT_APERTURE_WIDTH_ARCSEC = 1.6
 APERTURE_HEIGHT_ARCSEC = 0.9
 DEFAULT_SLIT_SEEING_FWHM_ARCSEC = 0.9
 DEFAULT_BOSS_SEEING_FWHM_ARCSEC = 1.5
+# Backward-compatible alias used by older regression tests and call sites that
+# still mean the historical slit seeing contract when they reference the
+# pre-flavor split constant name.
+SEEING_FWHM_ARCSEC = DEFAULT_SLIT_SEEING_FWHM_ARCSEC
 DEFAULT_PRODUCTION_APERTURE_POLICY = AperturePolicy.rectangular(
     width_arcsec=DEFAULT_APERTURE_WIDTH_ARCSEC,
     height_arcsec=APERTURE_HEIGHT_ARCSEC,

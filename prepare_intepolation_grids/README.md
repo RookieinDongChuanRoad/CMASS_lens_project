@@ -82,7 +82,7 @@ The target bundle schema can contain four leaves:
 The supported aperture policies are:
 
 - `slit`: rectangular `1.6 x 0.9 arcsec`, `seeing = 0.9 arcsec`
-- `boss`: circular radius `1.0 arcsec`, `seeing = 0.9 arcsec`
+- `boss`: circular radius `1.0 arcsec`, `seeing = 1.5 arcsec`
 
 The CLI exposes a dedicated build mode for these tables:
 
@@ -90,9 +90,8 @@ The CLI exposes a dedicated build mode for these tables:
 conda run -n cmass_lens python -m interpolation_grids --build-sigma-unit-hdf5 --profile all --observation-flavor all --workers 14
 ```
 
-For the current staged migration, use the legacy-repack mode instead of direct
-recomputation. This reads the existing flat slit files and writes new bundle
-files without touching the old inputs or generating any BOSS leaves:
+The legacy-repack mode is still available when you only need to reorganize the
+historical slit tables without recomputing them:
 
 ```bash
 conda run -n cmass_lens python -m interpolation_grids --repack-legacy-sigma-unit-hdf5 --profile all
@@ -132,12 +131,11 @@ The Sersic build is much slower than the deV table. That is expected: the
 Sersic table spans one extra interpolation axis and therefore requires
 substantially more direct Jeans solves.
 
-At the current rollout stage, the canonical bundle files are expected to
-contain migrated slit leaves immediately and BOSS leaves only after a later
-dedicated build. A repacked bundle therefore has:
+The canonical production bundle files are expected to contain populated leaves
+for both observation flavors:
 
-- populated `/slit/m5` and `/slit/m10`
-- an empty `/boss` group
+- `/slit/m5` and `/slit/m10`
+- `/boss/m5` and `/boss/m10`
 
 ### HDF5 Contract
 
@@ -179,9 +177,8 @@ The axis order is fixed:
 - `sersic`: `(gamma, zd, log_re_kpc, n)`
 
 The legacy one-file-per-leaf HDF5 tables remain readable for backward
-compatibility, but bundle files are now the canonical assets. During the
-staged migration, those bundle files are first created by repacking the legacy
-slit leaves, and only later extended with BOSS leaves.
+compatibility, but bundle files are now the canonical assets for both slit and
+BOSS workflows.
 
 ### Verification
 

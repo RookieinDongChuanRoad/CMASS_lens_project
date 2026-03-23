@@ -17,7 +17,5 @@ Current files:
 
 Canonical external sigma assets are now the two bundle files above. Each bundle
 uses grouped HDF5 leaves for observation flavor and enclosed-mass definition.
-During the current staged rollout, the migrated bundles are expected to contain
-only the existing legacy slit leaves under `/slit/m5` and `/slit/m10`. The
-`/boss` group is reserved for a later dedicated build and should not be assumed
-to contain populated leaves yet.
+The canonical production bundles are expected to contain populated leaves for
+both observation flavors under `/slit/<mass>` and `/boss/<mass>`.

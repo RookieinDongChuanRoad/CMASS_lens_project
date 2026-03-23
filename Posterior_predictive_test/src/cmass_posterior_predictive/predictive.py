@@ -138,21 +138,22 @@ class ObservedTrendSeries:
 
 
 @dataclass(frozen=True)
-class ObservedTrendSeries:
+class ObservationContract:
     """
-    One quantity's observed points for the Fig. 8-style overlay.
+    Explicit aperture and seeing contract read from one raw observation file.
 
-    The redraw command needs a small, explicit payload so the plotting code can
-    stay agnostic about HDF5 details. Each series therefore carries:
-    - `x`: stellar-mass positions for all observed points
-    - `y`: observed central values
-    - `yerr_lower` / `yerr_upper`: lower and upper vertical uncertainties
+    The PPC and trend workflows must validate that the selected sigma bundle
+    matches the raw observations exactly. Carrying the resolved contract as a
+    typed object keeps that comparison explicit and avoids re-parsing HDF5
+    attrs at every call site.
     """
 
-    x: np.ndarray
-    y: np.ndarray
-    yerr_lower: np.ndarray
-    yerr_upper: np.ndarray
+    observation_flavor: str
+    aperture_shape: str
+    aperture_width_arcsec: float | None
+    aperture_height_arcsec: float | None
+    aperture_radius_arcsec: float | None
+    seeing_fwhm_arcsec: float
 
 
 def _trend_quantity_names(mass_definition: MassDefinition) -> tuple[str, str, str]:
@@ -454,6 +455,7 @@ def _assert_sigma_table_matches_run(
     profile_name: str,
     mass_definition: MassDefinition,
     observation_flavor: str,
+    observation_contract: ObservationContract | None = None,
 ) -> None:
     """Fail fast when the loaded sigma table does not match the active run."""
 
@@ -503,6 +505,36 @@ def _assert_sigma_table_matches_run(
     ):
         raise ValueError("Sigma table seeing metadata does not match the expected production value.")
 
+    if observation_contract is None:
+        return
+
+    if sigma_table.observation_flavor != observation_contract.observation_flavor:
+        raise ValueError("Sigma table observation flavor does not match the raw observation contract.")
+    if sigma_table.aperture_shape != observation_contract.aperture_shape:
+        raise ValueError("Sigma table aperture shape does not match the raw observation contract.")
+    if not np.isclose(
+        sigma_table.seeing_fwhm_arcsec,
+        observation_contract.seeing_fwhm_arcsec,
+    ):
+        raise ValueError("Sigma table seeing metadata does not match the raw observation contract.")
+
+    if observation_contract.observation_flavor == BOSS_OBSERVATION_FLAVOR:
+        if not np.isclose(
+            sigma_table.aperture_radius_arcsec if sigma_table.aperture_radius_arcsec is not None else np.nan,
+            observation_contract.aperture_radius_arcsec if observation_contract.aperture_radius_arcsec is not None else np.nan,
+        ):
+            raise ValueError("Sigma table aperture radius does not match the raw observation contract.")
+        return
+
+    if not np.isclose(
+        sigma_table.aperture_width_arcsec if sigma_table.aperture_width_arcsec is not None else np.nan,
+        observation_contract.aperture_width_arcsec if observation_contract.aperture_width_arcsec is not None else np.nan,
+    ) or not np.isclose(
+        sigma_table.aperture_height_arcsec if sigma_table.aperture_height_arcsec is not None else np.nan,
+        observation_contract.aperture_height_arcsec if observation_contract.aperture_height_arcsec is not None else np.nan,
+    ):
+        raise ValueError("Sigma table slit aperture dimensions do not match the raw observation contract.")
+
 
 def _decode_hdf5_string(raw_value: Any) -> str:
     """Normalize the different scalar string encodings that HDF5 may return."""
@@ -525,6 +557,61 @@ def _optional_hdf5_float(raw_value: Any) -> float | None:
         return float(raw_value)
     except (TypeError, ValueError):
         return None
+
+
+def _load_observation_contract_from_path(observation_path: str | Path) -> ObservationContract:
+    """Infer and validate the full raw-observation contract from HDF5 attrs."""
+
+    path = Path(observation_path).expanduser().resolve()
+    with h5py.File(path, "r") as handle:
+        group_names = sorted(handle.keys())
+        if not group_names:
+            raise ValueError(f"Observation file '{path}' contains no lens groups.")
+
+        sample_group = handle[group_names[0]]
+        aperture_shape = _decode_hdf5_string(sample_group.attrs.get("aperture_shape", "")).strip().lower()
+        aperture_radius_arcsec = _optional_hdf5_float(sample_group.attrs.get("aperture_radius_arcsec"))
+
+        is_boss = aperture_shape == "circular" and aperture_radius_arcsec is not None and np.isclose(
+            aperture_radius_arcsec,
+            DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC,
+        )
+        if not is_boss:
+            return ObservationContract(
+                observation_flavor=SLIT_OBSERVATION_FLAVOR,
+                aperture_shape="rectangular",
+                aperture_width_arcsec=DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC,
+                aperture_height_arcsec=DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC,
+                aperture_radius_arcsec=None,
+                seeing_fwhm_arcsec=DEFAULT_SLIT_SEEING_FWHM_ARCSEC,
+            )
+
+        for group_name in group_names:
+            group = handle[group_name]
+            group_shape = _decode_hdf5_string(group.attrs.get("aperture_shape", "")).strip().lower()
+            group_radius_arcsec = _optional_hdf5_float(group.attrs.get("aperture_radius_arcsec"))
+            group_seeing_arcsec = _optional_hdf5_float(group.attrs.get("seeing_fwhm_arcsec"))
+            if group_shape != "circular" or group_radius_arcsec is None or not np.isclose(
+                group_radius_arcsec,
+                DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC,
+            ):
+                raise ValueError(
+                    f"BOSS observation file '{path}' has inconsistent circular-aperture metadata in lens '{group_name}'."
+                )
+            if group_seeing_arcsec is None or not np.isclose(group_seeing_arcsec, DEFAULT_BOSS_SEEING_FWHM_ARCSEC):
+                raise ValueError(
+                    f"BOSS observation file '{path}' must record seeing_fwhm_arcsec={DEFAULT_BOSS_SEEING_FWHM_ARCSEC:.1f} "
+                    f"for every lens group; lens '{group_name}' does not."
+                )
+
+        return ObservationContract(
+            observation_flavor=BOSS_OBSERVATION_FLAVOR,
+            aperture_shape="circular",
+            aperture_width_arcsec=None,
+            aperture_height_arcsec=None,
+            aperture_radius_arcsec=DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC,
+            seeing_fwhm_arcsec=DEFAULT_BOSS_SEEING_FWHM_ARCSEC,
+        )
 
 
 def _validate_sigma_unit_grid(values: np.ndarray, source_path: Path) -> np.ndarray:
@@ -574,20 +661,7 @@ def _parse_not_before(not_before: datetime | str | None) -> datetime:
 def _detect_observation_flavor_from_path(observation_path: str | Path) -> str:
     """Infer the observation flavor from the raw HDF5 aperture metadata."""
 
-    path = Path(observation_path).expanduser().resolve()
-    with h5py.File(path, "r") as handle:
-        group_names = sorted(handle.keys())
-        if not group_names:
-            raise ValueError(f"Observation file '{path}' contains no lens groups.")
-        sample_group = handle[group_names[0]]
-        aperture_shape = _decode_hdf5_string(sample_group.attrs.get("aperture_shape", "")).strip().lower()
-        aperture_radius_arcsec = _optional_hdf5_float(sample_group.attrs.get("aperture_radius_arcsec"))
-        if aperture_shape == "circular" and aperture_radius_arcsec is not None and np.isclose(
-            aperture_radius_arcsec,
-            DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC,
-        ):
-            return BOSS_OBSERVATION_FLAVOR
-    return SLIT_OBSERVATION_FLAVOR
+    return _load_observation_contract_from_path(observation_path).observation_flavor
 
 
 def _resolve_external_sigma_table_paths(
@@ -606,7 +680,7 @@ def _inspect_sigma_table_candidate(
     table_path: Path,
     expected_profile: str,
     expected_mass_definition: MassDefinition,
-    expected_observation_flavor: str,
+    observation_contract: ObservationContract,
     not_before: datetime,
 ) -> dict[str, Any]:
     """
@@ -630,13 +704,14 @@ def _inspect_sigma_table_candidate(
     table = SigmaUnitTable.from_path(
         table_path,
         mass_definition=expected_mass_definition,
-        observation_flavor=expected_observation_flavor,
+        observation_flavor=observation_contract.observation_flavor,
     )
     _assert_sigma_table_matches_run(
         sigma_table=table,
         profile_name=expected_profile,
         mass_definition=expected_mass_definition,
-        observation_flavor=expected_observation_flavor,
+        observation_flavor=observation_contract.observation_flavor,
+        observation_contract=observation_contract,
     )
 
     axis_summary = {
@@ -648,7 +723,7 @@ def _inspect_sigma_table_candidate(
         "min_value": float(np.min(table.values)),
         "max_value": float(np.max(table.values)),
         "mass_definition": mass_definition_metadata(expected_mass_definition),
-        "observation_flavor": expected_observation_flavor,
+        "observation_flavor": observation_contract.observation_flavor,
         "bundle_leaf_path": table.bundle_leaf_path,
     }
     return {
@@ -686,8 +761,8 @@ def wait_for_external_sigma_tables_and_run(
     resolved_not_before = _parse_not_before(not_before)
     devauc_runtime_config = load_runtime_config(Path(devauc_run_dir).expanduser().resolve() / "config_snapshot.yaml")
     sersic_runtime_config = load_runtime_config(Path(sersic_run_dir).expanduser().resolve() / "config_snapshot.yaml")
-    devauc_observation_flavor = _detect_observation_flavor_from_path(devauc_runtime_config.data.observation_path)
-    sersic_observation_flavor = _detect_observation_flavor_from_path(sersic_runtime_config.data.observation_path)
+    devauc_observation_contract = _load_observation_contract_from_path(devauc_runtime_config.data.observation_path)
+    sersic_observation_contract = _load_observation_contract_from_path(sersic_runtime_config.data.observation_path)
     table_paths = _resolve_external_sigma_table_paths(external_dir)
     started_at = time.monotonic()
     last_error_message = "monitor has not inspected any candidate tables yet"
@@ -698,14 +773,14 @@ def wait_for_external_sigma_tables_and_run(
                 table_path=table_paths["devauc"],
                 expected_profile="devauc",
                 expected_mass_definition=devauc_runtime_config.mass_definition,
-                expected_observation_flavor=devauc_observation_flavor,
+                observation_contract=devauc_observation_contract,
                 not_before=resolved_not_before,
             )
             sersic_candidate = _inspect_sigma_table_candidate(
                 table_path=table_paths["sersic"],
                 expected_profile="sersic",
                 expected_mass_definition=sersic_runtime_config.mass_definition,
-                expected_observation_flavor=sersic_observation_flavor,
+                observation_contract=sersic_observation_contract,
                 not_before=resolved_not_before,
             )
             break
@@ -2628,7 +2703,8 @@ def run_posterior_trends(
     n_posterior_draws_used = int(posterior_draws.shape[0])
 
     compiled_context, profile_spec, _, _, _, _ = build_compiled_context(runtime_config)
-    observation_flavor = _detect_observation_flavor_from_path(runtime_config.data.observation_path)
+    observation_contract = _load_observation_contract_from_path(runtime_config.data.observation_path)
+    observation_flavor = observation_contract.observation_flavor
     sigma_table = SigmaUnitTable.from_path(
         sigma_table_path,
         mass_definition=mass_definition,
@@ -2639,6 +2715,7 @@ def run_posterior_trends(
         profile_name=profile_spec.name,
         mass_definition=mass_definition,
         observation_flavor=observation_flavor,
+        observation_contract=observation_contract,
     )
 
     mass_bin_edges = np.linspace(mass_bin_min, mass_bin_max, n_mass_bins + 1, dtype=float)
@@ -3072,7 +3149,8 @@ def run_posterior_predictive(
     n_posterior_draws_used = int(posterior_draws.shape[0])
 
     compiled_context, profile_spec, _, _, _, observations = build_compiled_context(runtime_config)
-    observation_flavor = _detect_observation_flavor_from_path(runtime_config.data.observation_path)
+    observation_contract = _load_observation_contract_from_path(runtime_config.data.observation_path)
+    observation_flavor = observation_contract.observation_flavor
     sigma_table = SigmaUnitTable.from_path(
         sigma_table_path,
         mass_definition=mass_definition,
@@ -3083,6 +3161,7 @@ def run_posterior_predictive(
         profile_name=profile_spec.name,
         mass_definition=mass_definition,
         observation_flavor=observation_flavor,
+        observation_contract=observation_contract,
     )
 
     effective_candidate_pool_size = _resolve_candidate_pool_size(
