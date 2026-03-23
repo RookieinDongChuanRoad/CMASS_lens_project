@@ -14,7 +14,7 @@ import math
 import numpy as np
 
 from .cosmology import FlatLambdaCDM
-from .io import load_cross_section_grid, load_observations, load_sigma_unit_table
+from .io import load_cross_section_grid, load_observation_contract, load_observations, load_sigma_unit_table
 from .profiles import build_profile_spec
 from .types import CompiledModelContext, RandomBasis, RuntimeConfig
 
@@ -62,10 +62,12 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
     if runtime_config.fp_prior.enabled:
         if runtime_config.data.sigma_table_path is None:
             raise ValueError("FP prior is enabled but no sigma table path was configured.")
+        observation_contract = load_observation_contract(runtime_config.data.observation_path)
         sigma_table = load_sigma_unit_table(
             runtime_config.data.sigma_table_path,
             profile,
             runtime_config.mass_definition,
+            observation_flavor=str(observation_contract["observation_flavor"]),
         )
     cosmology = FlatLambdaCDM(
         h0=runtime_config.cosmology.h0,

@@ -76,6 +76,72 @@ def _write_synthetic_sigma_table(
     return path
 
 
+def _write_synthetic_sigma_bundle(
+    path: Path,
+    *,
+    profile_name: str,
+    mass_definition_label: str = "m5",
+    mass_radius_kpc: float = 5.0,
+    observation_flavor: str = "boss",
+    seeing_fwhm_arcsec: float = 1.5,
+) -> Path:
+    """
+    Write a tiny bundle-style sigma table for flavor-aware loader tests.
+
+    The bundle fixture mirrors the production grouped schema closely enough to
+    exercise mass-definition selection and BOSS aperture/seeing validation
+    without depending on the heavy interpolation-grid builder.
+    """
+
+    gamma_axis = np.linspace(1.2, 2.8, 5)
+    zd_axis = np.linspace(0.43, 0.82, 4)
+    log_re_kpc_axis = np.linspace(0.45, 1.20, 3)
+
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("profile_name", data=np.bytes_(profile_name))
+        handle.attrs["schema_version"] = "sigma_unit_bundle_hdf5_v2"
+        handle.attrs["quantity_name"] = "S_unit"
+
+        slit_group = handle.create_group("slit")
+        boss_group = handle.create_group("boss")
+        target_group = boss_group if observation_flavor == "boss" else slit_group
+        leaf = target_group.create_group(mass_definition_label)
+        leaf.create_dataset("gamma_axis", data=gamma_axis)
+        leaf.create_dataset("zd_axis", data=zd_axis)
+        leaf.create_dataset("log_re_kpc_axis", data=log_re_kpc_axis)
+        leaf.attrs["mass_definition_label"] = mass_definition_label
+        leaf.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
+        leaf.attrs["units"] = f"km2 s-2 per 10**{mass_definition_label}"
+        leaf.attrs["observation_flavor"] = observation_flavor
+        if observation_flavor == "boss":
+            values = np.linspace(
+                0.5,
+                1.1,
+                gamma_axis.size * zd_axis.size * log_re_kpc_axis.size,
+            ).reshape(gamma_axis.size, zd_axis.size, log_re_kpc_axis.size)
+            leaf.attrs["aperture_shape"] = "circular"
+            leaf.attrs["aperture_radius_arcsec"] = 1.0
+        else:
+            values = np.linspace(
+                0.4,
+                1.0,
+                gamma_axis.size * zd_axis.size * log_re_kpc_axis.size,
+            ).reshape(gamma_axis.size, zd_axis.size, log_re_kpc_axis.size)
+            leaf.attrs["aperture_shape"] = "rectangular"
+            leaf.attrs["aperture_width_arcsec"] = 1.6
+            leaf.attrs["aperture_height_arcsec"] = 0.9
+
+        if profile_name == "sersic":
+            n_axis = np.linspace(2.5, 10.5, 4)
+            leaf.create_dataset("n_axis", data=n_axis)
+            values = np.repeat(values[..., None], n_axis.size, axis=3)
+
+        leaf.create_dataset("s_unit_grid", data=values)
+        leaf.attrs["seeing_fwhm_arcsec"] = float(seeing_fwhm_arcsec)
+
+    return path
+
+
 @pytest.fixture
 def synthetic_observation_file(tmp_path: Path) -> Path:
     """
@@ -248,6 +314,63 @@ def synthetic_devauc_sigma_table_file(tmp_path: Path) -> Path:
         profile_name="devauc",
         mass_definition_label="m5",
         mass_radius_kpc=5.0,
+    )
+
+
+@pytest.fixture
+def synthetic_boss_observation_file(tmp_path: Path) -> Path:
+    """Create a one-lens BOSS observation file with the canonical 1.5 arcsec seeing."""
+
+    path = tmp_path / "synthetic_boss_observations.hdf5"
+    gamma_grid = np.linspace(1.25, 2.65, 17)
+    mass_grid = np.linspace(11.5, 10.7, 17)
+    dmass_grid = np.linspace(-1.8, -1.1, 17)
+
+    with h5py.File(path, "w") as handle:
+        group = handle.create_group("lens-boss")
+        group.attrs["zd"] = 0.58
+        group.attrs["zs"] = 1.9
+        group.attrs["logmchab"] = 10.9
+        group.attrs["logmchab_deV"] = 11.1
+        group.attrs["logmchab_err"] = 0.04
+        group.attrs["nser"] = 3.1
+        group.attrs["re_arcsec"] = 0.9
+        group.attrs["reff_deV"] = 1.4
+        group.attrs["rein_arcsec"] = 1.0
+        group.attrs["num_sigma"] = 1
+        group.attrs["sigma"] = np.asarray([290000.0], dtype=float)
+        group.attrs["sigma_err"] = np.asarray([18000.0], dtype=float)
+        group.attrs["aperture_shape"] = "circular"
+        group.attrs["aperture_radius_arcsec"] = 1.0
+        group.attrs["seeing_fwhm_arcsec"] = 1.5
+        group.create_dataset("gamma_grid", data=gamma_grid)
+        group.create_dataset("m5_grid", data=mass_grid)
+        group.create_dataset("dm5_dthetaein_grid", data=dmass_grid)
+
+    return path
+
+
+@pytest.fixture
+def synthetic_boss_sigma_bundle_file(tmp_path: Path) -> Path:
+    """Create a tiny BOSS bundle leaf with the canonical 1.5 arcsec seeing."""
+
+    return _write_synthetic_sigma_bundle(
+        tmp_path / "synthetic_devauc_sigma_bundle.h5",
+        profile_name="devauc",
+        observation_flavor="boss",
+        seeing_fwhm_arcsec=1.5,
+    )
+
+
+@pytest.fixture
+def synthetic_bad_boss_sigma_bundle_file(tmp_path: Path) -> Path:
+    """Create a BOSS bundle leaf that still carries the retired 0.9 arcsec seeing."""
+
+    return _write_synthetic_sigma_bundle(
+        tmp_path / "synthetic_bad_boss_sigma_bundle.h5",
+        profile_name="devauc",
+        observation_flavor="boss",
+        seeing_fwhm_arcsec=0.9,
     )
 
 

@@ -305,6 +305,13 @@ class SigmaUnitTable:
     log_re_kpc_axis: np.ndarray
     sigma_unit_grid: np.ndarray
     n_axis: np.ndarray | None = None
+    observation_flavor: str = "slit"
+    aperture_shape: str = "rectangular"
+    aperture_width_arcsec: float | None = 1.6
+    aperture_height_arcsec: float | None = 0.9
+    aperture_radius_arcsec: float | None = None
+    seeing_fwhm_arcsec: float = 0.9
+    bundle_leaf_path: str = "/"
 
 
 @dataclass(frozen=True)

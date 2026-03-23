@@ -108,7 +108,7 @@ def _write_observation_file(path: Path, profile_name: str, observation_flavor: s
             if observation_flavor == "boss":
                 group.attrs["aperture_shape"] = "circular"
                 group.attrs["aperture_radius_arcsec"] = 1.0
-                group.attrs["seeing_fwhm_arcsec"] = 0.9
+                group.attrs["seeing_fwhm_arcsec"] = 1.5
 
             if lens_index < 7:
                 group.attrs["num_sigma"] = 1 if lens_index < 4 else 2
@@ -417,7 +417,7 @@ def _write_sigma_bundle_hdf5(
                 if observation_flavor == "boss":
                     leaf.attrs["aperture_shape"] = "circular"
                     leaf.attrs["aperture_radius_arcsec"] = float(boss_aperture_radius_arcsec)
-                    leaf.attrs["seeing_fwhm_arcsec"] = 0.9
+                    leaf.attrs["seeing_fwhm_arcsec"] = 1.5
                 else:
                     leaf.attrs["aperture_shape"] = "rectangular"
                     leaf.attrs["aperture_width_arcsec"] = 1.6
@@ -1233,6 +1233,41 @@ def test_run_posterior_predictive_rejects_legacy_single_table_for_boss_observati
         )
 
 
+def test_run_posterior_predictive_rejects_boss_raw_bundle_seeing_mismatch(tmp_path: Path) -> None:
+    """BOSS PPC runs must fail when raw observations and bundle metadata disagree on seeing."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, _ = _build_completed_run(
+        tmp_path,
+        profile_name="devauc",
+        mass_radius_kpc=10,
+        observation_flavor="boss",
+    )
+    observation_path = Path(
+        yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))["data"]["observation_path"]
+    )
+    with h5py.File(observation_path, "a") as handle:
+        for group in handle.values():
+            group.attrs["seeing_fwhm_arcsec"] = 0.9
+
+    sigma_bundle_path = _write_sigma_bundle_hdf5(
+        tmp_path / "jeans_deV_sigma_bundle.h5",
+        profile_name="devauc",
+    )
+
+    with pytest.raises(ValueError, match="seeing|contract|raw"):
+        run_posterior_predictive(
+            run_dir=str(run_dir),
+            sigma_table_path=str(sigma_bundle_path),
+            output_root_dir=str(tmp_path / "ppc_output"),
+            n_replicates=2,
+            burn_in=1,
+            random_seed=83,
+            candidate_pool_size=64,
+        )
+
+
 def test_draw_candidate_population_matches_zero_slope_dependent_gamma_mode(tmp_path: Path) -> None:
     """Independent PPC generation should match dependent mode when the gamma slopes are explicitly zero."""
 
@@ -1473,6 +1508,60 @@ def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> 
         assert "not updated after" in str(exc)
     else:
         raise AssertionError("Expected stale tables to keep the monitor in the waiting state.")
+
+
+def test_wait_for_external_sigma_tables_rejects_boss_raw_bundle_seeing_mismatch(tmp_path: Path) -> None:
+    """The monitor entrypoint must reject BOSS assets when raw and bundle seeing contracts differ."""
+
+    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+
+    devauc_run_dir, _ = _build_completed_run(
+        tmp_path / "devauc_case",
+        profile_name="devauc",
+        observation_flavor="boss",
+    )
+    sersic_run_dir, _ = _build_completed_run(
+        tmp_path / "sersic_case",
+        profile_name="sersic",
+        observation_flavor="boss",
+    )
+    for run_dir in (devauc_run_dir, sersic_run_dir):
+        observation_path = Path(
+            yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))["data"]["observation_path"]
+        )
+        with h5py.File(observation_path, "a") as handle:
+            for group in handle.values():
+                group.attrs["seeing_fwhm_arcsec"] = 0.9
+
+    external_dir = tmp_path / "external"
+    external_dir.mkdir(parents=True, exist_ok=True)
+    devauc_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_deV_sigma_bundle.h5",
+        profile_name="devauc",
+    )
+    sersic_table_path = _write_sigma_bundle_hdf5(
+        external_dir / "jeans_sers_sigma_bundle.h5",
+        profile_name="sersic",
+    )
+
+    not_before = datetime(2026, 3, 9, 15, 27, 7, tzinfo=timezone(timedelta(hours=8)))
+    _touch_with_mtime(devauc_table_path, not_before + timedelta(seconds=5))
+    _touch_with_mtime(sersic_table_path, not_before + timedelta(seconds=8))
+
+    with pytest.raises(ValueError, match="seeing|contract|raw"):
+        wait_for_external_sigma_tables_and_run(
+            external_dir=str(external_dir),
+            output_root_dir=str(tmp_path / "ppc_output"),
+            devauc_run_dir=str(devauc_run_dir),
+            sersic_run_dir=str(sersic_run_dir),
+            not_before=not_before,
+            poll_interval_seconds=0.01,
+            timeout_seconds=0.1,
+            n_replicates=2,
+            burn_in=1,
+            random_seed=41,
+            candidate_pool_size=64,
+        )
 
 
 def test_cli_posterior_predictive_command_executes_pipeline(tmp_path: Path) -> None:
