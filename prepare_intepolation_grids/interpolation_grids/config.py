@@ -53,21 +53,21 @@ MASS_DEFINITION_LABELS = {
 }
 
 # Aperture and seeing are expressed in arcsec first and converted per galaxy to
-# physical kpc using the lens redshift. Production `s2_grid` generation now
-# follows the updated business rule of a fixed 1.6 arcsec slit width, while
-# legacy 0.8 arcsec behavior is preserved only in regression tests that
-# reproduce the historical reference script.
+# physical kpc using the lens redshift. The slit and BOSS products now use
+# distinct seeing contracts, so those values are carried as explicit
+# flavor-specific constants rather than one shared global number.
 DEFAULT_APERTURE_WIDTH_ARCSEC = 1.6
 APERTURE_HEIGHT_ARCSEC = 0.9
-SEEING_FWHM_ARCSEC = 0.9
+DEFAULT_SLIT_SEEING_FWHM_ARCSEC = 0.9
+DEFAULT_BOSS_SEEING_FWHM_ARCSEC = 1.5
 DEFAULT_PRODUCTION_APERTURE_POLICY = AperturePolicy.rectangular(
     width_arcsec=DEFAULT_APERTURE_WIDTH_ARCSEC,
     height_arcsec=APERTURE_HEIGHT_ARCSEC,
-    seeing_fwhm_arcsec=SEEING_FWHM_ARCSEC,
+    seeing_fwhm_arcsec=DEFAULT_SLIT_SEEING_FWHM_ARCSEC,
 )
 BOSS_CIRCULAR_APERTURE_POLICY = AperturePolicy.circular(
     radius_arcsec=1.0,
-    seeing_fwhm_arcsec=SEEING_FWHM_ARCSEC,
+    seeing_fwhm_arcsec=DEFAULT_BOSS_SEEING_FWHM_ARCSEC,
 )
 SUPPORTED_OBSERVATION_FLAVORS = ("slit", "boss")
 OBSERVATION_FLAVOR_APERTURE_POLICIES = {

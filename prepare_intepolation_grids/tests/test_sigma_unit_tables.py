@@ -15,6 +15,7 @@ import numpy as np
 
 from interpolation_grids.config import (
     BOSS_CIRCULAR_APERTURE_POLICY,
+    DEFAULT_PRODUCTION_APERTURE_POLICY,
     SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS,
     SIGMA_UNIT_GAMMA_AXIS,
     SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS,
@@ -122,8 +123,19 @@ def test_build_sigma_unit_table_records_boss_aperture_metadata_and_changes_value
     assert boss_table.observation_flavor == "boss"
     assert boss_table.aperture_shape == "circular"
     assert boss_table.aperture_radius_arcsec == 1.0
-    assert boss_table.seeing_fwhm_arcsec == 0.9
+    assert boss_table.seeing_fwhm_arcsec == 1.5
     assert not np.allclose(boss_table.values, slit_table.values)
+
+
+def test_boss_aperture_policy_uses_flavor_specific_seeing_constant() -> None:
+    """BOSS seeing must come from the BOSS flavor policy, not the slit default."""
+
+    assert DEFAULT_PRODUCTION_APERTURE_POLICY.seeing_fwhm_arcsec == 0.9
+    assert BOSS_CIRCULAR_APERTURE_POLICY.seeing_fwhm_arcsec == 1.5
+    assert (
+        BOSS_CIRCULAR_APERTURE_POLICY.seeing_fwhm_arcsec
+        != DEFAULT_PRODUCTION_APERTURE_POLICY.seeing_fwhm_arcsec
+    )
 
 
 def test_build_default_sigma_unit_hdf5_tables_writes_bundle_schema_and_expected_filenames(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 import yaml
@@ -544,6 +545,42 @@ def test_load_sigma_unit_table_reads_supported_hdf5_schema(
     assert sigma_table.sigma_unit_grid.shape == (5, 4, 3, 4)
 
 
+def test_load_sigma_unit_table_reads_requested_boss_bundle_leaf(
+    synthetic_boss_sigma_bundle_file: Path,
+) -> None:
+    """FP-prior loading must support bundle files and select the active BOSS leaf."""
+
+    sigma_table = load_sigma_unit_table(
+        synthetic_boss_sigma_bundle_file,
+        build_profile_spec("devauc"),
+        get_mass_definition(5),
+        observation_flavor="boss",
+    )
+
+    assert sigma_table.profile_name == "devauc"
+    assert sigma_table.mass_definition_label == "m5"
+    assert sigma_table.mass_radius_kpc == pytest.approx(5.0)
+    assert sigma_table.gamma_axis.shape == (5,)
+    assert sigma_table.zd_axis.shape == (4,)
+    assert sigma_table.log_re_kpc_axis.shape == (3,)
+    assert sigma_table.n_axis is None
+    assert sigma_table.sigma_unit_grid.shape == (5, 4, 3)
+
+
+def test_load_sigma_unit_table_rejects_boss_bundle_with_wrong_seeing(
+    synthetic_bad_boss_sigma_bundle_file: Path,
+) -> None:
+    """BOSS bundle leaves must fail fast when their seeing contract is not 1.5 arcsec."""
+
+    with pytest.raises(ValueError, match="seeing"):
+        load_sigma_unit_table(
+            synthetic_bad_boss_sigma_bundle_file,
+            build_profile_spec("devauc"),
+            get_mass_definition(5),
+            observation_flavor="boss",
+        )
+
+
 def test_load_sigma_unit_table_rejects_profile_mismatch(
     synthetic_devauc_sigma_table_file: Path,
 ) -> None:
@@ -626,6 +663,38 @@ def test_load_observations_reads_namespaced_mass_definition_subgroup_when_availa
     np.testing.assert_allclose(observation.dmass_dthetaein_grid_17, np.linspace(-1.9, -1.1, 17))
     assert observation.s2_grid_17 is not None
     np.testing.assert_allclose(observation.s2_grid_17, np.linspace(0.45, 0.75, 17))
+
+
+def test_load_observations_accepts_boss_contract_with_seeing_one_point_five(
+    synthetic_boss_observation_file: Path,
+) -> None:
+    """BOSS raw files should be accepted when every lens group records the 1.5 arcsec seeing contract."""
+
+    observations = load_observations(
+        synthetic_boss_observation_file,
+        build_profile_spec("devauc"),
+        get_mass_definition(5),
+    )
+
+    assert len(observations) == 1
+    assert observations[0].lens_id == "lens-boss"
+    assert observations[0].num_sigma == 1
+
+
+def test_load_observations_rejects_boss_contract_with_wrong_seeing(
+    synthetic_boss_observation_file: Path,
+) -> None:
+    """BOSS raw files should fail fast when they carry the retired 0.9 arcsec seeing."""
+
+    with h5py.File(synthetic_boss_observation_file, "a") as handle:
+        handle["lens-boss"].attrs["seeing_fwhm_arcsec"] = 0.9
+
+    with pytest.raises(ValueError, match="BOSS.*1.5|seeing"):
+        load_observations(
+            synthetic_boss_observation_file,
+            build_profile_spec("devauc"),
+            get_mass_definition(5),
+        )
 
 
 def test_load_cross_section_grid_supports_real_world_alias_names(

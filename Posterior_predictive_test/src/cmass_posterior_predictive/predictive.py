@@ -92,7 +92,11 @@ BOSS_OBSERVATION_FLAVOR = "boss"
 DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC = 1.6
 DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC = 0.9
 DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC = 1.0
-DEFAULT_SEEING_FWHM_ARCSEC = 0.9
+DEFAULT_SLIT_SEEING_FWHM_ARCSEC = 0.9
+DEFAULT_BOSS_SEEING_FWHM_ARCSEC = 1.5
+# Keep the historical name as a slit alias so older call sites and tests
+# continue to resolve the canonical 0.9" slit contract.
+DEFAULT_SEEING_FWHM_ARCSEC = DEFAULT_SLIT_SEEING_FWHM_ARCSEC
 DEFAULT_TREND_POSTERIOR_DRAWS: int | None = None
 DEFAULT_TREND_PARENT_SAMPLE_SIZE = 100000
 DEFAULT_TREND_MASS_BIN_COUNT = 19
@@ -486,9 +490,16 @@ def _assert_sigma_table_matches_run(
             DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC,
         ):
             raise ValueError("Sigma table aperture metadata does not match the slit rectangular-aperture contract.")
+    # The seeing contract is flavor-specific: slit bundles are built at 0.9"
+    # while the BOSS bundle records the broader 1.5" production value.
+    expected_seeing_fwhm_arcsec = (
+        DEFAULT_BOSS_SEEING_FWHM_ARCSEC
+        if normalized_observation_flavor == BOSS_OBSERVATION_FLAVOR
+        else DEFAULT_SLIT_SEEING_FWHM_ARCSEC
+    )
     if not np.isclose(
         sigma_table.seeing_fwhm_arcsec,
-        DEFAULT_SEEING_FWHM_ARCSEC,
+        expected_seeing_fwhm_arcsec,
     ):
         raise ValueError("Sigma table seeing metadata does not match the expected production value.")
 

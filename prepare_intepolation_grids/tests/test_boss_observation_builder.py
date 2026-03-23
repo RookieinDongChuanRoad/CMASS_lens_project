@@ -96,7 +96,7 @@ def test_build_boss_observation_hdf5_files_writes_full_grid_products(tmp_path: P
                 assert sigma_errors in ([71], [78])
                 assert group.attrs["aperture_shape"] == "circular"
                 assert float(group.attrs["aperture_radius_arcsec"]) == 1.0
-                assert float(group.attrs["seeing_fwhm_arcsec"]) == 0.9
+                assert float(group.attrs["seeing_fwhm_arcsec"]) == 1.5
 
                 for attr_name in (
                     "gamma_lower",
