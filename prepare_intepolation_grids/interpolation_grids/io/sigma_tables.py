@@ -14,6 +14,7 @@ import multiprocessing as mp
 import os
 import shutil
 import tempfile
+from dataclasses import replace
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -131,6 +132,34 @@ def _aperture_policy_for_observation_flavor(observation_flavor: str) -> Aperture
         return OBSERVATION_FLAVOR_APERTURE_POLICIES[normalized_flavor]
     except KeyError as exc:
         raise ValueError(f"Unsupported observation flavor: {observation_flavor}") from exc
+
+
+def _rescale_sigma_unit_table(
+    table: SigmaUnitTable,
+    mass_radius_kpc: float,
+) -> SigmaUnitTable:
+    """Return one copy of `table` rewritten for a different enclosed-mass radius.
+
+    Why this helper exists:
+    - the expensive Jeans solve only depends on the tracer profile, aperture
+      policy, and the gamma/zd/re/n axes
+    - the `m5` and `m10` variants differ only by the analytic
+      `(5 / R) ** (3 - gamma)` conversion already used by the direct builder
+
+    Recomputing the full grid for each mass radius would double the runtime for
+    every requested flavor, which is exactly what made the BOSS sersic build
+    stall in practice.
+    """
+
+    target_mass_radius_kpc = float(mass_radius_kpc)
+    scaling = np.power(5.0 / target_mass_radius_kpc, 3.0 - np.asarray(table.gamma_axis, dtype=float))
+    scaled_values = np.asarray(table.values, dtype=float) * scaling[(slice(None),) + (None,) * (np.asarray(table.values).ndim - 1)]
+    return replace(
+        table,
+        mass_definition_label=MASS_DEFINITION_LABELS[target_mass_radius_kpc],
+        mass_radius_kpc=target_mass_radius_kpc,
+        values=scaled_values,
+    )
 
 
 def _decode_hdf5_scalar(raw_value: object) -> str:
@@ -619,19 +648,27 @@ def build_default_sigma_unit_hdf5_tables(
     for normalized_profile in normalized_profiles:
         tables_for_profile: dict[tuple[str, str], SigmaUnitTable] = {}
         for normalized_observation_flavor in normalized_observation_flavors:
+            # The Jeans solve itself does not depend on the enclosed-mass
+            # radius. We compute the expensive base table once at 5 kpc and
+            # then derive any requested mass-radius variants analytically.
+            base_table = build_sigma_unit_table(
+                profile_name=normalized_profile,
+                mass_radius_kpc=5.0,
+                gamma_axis=gamma_axis,
+                zd_axis=zd_axis,
+                log_re_kpc_axis=(
+                    devauc_log_re_kpc_axis if normalized_profile == "devauc" else sersic_log_re_kpc_axis
+                ),
+                n_axis=None if normalized_profile == "devauc" else sersic_n_axis,
+                workers=workers,
+                observation_flavor=normalized_observation_flavor,
+                aperture_policy=_aperture_policy_for_observation_flavor(normalized_observation_flavor),
+            )
             for mass_radius_kpc in normalized_mass_radii:
-                table = build_sigma_unit_table(
-                    profile_name=normalized_profile,
-                    mass_radius_kpc=mass_radius_kpc,
-                    gamma_axis=gamma_axis,
-                    zd_axis=zd_axis,
-                    log_re_kpc_axis=(
-                        devauc_log_re_kpc_axis if normalized_profile == "devauc" else sersic_log_re_kpc_axis
-                    ),
-                    n_axis=None if normalized_profile == "devauc" else sersic_n_axis,
-                    workers=workers,
-                    observation_flavor=normalized_observation_flavor,
-                    aperture_policy=_aperture_policy_for_observation_flavor(normalized_observation_flavor),
+                table = (
+                    base_table
+                    if float(mass_radius_kpc) == 5.0
+                    else _rescale_sigma_unit_table(base_table, mass_radius_kpc=float(mass_radius_kpc))
                 )
                 tables_for_profile[(normalized_observation_flavor, table.mass_definition_label)] = table
 
