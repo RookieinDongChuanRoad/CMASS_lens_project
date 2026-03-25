@@ -76,6 +76,64 @@ SIGMA_STAR_DEPENDENT_PARAMETER_ORDER = (
 )
 
 
+def _box_prior_for_gamma_mode(
+    mass_radius_kpc: int,
+    gamma_mode: str,
+) -> dict[str, list[float]]:
+    """
+    Return one explicit public-name box-prior payload for PPC config fixtures.
+
+    The PPC integration tests build synthetic run directories from scratch, so
+    they must now encode the same top-level bounds contract as real pipeline
+    configs instead of relying on inference-side implicit defaults.
+    """
+
+    if mass_radius_kpc == 10:
+        mass_bounds = {
+            "mu10_0": [9.0, 12.0],
+            "beta10": [-3.0, 3.0],
+            "xi10": [-3.0, 3.0],
+            "sigma10": [1.0e-2, 0.2],
+        }
+    else:
+        mass_bounds = {
+            "mu5_0": [9.0, 12.0],
+            "beta5": [-3.0, 3.0],
+            "xi5": [-3.0, 3.0],
+            "sigma5": [1.0e-2, 0.2],
+        }
+
+    if gamma_mode == "dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_gamma": [-3.0, 3.0],
+            "xi_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "independent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "sigma_star_dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_sigma_star_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    else:
+        raise ValueError(f"Unsupported synthetic gamma mode '{gamma_mode}'.")
+
+    return {
+        **mass_bounds,
+        **gamma_bounds,
+        "mu_zs": [1.0, 3.0],
+        "sigma_zs": [0.0, 2.0],
+        "theta0": [0.0, 3.0],
+        "loga": [-1.0, 3.0],
+    }
+
+
 def _write_observation_file(path: Path, profile_name: str, observation_flavor: str = "slit") -> Path:
     """
     Create a 23-lens synthetic observation file with exactly 7 sigma lenses.
@@ -225,6 +283,7 @@ def _write_config(
             "observation_path": str(observation_path),
             "cross_section_path": str(cross_section_path),
         },
+        "box_prior": _box_prior_for_gamma_mode(int(mass_radius_kpc), gamma_mode),
         "sampling": {
             "n_walkers": 24,
             "n_steps": 5,
@@ -2044,6 +2103,165 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert result.metadata["parallel_strategy"] == "off"
     assert result.metadata["worker_processes"] == 0
     assert result.metadata["figure_title"] == "m5 | dependent gamma"
+
+
+def test_run_posterior_trends_preserves_fig8_like_and_writes_gamma_axis_artifacts(tmp_path: Path) -> None:
+    """
+    A single trend run should keep the legacy Fig. 8 contract and add the new gamma-axis artifacts.
+
+    This is the most important regression guard for the current workstream:
+    - the existing `fig8_like.*` outputs must continue to exist unchanged
+    - the new `gamma_vs_logre_kpc.*` and `gamma_vs_delta_r.*` artifacts must be written beside them
+    - the new summaries must serialize the x-axis metadata needed by downstream consumers
+    """
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="devauc",
+        mass_radius_kpc=10,
+    )
+    result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "trend_output"),
+        n_posterior_draws=4,
+        burn_in=1,
+        random_seed=157,
+        n_parent_sample=96,
+        n_mass_bins=6,
+        mass_bin_min=10.8,
+        mass_bin_max=12.0,
+        worker_processes=1,
+    )
+
+    legacy_files = (
+        "fig8_like.png",
+        "fig8_like_summary.json",
+        "fig8_like_curves.npz",
+    )
+    new_files = (
+        "gamma_vs_logre_kpc.png",
+        "gamma_vs_logre_kpc_summary.json",
+        "gamma_vs_logre_kpc_curves.npz",
+        "gamma_vs_delta_r.png",
+        "gamma_vs_delta_r_summary.json",
+        "gamma_vs_delta_r_curves.npz",
+    )
+    for filename in legacy_files + new_files:
+        assert (result.result_dir / filename).exists(), filename
+
+    logre_summary = json.loads((result.result_dir / "gamma_vs_logre_kpc_summary.json").read_text(encoding="utf-8"))
+    delta_r_summary = json.loads((result.result_dir / "gamma_vs_delta_r_summary.json").read_text(encoding="utf-8"))
+
+    for payload in (logre_summary, delta_r_summary):
+        assert "x_axis_name" in payload
+        assert "x_axis_label" in payload
+        assert "x_bin_edges" in payload
+        assert "x_bin_centers" in payload
+        assert "observed_overlay_mode" in payload
+        assert "input_run_dir" in payload
+        assert "sigma_table_path" in payload
+        assert payload["input_run_dir"] == str(run_dir)
+        assert payload["sigma_table_path"] == str(Path(sigma_table_path).resolve())
+        assert len(payload["x_bin_edges"]) == len(payload["x_bin_centers"]) + 1
+        assert all(
+            left < right for left, right in zip(payload["x_bin_edges"][:-1], payload["x_bin_edges"][1:], strict=True)
+        )
+
+    assert logre_summary["x_axis_name"] == "logre_kpc"
+    assert logre_summary["observed_overlay_mode"] == "points"
+    assert delta_r_summary["x_axis_name"] == "delta_r"
+    assert delta_r_summary["observed_overlay_mode"] == "points"
+
+
+def test_reduce_population_to_mass_bins_includes_final_bin_right_edge(tmp_path: Path) -> None:
+    """
+    The reducer should preserve shapes and keep the last bin closed on the right edge.
+
+    This is a pure unit-level guard for the new x-axis trend reducer. The final
+    bin must absorb samples that land exactly on the upper boundary; otherwise
+    the rightmost observed edge can disappear from the summary.
+    """
+
+    from cmass_posterior_predictive.predictive import _reduce_population_to_mass_bins
+
+    log_mstar = np.array([10.0, 10.5, 11.0, 11.5], dtype=float)
+    values = np.array([1.0, 2.0, 3.0, 4.0], dtype=float)
+    mass_bin_edges = np.array([10.0, 10.5, 11.0, 11.5], dtype=float)
+    weights = np.ones_like(values)
+
+    reduced = _reduce_population_to_mass_bins(
+        log_mstar=log_mstar,
+        values=values,
+        mass_bin_edges=mass_bin_edges,
+        detectable_weights=weights,
+        selected_weights=weights,
+    )
+
+    assert reduced["parent"].shape == (3,)
+    assert reduced["detectable"].shape == (3,)
+    assert reduced["selected"].shape == (3,)
+    assert reduced["parent_bin_counts"].tolist() == [1, 1, 2]
+    assert reduced["parent"].tolist() == [1.0, 2.0, 3.5]
+    assert reduced["detectable"].tolist() == [1.0, 2.0, 3.5]
+    assert reduced["selected"].tolist() == [1.0, 2.0, 3.5]
+
+
+def test_gamma_vs_delta_r_observed_overlay_uses_points_summary(tmp_path: Path) -> None:
+    """
+    The delta-R overlay should serialize observed measurements as explicit points.
+
+    `mu_r` is fixed in the current model, so `delta_r` is also fixed for each
+    observed lens. The saved JSON and NPZ artifacts should therefore expose the
+    same point-style contract used by the `logre_kpc` trend plot.
+    """
+
+    from cmass_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(
+        tmp_path,
+        profile_name="devauc",
+        mass_radius_kpc=10,
+    )
+    result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "trend_output"),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=163,
+        n_parent_sample=96,
+        n_mass_bins=5,
+        mass_bin_min=10.8,
+        mass_bin_max=12.0,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "gamma_vs_delta_r_summary.json").read_text(encoding="utf-8"))
+
+    assert payload["observed_overlay_mode"] == "points"
+    assert payload["x_axis_name"] == "delta_r"
+    assert payload["input_run_dir"] == str(run_dir)
+    assert payload["sigma_table_path"] == str(Path(sigma_table_path).resolve())
+    observed_overlay = payload["observed_overlay"]
+    assert observed_overlay["mode"] == "points"
+    assert len(observed_overlay["x"]) == len(observed_overlay["y"])
+    assert len(observed_overlay["x"]) == len(observed_overlay["yerr_lower"])
+    assert len(observed_overlay["x"]) == len(observed_overlay["yerr_upper"])
+    assert len(observed_overlay["x"]) > 0
+
+    npz_path = result.result_dir / "gamma_vs_delta_r_curves.npz"
+    if npz_path.exists():
+        with np.load(npz_path) as arrays:
+            assert "observed_x" in arrays.files
+            assert "observed_y" in arrays.files
+            assert "observed_yerr_lower" in arrays.files
+            assert "observed_yerr_upper" in arrays.files
+            assert "observed_p16" not in arrays.files
+            assert "observed_p50" not in arrays.files
+            assert "observed_p84" not in arrays.files
 
 
 def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) -> None:

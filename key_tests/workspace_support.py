@@ -101,6 +101,21 @@ CURRENT_INITIAL_CENTER: Final[dict[str, float]] = {
     "loga": 1.0,
 }
 
+CURRENT_BOX_PRIOR: Final[dict[str, list[float]]] = {
+    "mu5_0": [9.0, 12.0],
+    "beta5": [-3.0, 3.0],
+    "xi5": [-3.0, 3.0],
+    "sigma5": [1.0e-2, 0.2],
+    "mu_gamma_0": [1.5, 2.5],
+    "beta_gamma": [-3.0, 3.0],
+    "xi_gamma": [-3.0, 3.0],
+    "sigma_gamma": [0.0, 0.5],
+    "mu_zs": [1.0, 3.0],
+    "sigma_zs": [0.0, 2.0],
+    "theta0": [0.0, 3.0],
+    "loga": [-1.0, 3.0],
+}
+
 CURRENT_GAMMA_MODE: Final[str] = "dependent"
 
 CURRENT_PARAMETER_ORDER: Final[tuple[str, ...]] = (
@@ -236,6 +251,9 @@ def build_current_config_payload(profile_name: str, mode_name: str, output_root:
         "profile": {
             "name": profile.name,
         },
+        "mass_definition": {
+            "enclosed_radius_kpc": 5,
+        },
         "gamma_model": {
             "mode": CURRENT_GAMMA_MODE,
         },
@@ -243,6 +261,7 @@ def build_current_config_payload(profile_name: str, mode_name: str, output_root:
             "observation_path": str(profile.observation_path),
             "cross_section_path": str(profile.cross_section_path),
         },
+        "box_prior": CURRENT_BOX_PRIOR,
         "sampling": {
             "n_walkers": 24,
             "n_steps": mode.n_steps,
@@ -256,9 +275,11 @@ def build_current_config_payload(profile_name: str, mode_name: str, output_root:
             "mstar_points": 200,
             "normalization_samples": 100000,
         },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
         "runtime": {
-            "distance_table_max_z": 5.0,
-            "distance_table_size": 8001,
             "checkpoint_every": mode.checkpoint_every,
             "parallel_strategy": "kernel_only",
             "progress": False,

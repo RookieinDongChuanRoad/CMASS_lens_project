@@ -23,6 +23,59 @@ from cmass_lens_inference.mass_definition import convert_log_enclosed_mass, get_
 from cmass_lens_inference.profiles import build_profile_spec
 
 
+def _default_box_prior_payload(
+    *,
+    mass_radius_kpc: int,
+    gamma_mode: str = "dependent",
+) -> dict[str, list[float]]:
+    """Build one full explicit box-prior payload for inline config tests."""
+
+    if mass_radius_kpc == 10:
+        mass_bounds = {
+            "mu10_0": [9.0, 12.0],
+            "beta10": [-3.0, 3.0],
+            "xi10": [-3.0, 3.0],
+            "sigma10": [1.0e-2, 0.2],
+        }
+    else:
+        mass_bounds = {
+            "mu5_0": [9.0, 12.0],
+            "beta5": [-3.0, 3.0],
+            "xi5": [-3.0, 3.0],
+            "sigma5": [1.0e-2, 0.2],
+        }
+
+    if gamma_mode == "dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_gamma": [-3.0, 3.0],
+            "xi_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "independent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "sigma_star_dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_sigma_star_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    else:
+        raise ValueError(f"Unsupported gamma mode for test box-prior payload: {gamma_mode}")
+
+    return {
+        **mass_bounds,
+        **gamma_bounds,
+        "mu_zs": [1.0, 3.0],
+        "sigma_zs": [0.0, 2.0],
+        "theta0": [0.0, 3.0],
+        "loga": [-1.0, 3.0],
+    }
+
+
 def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) -> None:
     """
     The configuration loader should convert YAML into a typed runtime config.
@@ -51,6 +104,7 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     assert runtime_config.runtime.show_stage_timing is True
     assert runtime_config.fp_prior.enabled is False
     assert runtime_config.data.sigma_table_path is None
+    assert runtime_config.parameter_schema.prior_bounds[0] == pytest.approx((9.0, 12.0))
 
 
 def test_load_runtime_config_requires_sigma_table_path_when_fp_prior_enabled(
@@ -118,6 +172,7 @@ def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Pat
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
                 },
+                "box_prior": _default_box_prior_payload(mass_radius_kpc=5),
                 "sampling": {
                     "n_walkers": 24,
                     "n_steps": 3,
@@ -190,6 +245,7 @@ def test_load_runtime_config_requires_explicit_cosmology_section(tmp_path: Path)
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
                 },
+                "box_prior": _default_box_prior_payload(mass_radius_kpc=5),
                 "sampling": {
                     "n_walkers": 24,
                     "n_steps": 3,
@@ -240,6 +296,145 @@ def test_load_runtime_config_requires_explicit_cosmology_section(tmp_path: Path)
 
     with pytest.raises(KeyError, match="Missing required config section: cosmology"):
         load_runtime_config(legacy_style_path)
+
+
+def test_load_runtime_config_requires_explicit_box_prior_section(tmp_path: Path) -> None:
+    """Fresh source configs must declare the full public-name box prior."""
+
+    missing_box_prior_path = tmp_path / "missing_box_prior.yaml"
+    missing_box_prior_path.write_text(
+        yaml.safe_dump(
+            {
+                "profile": {"name": "sersic"},
+                "mass_definition": {"enclosed_radius_kpc": 5},
+                "gamma_model": {"mode": "dependent"},
+                "data": {
+                    "observation_path": str(tmp_path / "observations.hdf5"),
+                    "cross_section_path": str(tmp_path / "cross_section.h5"),
+                },
+                "sampling": {
+                    "n_walkers": 24,
+                    "n_steps": 3,
+                    "warmup": 1,
+                    "random_seed": 7,
+                    "initial_center": {
+                        "mu5_0": 11.32,
+                        "beta5": 0.59,
+                        "xi5": -0.11,
+                        "sigma5": 0.06,
+                        "mu_gamma_0": 1.99,
+                        "beta_gamma": 0.1,
+                        "xi_gamma": -0.67,
+                        "sigma_gamma": 0.149,
+                        "mu_zs": 1.8,
+                        "sigma_zs": 0.215,
+                        "theta0": 0.93,
+                        "loga": 1.0,
+                    },
+                },
+                "integration": {
+                    "gamma_points": 200,
+                    "mstar_points": 200,
+                    "normalization_samples": 128,
+                },
+                "cosmology": {
+                    "h0": 70.0,
+                    "omega_m": 0.3,
+                },
+                "runtime": {
+                    "checkpoint_every": 1,
+                    "parallel_strategy": "auto",
+                    "progress": False,
+                    "progress_summary_every": 1,
+                    "show_stage_timing": True,
+                    "disable_hdf5_file_locking": False,
+                    "num_threads": 0,
+                    "reserve_cores": 2,
+                },
+                "output": {
+                    "root_dir": str(tmp_path / "outputs"),
+                    "run_label": "synthetic",
+                    "overwrite_latest": True,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(KeyError, match="Missing required config section: box_prior"):
+        load_runtime_config(missing_box_prior_path)
+
+
+def test_load_runtime_config_migrates_legacy_run_snapshot_missing_box_prior(tmp_path: Path) -> None:
+    """Historical run snapshots should gain explicit box-prior bounds on load."""
+
+    snapshot_path = tmp_path / "config_snapshot.yaml"
+    snapshot_path.write_text(
+        yaml.safe_dump(
+            {
+                "profile": {"name": "sersic"},
+                "mass_definition": {"enclosed_radius_kpc": 5},
+                "gamma_model": {"mode": "dependent"},
+                "data": {
+                    "observation_path": str(tmp_path / "observations.hdf5"),
+                    "cross_section_path": str(tmp_path / "cross_section.h5"),
+                },
+                "sampling": {
+                    "n_walkers": 24,
+                    "n_steps": 3,
+                    "warmup": 1,
+                    "random_seed": 7,
+                    "initial_center": {
+                        "mu5_0": 11.32,
+                        "beta5": 0.59,
+                        "xi5": -0.11,
+                        "sigma5": 0.06,
+                        "mu_gamma_0": 1.99,
+                        "beta_gamma": 0.1,
+                        "xi_gamma": -0.67,
+                        "sigma_gamma": 0.149,
+                        "mu_zs": 1.8,
+                        "sigma_zs": 0.215,
+                        "theta0": 0.93,
+                        "loga": 1.0,
+                    },
+                },
+                "integration": {
+                    "gamma_points": 200,
+                    "mstar_points": 200,
+                    "normalization_samples": 128,
+                },
+                "cosmology": {
+                    "h0": 70.0,
+                    "omega_m": 0.3,
+                },
+                "runtime": {
+                    "checkpoint_every": 1,
+                    "parallel_strategy": "auto",
+                    "progress": False,
+                    "progress_summary_every": 1,
+                    "show_stage_timing": True,
+                    "disable_hdf5_file_locking": False,
+                    "num_threads": 0,
+                    "reserve_cores": 2,
+                },
+                "output": {
+                    "root_dir": str(tmp_path / "outputs"),
+                    "run_label": "synthetic",
+                    "overwrite_latest": True,
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    runtime_config = load_runtime_config(snapshot_path)
+    migrated_snapshot = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+
+    assert runtime_config.parameter_schema.prior_bounds[0] == pytest.approx((9.0, 12.0))
+    assert migrated_snapshot["box_prior"] == _default_box_prior_payload(mass_radius_kpc=5)
 
 
 def test_load_runtime_config_maps_m10_public_parameter_names_to_internal_vector(
@@ -311,6 +506,7 @@ def test_load_runtime_config_rejects_gamma_slopes_in_independent_mode(tmp_path: 
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
                 },
+                "box_prior": _default_box_prior_payload(mass_radius_kpc=5, gamma_mode="independent"),
                 "sampling": {
                     "n_walkers": 24,
                     "n_steps": 3,
@@ -361,6 +557,71 @@ def test_load_runtime_config_rejects_gamma_slopes_in_independent_mode(tmp_path: 
     )
 
     with pytest.raises(ValueError, match="beta_gamma"):
+        load_runtime_config(path)
+
+
+def test_load_runtime_config_rejects_incomplete_box_prior_mapping(tmp_path: Path) -> None:
+    """Omitting one sampled parameter from `box_prior` should fail clearly."""
+
+    path = tmp_path / "incomplete_box_prior.yaml"
+    payload = {
+        "profile": {"name": "sersic"},
+        "mass_definition": {"enclosed_radius_kpc": 5},
+        "gamma_model": {"mode": "dependent"},
+        "data": {
+            "observation_path": str(tmp_path / "observations.hdf5"),
+            "cross_section_path": str(tmp_path / "cross_section.h5"),
+        },
+        "box_prior": _default_box_prior_payload(mass_radius_kpc=5),
+        "sampling": {
+            "n_walkers": 24,
+            "n_steps": 3,
+            "warmup": 1,
+            "random_seed": 7,
+            "initial_center": {
+                "mu5_0": 11.32,
+                "beta5": 0.59,
+                "xi5": -0.11,
+                "sigma5": 0.06,
+                "mu_gamma_0": 1.99,
+                "beta_gamma": 0.1,
+                "xi_gamma": -0.67,
+                "sigma_gamma": 0.149,
+                "mu_zs": 1.8,
+                "sigma_zs": 0.215,
+                "theta0": 0.93,
+                "loga": 1.0,
+            },
+        },
+        "integration": {
+            "gamma_points": 200,
+            "mstar_points": 200,
+            "normalization_samples": 128,
+        },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
+        "runtime": {
+            "checkpoint_every": 1,
+            "parallel_strategy": "auto",
+            "progress": False,
+            "progress_summary_every": 1,
+            "show_stage_timing": True,
+            "disable_hdf5_file_locking": False,
+            "num_threads": 0,
+            "reserve_cores": 2,
+        },
+        "output": {
+            "root_dir": str(tmp_path / "outputs"),
+            "run_label": "synthetic",
+            "overwrite_latest": True,
+        },
+    }
+    payload["box_prior"].pop("theta0")
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="theta0"):
         load_runtime_config(path)
 
 
@@ -420,6 +681,7 @@ def test_load_runtime_config_rejects_legacy_gamma_slopes_in_sigma_star_mode(tmp_
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
                 },
+                "box_prior": _default_box_prior_payload(mass_radius_kpc=5, gamma_mode="sigma_star_dependent"),
                 "sampling": {
                     "n_walkers": 24,
                     "n_steps": 3,
@@ -471,6 +733,23 @@ def test_load_runtime_config_rejects_legacy_gamma_slopes_in_sigma_star_mode(tmp_
 
     with pytest.raises(ValueError, match="beta_gamma"):
         load_runtime_config(path)
+
+
+def test_load_runtime_config_rejects_initial_center_outside_box_prior(
+    synthetic_config_path: Path,
+) -> None:
+    """The configured initial center must already satisfy the explicit bounds."""
+
+    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    payload["box_prior"]["mu5_0"] = [9.0, 11.0]
+    invalid_center_path = synthetic_config_path.parent / "invalid_initial_center_bounds.yaml"
+    invalid_center_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="mu5_0"):
+        load_runtime_config(invalid_center_path)
 
 
 def test_build_profile_spec_exposes_profile_specific_rules() -> None:

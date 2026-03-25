@@ -136,12 +136,57 @@ def load_backend_state(chain_path: Path) -> tuple[emcee.State | None, int]:
 
 
 def initialize_walkers(initial_center: HyperParams, n_walkers: int, jitter_scale: float, seed: int) -> np.ndarray:
-    """Initialize walkers around the configured center with Gaussian jitter."""
+    """
+    Initialize walkers around the configured center with Gaussian jitter.
+
+    The explicit box-prior contract now applies at initialization time as well:
+    if the requested jitter cannot produce enough in-bounds walkers, fail fast
+    instead of silently seeding invalid coordinates that would later be
+    rejected by the log-probability function.
+    """
 
     rng = np.random.default_rng(seed)
     center = initial_center.to_array()
-    jitter = rng.normal(loc=0.0, scale=jitter_scale, size=(n_walkers, center.size))
-    return center[None, :] + jitter
+    parameter_schema = initial_center.parameter_schema
+    parameter_schema.validate_theta_in_bounds(center, label="Initial center")
+
+    lower_bounds = np.asarray(
+        [lower for lower, _ in parameter_schema.prior_bounds],
+        dtype=float,
+    )
+    upper_bounds = np.asarray(
+        [upper for _, upper in parameter_schema.prior_bounds],
+        dtype=float,
+    )
+
+    if jitter_scale <= 0.0:
+        return np.repeat(center[None, :], n_walkers, axis=0)
+
+    accepted_walkers: list[np.ndarray] = []
+    accepted_count = 0
+    attempted_draws = 0
+    max_attempted_draws = max(256, 128 * n_walkers)
+    while accepted_count < n_walkers and attempted_draws < max_attempted_draws:
+        batch_size = max(n_walkers - accepted_count, n_walkers)
+        jitter = rng.normal(loc=0.0, scale=jitter_scale, size=(batch_size, center.size))
+        candidates = center[None, :] + jitter
+        valid_mask = np.all(
+            (candidates >= lower_bounds[None, :]) & (candidates <= upper_bounds[None, :]),
+            axis=1,
+        )
+        if np.any(valid_mask):
+            accepted_walkers.append(candidates[valid_mask])
+            accepted_count += int(np.count_nonzero(valid_mask))
+        attempted_draws += batch_size
+
+    if accepted_count < n_walkers:
+        raise ValueError(
+            "Unable to initialize walker coordinates within the configured "
+            "box_prior bounds. Reduce `sampling.initial_jitter_scale` or relax "
+            "the explicit bounds."
+        )
+
+    return np.vstack(accepted_walkers)[:n_walkers]
 
 
 def run_ensemble_sampler(

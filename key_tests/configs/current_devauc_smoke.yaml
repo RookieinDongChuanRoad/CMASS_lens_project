@@ -1,8 +1,25 @@
 profile:
   name: devauc
+mass_definition:
+  enclosed_radius_kpc: 5
+gamma_model:
+  mode: dependent
 data:
   observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_m5_grids.hdf5
   cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
+box_prior:
+  mu5_0: [9.0, 12.0]
+  beta5: [-3.0, 3.0]
+  xi5: [-3.0, 3.0]
+  sigma5: [1.0e-2, 0.2]
+  mu_gamma_0: [1.5, 2.5]
+  beta_gamma: [-3.0, 3.0]
+  xi_gamma: [-3.0, 3.0]
+  sigma_gamma: [0.0, 0.5]
+  mu_zs: [1.0, 3.0]
+  sigma_zs: [0.0, 2.0]
+  theta0: [0.0, 3.0]
+  loga: [-1.0, 3.0]
 sampling:
   n_walkers: 24
   n_steps: 4
@@ -26,9 +43,10 @@ integration:
   gamma_points: 200
   mstar_points: 200
   normalization_samples: 100000
+cosmology:
+  h0: 70.0
+  omega_m: 0.3
 runtime:
-  distance_table_max_z: 5.0
-  distance_table_size: 8001
   checkpoint_every: 2
   parallel_strategy: kernel_only
   progress: false

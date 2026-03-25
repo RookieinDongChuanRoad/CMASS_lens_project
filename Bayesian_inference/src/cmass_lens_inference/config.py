@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 
 from .mass_definition import get_mass_definition
-from .parameter_schema import GammaModelConfig, build_parameter_schema
+from .parameter_schema import GammaModelConfig, build_parameter_schema, default_public_box_prior
 from .types import (
     CosmologyConfig,
     DataConfig,
@@ -88,6 +88,34 @@ def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
     )
 
 
+def _load_box_prior_section(
+    path: Path,
+    raw_data: dict,
+    *,
+    gamma_model: GammaModelConfig,
+    mass_definition,
+) -> dict:
+    """
+    Load the required explicit box-prior mapping.
+
+    User-authored source configs must declare the section explicitly. Historical
+    run snapshots are the only files that may be auto-migrated because those
+    files are pipeline-owned state.
+    """
+
+    if "box_prior" not in raw_data:
+        if path.name != "config_snapshot.yaml":
+            raise KeyError("Missing required config section: box_prior")
+
+        raw_data["box_prior"] = default_public_box_prior(
+            gamma_model=gamma_model,
+            mass_definition=mass_definition,
+        )
+        path.write_text(yaml.safe_dump(raw_data, sort_keys=False), encoding="utf-8")
+
+    return _require_section(raw_data, "box_prior")
+
+
 def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     """
     Load, validate, and normalize the project YAML configuration.
@@ -111,7 +139,14 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     cosmology_raw = _require_section(raw_data, "cosmology")
     runtime_raw = _require_section(raw_data, "runtime")
     output_raw = _require_section(raw_data, "output")
+    mass_definition = get_mass_definition(mass_definition_raw["enclosed_radius_kpc"])
     gamma_model = _load_gamma_model_section(path, raw_data)
+    box_prior_raw = _load_box_prior_section(
+        path,
+        raw_data,
+        gamma_model=gamma_model,
+        mass_definition=mass_definition,
+    )
     fp_prior = _load_fp_prior_section(raw_data)
 
     sigma_table_path_raw = data_raw.get("sigma_table_path")
@@ -123,15 +158,19 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     if fp_prior.enabled and sigma_table_path is None:
         raise ValueError("FP prior requires data.sigma_table_path when fp_prior.enabled is true.")
 
-    mass_definition = get_mass_definition(mass_definition_raw["enclosed_radius_kpc"])
     initial_center_raw = _require_section(sampling_raw, "initial_center")
     parameter_schema = build_parameter_schema(
         gamma_model=gamma_model,
         mass_definition=mass_definition,
+        public_box_prior=box_prior_raw,
     )
     initial_center = HyperParams.from_public_dict(
         public_values=initial_center_raw,
         parameter_schema=parameter_schema,
+    )
+    parameter_schema.validate_theta_in_bounds(
+        initial_center.to_array(),
+        label="Initial center",
     )
 
     return RuntimeConfig(

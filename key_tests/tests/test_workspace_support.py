@@ -39,6 +39,11 @@ def test_build_current_config_payload_smoke_has_expected_runtime_overrides(tmp_p
     assert payload["runtime"]["reserve_cores"] == 2
     assert payload["runtime"]["progress"] is False
     assert Path(payload["output"]["root_dir"]) == output_root
+    assert payload["mass_definition"]["enclosed_radius_kpc"] == 5
+    assert payload["cosmology"] == {"h0": 70.0, "omega_m": 0.3}
+    assert payload["box_prior"]["mu5_0"] == [9.0, 12.0]
+    assert "distance_table_max_z" not in payload["runtime"]
+    assert "distance_table_size" not in payload["runtime"]
     assert payload["gamma_model"]["mode"] == CURRENT_GAMMA_MODE
     assert payload["sampling"]["initial_center"] == CURRENT_INITIAL_CENTER
 
@@ -55,6 +60,7 @@ def test_build_current_config_payload_compare_uses_profile_specific_data_paths(t
     assert Path(payload["data"]["observation_path"]) == PROFILE_SETTINGS["devauc"].observation_path
     assert Path(payload["data"]["cross_section_path"]) == PROFILE_SETTINGS["devauc"].cross_section_path
     assert payload["gamma_model"]["mode"] == CURRENT_GAMMA_MODE
+    assert payload["box_prior"]["sigma5"] == [1.0e-2, 0.2]
     assert payload["sampling"]["n_steps"] == MODE_SETTINGS["compare"].n_steps
     assert payload["sampling"]["warmup"] == MODE_SETTINGS["compare"].warmup
     assert payload["runtime"]["checkpoint_every"] == MODE_SETTINGS["compare"].checkpoint_every

@@ -13,7 +13,8 @@ Why this module exists:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+import math
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -60,7 +61,7 @@ TAIL_PARAMETER_NAMES: tuple[str, ...] = (
     "loga",
 )
 
-BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME: dict[str, tuple[float, float]] = {
+DEFAULT_BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME: dict[str, tuple[float, float]] = {
     "mu5_0": (9.0, 12.0),
     "beta5": (-3.0, 3.0),
     "xi5": (-3.0, 3.0),
@@ -109,135 +110,11 @@ class GammaModelConfig:
         return GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE
 
 
-@dataclass(frozen=True)
-class ParameterSchema:
-    """
-    Public/internal parameter contract for one run configuration.
-
-    The first four internal names remain the historical mass-parameter slots so
-    the mass-definition translation logic continues to work without duplicating
-    the scientific model.
-    """
-
-    gamma_model: GammaModelConfig
-    mass_definition: MassDefinition
-    internal_parameter_names: tuple[str, ...]
-    public_parameter_names: tuple[str, ...]
-
-    @property
-    def gamma_mode(self) -> str:
-        """Expose the mode string directly for readability at call sites."""
-
-        return self.gamma_model.mode
-
-    @property
-    def gamma_mode_code(self) -> int:
-        """Expose the compact integer representation used inside kernels."""
-
-        return self.gamma_model.code
-
-    @property
-    def n_dim(self) -> int:
-        """Return the sampled parameter dimension for this schema."""
-
-        return len(self.internal_parameter_names)
-
-    @property
-    def prior_bounds(self) -> tuple[tuple[float, float], ...]:
-        """Return box-prior bounds aligned with the internal parameter order."""
-
-        return tuple(
-            BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME[name]
-            for name in self.internal_parameter_names
-        )
-
-    def validate_theta_shape(self, theta: np.ndarray) -> None:
-        """Raise a clear error if the provided theta vector has the wrong size."""
-
-        if theta.shape != (self.n_dim,):
-            raise ValueError(
-                f"Hyper-parameter vector must contain exactly {self.n_dim} values "
-                f"for gamma mode '{self.gamma_mode}'."
-            )
-
-    def normalize_public_values(
-        self,
-        public_values: Mapping[str, float],
-    ) -> dict[str, float]:
-        """
-        Convert public config keys into the internal parameter-name family.
-
-        The independent gamma mode removes `beta_gamma` and `xi_gamma`
-        completely. Rejecting them explicitly is important because silently
-        ignoring them would hide a model mismatch in the input config.
-        """
-
-        if self.gamma_mode == GAMMA_MODE_INDEPENDENT:
-            forbidden = sorted(_REMOVED_INDEPENDENT_GAMMA_KEYS.intersection(public_values.keys()))
-            if forbidden:
-                raise ValueError(
-                    "Independent gamma mode does not accept removed gamma slope "
-                    f"parameters: {', '.join(forbidden)}."
-                )
-        elif self.gamma_mode == GAMMA_MODE_SIGMA_STAR_DEPENDENT:
-            forbidden = sorted(_REMOVED_SIGMA_STAR_GAMMA_KEYS.intersection(public_values.keys()))
-            if forbidden:
-                raise ValueError(
-                    "Sigma-star gamma mode does not accept the dependent-mode "
-                    f"gamma slope parameters: {', '.join(forbidden)}."
-                )
-
-        expected_names = set(self.public_parameter_names)
-        unexpected = sorted(set(public_values.keys()).difference(expected_names))
-        if unexpected:
-            raise ValueError(
-                "Initial center contains parameters that are not part of the "
-                f"'{self.gamma_mode}' gamma-mode schema: {', '.join(unexpected)}."
-            )
-
-        normalized: dict[str, float] = {}
-        for internal_name, public_name in zip(
-            self.internal_parameter_names,
-            self.public_parameter_names,
-            strict=True,
-        ):
-            normalized[internal_name] = float(public_values[public_name])
-        return normalized
-
-    def serialize_public_values(
-        self,
-        internal_values: Mapping[str, float],
-        mass_definition: MassDefinition | None = None,
-    ) -> dict[str, float]:
-        """
-        Expose internal values under the mode-aware public naming surface.
-
-        The optional `mass_definition` argument keeps the older call sites
-        source-compatible while still validating that callers do not mix the
-        schema with a different mass-definition family.
-        """
-
-        if mass_definition is not None and mass_definition != self.mass_definition:
-            raise ValueError(
-                "Cannot serialize parameters with a different mass definition "
-                "from the one stored in the parameter schema."
-            )
-
-        serialized: dict[str, float] = {}
-        for internal_name, public_name in zip(
-            self.internal_parameter_names,
-            self.public_parameter_names,
-            strict=True,
-        ):
-            serialized[public_name] = float(internal_values[internal_name])
-        return serialized
-
-
-def build_parameter_schema(
+def _resolve_parameter_name_contract(
     gamma_model: GammaModelConfig,
     mass_definition: MassDefinition,
-) -> ParameterSchema:
-    """Build the single authoritative parameter schema for one run."""
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return the internal/public parameter-name families for one run."""
 
     if gamma_model.mode == GAMMA_MODE_DEPENDENT:
         internal_parameter_names = (
@@ -273,9 +150,273 @@ def build_parameter_schema(
             + TAIL_PARAMETER_NAMES
         )
 
+    return internal_parameter_names, public_parameter_names
+
+
+@dataclass(frozen=True)
+class ParameterSchema:
+    """
+    Public/internal parameter contract for one run configuration.
+
+    The first four internal names remain the historical mass-parameter slots so
+    the mass-definition translation logic continues to work without duplicating
+    the scientific model.
+    """
+
+    gamma_model: GammaModelConfig
+    mass_definition: MassDefinition
+    internal_parameter_names: tuple[str, ...]
+    public_parameter_names: tuple[str, ...]
+    prior_bounds: tuple[tuple[float, float], ...]
+
+    @property
+    def gamma_mode(self) -> str:
+        """Expose the mode string directly for readability at call sites."""
+
+        return self.gamma_model.mode
+
+    @property
+    def gamma_mode_code(self) -> int:
+        """Expose the compact integer representation used inside kernels."""
+
+        return self.gamma_model.code
+
+    @property
+    def n_dim(self) -> int:
+        """Return the sampled parameter dimension for this schema."""
+
+        return len(self.internal_parameter_names)
+
+    def validate_theta_shape(self, theta: np.ndarray) -> None:
+        """Raise a clear error if the provided theta vector has the wrong size."""
+
+        if theta.shape != (self.n_dim,):
+            raise ValueError(
+                f"Hyper-parameter vector must contain exactly {self.n_dim} values "
+                f"for gamma mode '{self.gamma_mode}'."
+            )
+
+    def _validate_public_parameter_keys(
+        self,
+        public_keys: Sequence[str] | set[str],
+        *,
+        label: str,
+    ) -> None:
+        """
+        Validate one public-name mapping against the active schema contract.
+
+        The same key-set rules apply to `sampling.initial_center` and the new
+        top-level `box_prior` section, so this helper keeps those errors
+        consistent and mode-aware.
+        """
+
+        public_key_set = set(public_keys)
+        if self.gamma_mode == GAMMA_MODE_INDEPENDENT:
+            forbidden = sorted(_REMOVED_INDEPENDENT_GAMMA_KEYS.intersection(public_key_set))
+            if forbidden:
+                raise ValueError(
+                    "Independent gamma mode does not accept removed gamma slope "
+                    f"parameters: {', '.join(forbidden)}."
+                )
+        elif self.gamma_mode == GAMMA_MODE_SIGMA_STAR_DEPENDENT:
+            forbidden = sorted(_REMOVED_SIGMA_STAR_GAMMA_KEYS.intersection(public_key_set))
+            if forbidden:
+                raise ValueError(
+                    "Sigma-star gamma mode does not accept the dependent-mode "
+                    f"gamma slope parameters: {', '.join(forbidden)}."
+                )
+
+        expected_names = set(self.public_parameter_names)
+        unexpected = sorted(public_key_set.difference(expected_names))
+        if unexpected:
+            raise ValueError(
+                f"{label} contains parameters that are not part of the "
+                f"'{self.gamma_mode}' gamma-mode schema: {', '.join(unexpected)}."
+            )
+
+        missing = sorted(expected_names.difference(public_key_set))
+        if missing:
+            raise ValueError(
+                f"{label} is missing required parameters for the "
+                f"'{self.gamma_mode}' gamma-mode schema: {', '.join(missing)}."
+            )
+
+    def normalize_public_values(
+        self,
+        public_values: Mapping[str, float],
+    ) -> dict[str, float]:
+        """
+        Convert public config keys into the internal parameter-name family.
+
+        The independent gamma mode removes `beta_gamma` and `xi_gamma`
+        completely. Rejecting them explicitly is important because silently
+        ignoring them would hide a model mismatch in the input config.
+        """
+
+        self._validate_public_parameter_keys(
+            public_values.keys(),
+            label="Initial center",
+        )
+
+        normalized: dict[str, float] = {}
+        for internal_name, public_name in zip(
+            self.internal_parameter_names,
+            self.public_parameter_names,
+            strict=True,
+        ):
+            normalized[internal_name] = float(public_values[public_name])
+        return normalized
+
+    def normalize_public_box_prior(
+        self,
+        public_bounds: Mapping[str, Sequence[float]],
+    ) -> tuple[tuple[float, float], ...]:
+        """Normalize one public-name box-prior mapping into internal order."""
+
+        self._validate_public_parameter_keys(
+            public_bounds.keys(),
+            label="Box prior",
+        )
+
+        normalized_bounds: list[tuple[float, float]] = []
+        for public_name in self.public_parameter_names:
+            raw_bounds = public_bounds[public_name]
+            if len(raw_bounds) != 2:
+                raise ValueError(
+                    f"Box prior entry '{public_name}' must contain exactly two values: [lower, upper]."
+                )
+
+            lower = float(raw_bounds[0])
+            upper = float(raw_bounds[1])
+            if (not math.isfinite(lower)) or (not math.isfinite(upper)):
+                raise ValueError(
+                    f"Box prior entry '{public_name}' must use finite numeric bounds."
+                )
+            if lower > upper:
+                raise ValueError(
+                    f"Box prior entry '{public_name}' has lower bound {lower:g} greater than upper bound {upper:g}."
+                )
+
+            normalized_bounds.append((lower, upper))
+
+        return tuple(normalized_bounds)
+
+    def serialize_public_box_prior(self) -> dict[str, list[float]]:
+        """Serialize the configured box prior under the public naming surface."""
+
+        serialized: dict[str, list[float]] = {}
+        for public_name, (lower, upper) in zip(
+            self.public_parameter_names,
+            self.prior_bounds,
+            strict=True,
+        ):
+            serialized[public_name] = [float(lower), float(upper)]
+        return serialized
+
+    def validate_theta_in_bounds(
+        self,
+        theta: np.ndarray,
+        *,
+        label: str,
+    ) -> None:
+        """Raise a clear error if one parameter falls outside the configured box prior."""
+
+        self.validate_theta_shape(theta)
+        for public_name, value, (lower, upper) in zip(
+            self.public_parameter_names,
+            np.asarray(theta, dtype=float),
+            self.prior_bounds,
+            strict=True,
+        ):
+            scalar_value = float(value)
+            if scalar_value < lower or scalar_value > upper:
+                raise ValueError(
+                    f"{label} parameter '{public_name}'={scalar_value:g} lies outside "
+                    f"the configured box prior [{lower:g}, {upper:g}]."
+                )
+
+    def serialize_public_values(
+        self,
+        internal_values: Mapping[str, float],
+        mass_definition: MassDefinition | None = None,
+    ) -> dict[str, float]:
+        """
+        Expose internal values under the mode-aware public naming surface.
+
+        The optional `mass_definition` argument keeps the older call sites
+        source-compatible while still validating that callers do not mix the
+        schema with a different mass-definition family.
+        """
+
+        if mass_definition is not None and mass_definition != self.mass_definition:
+            raise ValueError(
+                "Cannot serialize parameters with a different mass definition "
+                "from the one stored in the parameter schema."
+            )
+
+        serialized: dict[str, float] = {}
+        for internal_name, public_name in zip(
+            self.internal_parameter_names,
+            self.public_parameter_names,
+            strict=True,
+        ):
+            serialized[public_name] = float(internal_values[internal_name])
+        return serialized
+
+
+def default_public_box_prior(
+    gamma_model: GammaModelConfig,
+    mass_definition: MassDefinition,
+) -> dict[str, list[float]]:
+    """Expose the historical default box prior under the active public names."""
+
+    internal_parameter_names, public_parameter_names = _resolve_parameter_name_contract(
+        gamma_model=gamma_model,
+        mass_definition=mass_definition,
+    )
+    return {
+        public_name: [
+            float(DEFAULT_BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME[internal_name][0]),
+            float(DEFAULT_BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME[internal_name][1]),
+        ]
+        for internal_name, public_name in zip(
+            internal_parameter_names,
+            public_parameter_names,
+            strict=True,
+        )
+    }
+
+
+def build_parameter_schema(
+    gamma_model: GammaModelConfig,
+    mass_definition: MassDefinition,
+    public_box_prior: Mapping[str, Sequence[float]] | None = None,
+) -> ParameterSchema:
+    """Build the single authoritative parameter schema for one run."""
+
+    internal_parameter_names, public_parameter_names = _resolve_parameter_name_contract(
+        gamma_model=gamma_model,
+        mass_definition=mass_definition,
+    )
+    template_schema = ParameterSchema(
+        gamma_model=gamma_model,
+        mass_definition=mass_definition,
+        internal_parameter_names=internal_parameter_names,
+        public_parameter_names=public_parameter_names,
+        prior_bounds=(),
+    )
+    normalized_prior_bounds = template_schema.normalize_public_box_prior(
+        public_box_prior
+        if public_box_prior is not None
+        else default_public_box_prior(
+            gamma_model=gamma_model,
+            mass_definition=mass_definition,
+        )
+    )
     return ParameterSchema(
         gamma_model=gamma_model,
         mass_definition=mass_definition,
         internal_parameter_names=internal_parameter_names,
         public_parameter_names=public_parameter_names,
+        prior_bounds=normalized_prior_bounds,
     )

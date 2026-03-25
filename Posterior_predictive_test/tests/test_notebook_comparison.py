@@ -342,6 +342,9 @@ def test_run_notebook_pipeline_comparison_rejects_sigma_star_gamma_mode(
     sigma_star_config_payload["sampling"]["initial_center"].pop("beta_gamma")
     sigma_star_config_payload["sampling"]["initial_center"].pop("xi_gamma")
     sigma_star_config_payload["sampling"]["initial_center"]["beta_sigma_star_gamma"] = 0.24
+    sigma_star_config_payload["box_prior"].pop("beta_gamma")
+    sigma_star_config_payload["box_prior"].pop("xi_gamma")
+    sigma_star_config_payload["box_prior"]["beta_sigma_star_gamma"] = [-3.0, 3.0]
     sigma_star_config_path = tmp_path / "synthetic_sigma_star_comparison.yaml"
     sigma_star_config_path.write_text(
         yaml.safe_dump(sigma_star_config_payload, sort_keys=False),

@@ -40,6 +40,7 @@ from scipy.special import ndtr, ndtri
 
 from cmass_lens_inference.compiled_context import build_compiled_context
 from cmass_lens_inference.config import load_runtime_config
+from cmass_lens_inference.cosmology import FlatLambdaCDM
 from cmass_lens_inference.profiles import build_profile_spec
 from cmass_lens_inference.mass_definition import (
     MassDefinition,
@@ -135,6 +136,63 @@ class ObservedTrendSeries:
     y: np.ndarray
     yerr_lower: np.ndarray
     yerr_upper: np.ndarray
+
+
+@dataclass(frozen=True)
+class ObservedTrendBand:
+    """
+    Posterior-summarized observed overlay for model-dependent x-axes.
+
+    Some trend overlays cannot be represented as one fixed x-position per lens.
+    `delta_r = logre_kpc - mu_r` is the current example: the scientific
+    contract says the overlay should be derived through the same x-axis
+    definition used by the model workflow, then summarized into percentile
+    bands across posterior draws. This dataclass keeps that contract explicit.
+    """
+
+    x: np.ndarray
+    p16: np.ndarray
+    p50: np.ndarray
+    p84: np.ndarray
+
+
+@dataclass(frozen=True)
+class TrendAxisSpec:
+    """
+    Explicit x-axis contract for one trend artifact.
+
+    Keeping the axis metadata in a typed object avoids scattering naming,
+    labeling, and bin-edge policy across the plotting and serialization code.
+    """
+
+    name: str
+    label: str
+    bin_edges: np.ndarray
+    bin_centers: np.ndarray
+    observed_overlay_mode: str
+
+
+@dataclass(frozen=True)
+class ObservedGammaMeasurements:
+    """
+    Observed gamma sample aligned with per-lens structural measurements.
+
+    The standalone gamma trend figures need both:
+    - plotting-ready gamma central values and uncertainties
+    - structural coordinates (`logM*`, `logre_kpc`, `n`) so model-dependent
+      x-axes such as `delta_r` can be recomputed consistently
+    """
+
+    lens_ids: tuple[str, ...]
+    log_mstar: np.ndarray
+    log_re_kpc: np.ndarray
+    n_value: np.ndarray
+    gamma_mid: np.ndarray
+    gamma_yerr_lower: np.ndarray
+    gamma_yerr_upper: np.ndarray
+
+
+ObservedTrendOverlay = ObservedTrendSeries | ObservedTrendBand
 
 
 @dataclass(frozen=True)
@@ -881,6 +939,74 @@ def _safe_weighted_average(values: np.ndarray, weights: np.ndarray) -> float:
     return float(np.average(values[finite_mask], weights=weights[finite_mask]))
 
 
+def _reduce_population_to_bins(
+    x_values: np.ndarray,
+    values: np.ndarray,
+    bin_edges: np.ndarray,
+    detectable_weights: np.ndarray,
+    selected_weights: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """
+    Compress one parent-population realization into arbitrary x-axis bins.
+
+    The trend workflow now produces multiple figures that differ only in the
+    x-axis definition. Centralizing the reducer ensures:
+    - the parent/detectable/selected categories are defined identically for
+      stellar mass, `logre_kpc`, and `delta_r`
+    - the right-edge-inclusive final-bin behavior is shared everywhere
+    - any future x-axis addition inherits the same empty-bin diagnostics
+    """
+
+    x_values = np.asarray(x_values, dtype=float)
+    values = np.asarray(values, dtype=float)
+    bin_edges = np.asarray(bin_edges, dtype=float)
+    detectable_weights = np.asarray(detectable_weights, dtype=float)
+    selected_weights = np.asarray(selected_weights, dtype=float)
+
+    n_bins = bin_edges.size - 1
+    parent = np.full(n_bins, np.nan, dtype=float)
+    detectable = np.full(n_bins, np.nan, dtype=float)
+    selected = np.full(n_bins, np.nan, dtype=float)
+    parent_bin_counts = np.zeros(n_bins, dtype=int)
+    detectable_weight_sums = np.zeros(n_bins, dtype=float)
+    selected_weight_sums = np.zeros(n_bins, dtype=float)
+
+    finite_parent_support = np.isfinite(x_values) & np.isfinite(values)
+    finite_detectable_support = finite_parent_support & np.isfinite(detectable_weights) & (detectable_weights > 0.0)
+    finite_selected_support = finite_parent_support & np.isfinite(selected_weights) & (selected_weights > 0.0)
+
+    for bin_index in range(n_bins):
+        lower_edge = bin_edges[bin_index]
+        upper_edge = bin_edges[bin_index + 1]
+        in_bin = x_values >= lower_edge
+        if bin_index == n_bins - 1:
+            in_bin &= x_values <= upper_edge
+        else:
+            in_bin &= x_values < upper_edge
+
+        parent_mask = finite_parent_support & in_bin
+        parent_bin_counts[bin_index] = int(np.count_nonzero(parent_mask))
+        if np.any(parent_mask):
+            parent[bin_index] = float(np.mean(values[parent_mask]))
+
+        detectable_mask = finite_detectable_support & in_bin
+        detectable_weight_sums[bin_index] = float(np.sum(detectable_weights[detectable_mask]))
+        detectable[bin_index] = _safe_weighted_average(values[detectable_mask], detectable_weights[detectable_mask])
+
+        selected_mask = finite_selected_support & in_bin
+        selected_weight_sums[bin_index] = float(np.sum(selected_weights[selected_mask]))
+        selected[bin_index] = _safe_weighted_average(values[selected_mask], selected_weights[selected_mask])
+
+    return {
+        "parent": parent,
+        "detectable": detectable,
+        "selected": selected,
+        "parent_bin_counts": parent_bin_counts,
+        "detectable_weight_sums": detectable_weight_sums,
+        "selected_weight_sums": selected_weight_sums,
+    }
+
+
 def _reduce_population_to_mass_bins(
     log_mstar: np.ndarray,
     values: np.ndarray,
@@ -919,54 +1045,45 @@ def _reduce_population_to_mass_bins(
         sums that make sparse or numerically degenerate bins inspectable.
     """
 
-    log_mstar = np.asarray(log_mstar, dtype=float)
-    values = np.asarray(values, dtype=float)
-    mass_bin_edges = np.asarray(mass_bin_edges, dtype=float)
-    detectable_weights = np.asarray(detectable_weights, dtype=float)
-    selected_weights = np.asarray(selected_weights, dtype=float)
+    return _reduce_population_to_bins(
+        x_values=log_mstar,
+        values=values,
+        bin_edges=mass_bin_edges,
+        detectable_weights=detectable_weights,
+        selected_weights=selected_weights,
+    )
 
-    n_mass_bins = mass_bin_edges.size - 1
-    parent = np.full(n_mass_bins, np.nan, dtype=float)
-    detectable = np.full(n_mass_bins, np.nan, dtype=float)
-    selected = np.full(n_mass_bins, np.nan, dtype=float)
-    parent_bin_counts = np.zeros(n_mass_bins, dtype=int)
-    detectable_weight_sums = np.zeros(n_mass_bins, dtype=float)
-    selected_weight_sums = np.zeros(n_mass_bins, dtype=float)
 
-    finite_parent_support = np.isfinite(log_mstar) & np.isfinite(values)
-    finite_detectable_support = finite_parent_support & np.isfinite(detectable_weights) & (detectable_weights > 0.0)
-    finite_selected_support = finite_parent_support & np.isfinite(selected_weights) & (selected_weights > 0.0)
+def _build_padded_bin_edges(
+    values: np.ndarray,
+    n_bins: int,
+    padding_fraction: float,
+    minimum_padding: float,
+) -> np.ndarray:
+    """
+    Build deterministic bin edges from an observed support range plus padding.
 
-    for bin_index in range(n_mass_bins):
-        lower_edge = mass_bin_edges[bin_index]
-        upper_edge = mass_bin_edges[bin_index + 1]
-        in_bin = log_mstar >= lower_edge
-        if bin_index == n_mass_bins - 1:
-            in_bin &= log_mstar <= upper_edge
-        else:
-            in_bin &= log_mstar < upper_edge
+    The added trend figures should not depend on ad-hoc manual limits. This
+    helper turns a finite reference sample into a reproducible bin contract
+    while guarding the degenerate single-valued case with a minimum padding.
+    """
 
-        parent_mask = finite_parent_support & in_bin
-        parent_bin_counts[bin_index] = int(np.count_nonzero(parent_mask))
-        if np.any(parent_mask):
-            parent[bin_index] = float(np.mean(values[parent_mask]))
+    finite_values = np.asarray(values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        raise ValueError("Cannot build trend bins from an empty or non-finite value set.")
 
-        detectable_mask = finite_detectable_support & in_bin
-        detectable_weight_sums[bin_index] = float(np.sum(detectable_weights[detectable_mask]))
-        detectable[bin_index] = _safe_weighted_average(values[detectable_mask], detectable_weights[detectable_mask])
-
-        selected_mask = finite_selected_support & in_bin
-        selected_weight_sums[bin_index] = float(np.sum(selected_weights[selected_mask]))
-        selected[bin_index] = _safe_weighted_average(values[selected_mask], selected_weights[selected_mask])
-
-    return {
-        "parent": parent,
-        "detectable": detectable,
-        "selected": selected,
-        "parent_bin_counts": parent_bin_counts,
-        "detectable_weight_sums": detectable_weight_sums,
-        "selected_weight_sums": selected_weight_sums,
-    }
+    min_value = float(np.min(finite_values))
+    max_value = float(np.max(finite_values))
+    span = max_value - min_value
+    padding = max(float(span) * float(padding_fraction), float(minimum_padding))
+    if span <= 0.0:
+        min_value -= padding
+        max_value += padding
+    else:
+        min_value -= padding
+        max_value += padding
+    return np.linspace(min_value, max_value, int(n_bins) + 1, dtype=float)
 
 
 def _load_flattened_posterior_chain(chain_path: Path, burn_in: int) -> np.ndarray:
@@ -1094,6 +1211,31 @@ def _vectorized_mu_r(mstar: np.ndarray, n_value: np.ndarray, profile: ProfileSpe
     if profile.nu_r is not None:
         out += profile.nu_r * (np.log10(np.maximum(n_value, 1.0e-12)) - math.log10(4.0))
     return out
+
+
+def _compute_observed_delta_r(
+    log_mstar: np.ndarray,
+    n_value: np.ndarray,
+    log_re_kpc: np.ndarray,
+    profile: ProfileSpec,
+    theta: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Compute observed `delta_r = logre_kpc - mu_r` using the model's size relation.
+
+    `theta` is accepted intentionally even though the current size relation is
+    fixed by `ProfileSpec`, not sampled as part of the posterior state. This
+    keeps the call sites explicit about whether they are doing per-draw or
+    reference evaluation and preserves the API if `mu_r` becomes sampled later.
+    """
+
+    del theta
+    mu_r = _vectorized_mu_r(
+        mstar=np.asarray(log_mstar, dtype=float),
+        n_value=np.asarray(n_value, dtype=float),
+        profile=profile,
+    )
+    return np.asarray(log_re_kpc, dtype=float) - mu_r
 
 
 def _vectorized_theta_ein_arcsec(
@@ -1402,6 +1544,7 @@ def _draw_candidate_population(
         "mass": log_enclosed_mass,
         "log_re_kpc": re_log_kpc,
         "re_kpc": re_kpc,
+        "delta_r": delta_r,
         "n": n_value,
         "detectable_weights": detectable_weights,
         "selected_weights": selected_weights,
@@ -1454,6 +1597,7 @@ def _draw_trend_parent_population(
         "n": population["n"],
         "log_re_kpc": population["log_re_kpc"],
         "re_kpc": population["re_kpc"],
+        "delta_r": population["delta_r"],
         "mass": population["mass"],
         "gamma": population["gamma"],
         "theta_ein": population["theta_ein"],
@@ -1492,6 +1636,28 @@ def _allocate_trend_arrays(
     return trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws
 
 
+def _allocate_single_quantity_trend_arrays(
+    n_draws: int,
+    n_bins: int,
+) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Allocate buffers for one gamma-only trend figure.
+
+    The new structural trend figures only summarize one quantity (`gamma`), but
+    they still need the same three population categories and diagnostic arrays
+    as the Fig. 8 mass-binned workflow.
+    """
+
+    trend_draws = {
+        category_name: np.full((n_draws, n_bins), np.nan, dtype=float)
+        for category_name in TREND_CATEGORY_NAMES
+    }
+    parent_bin_counts_draws = np.zeros((n_draws, n_bins), dtype=int)
+    detectable_weight_sums_draws = np.zeros((n_draws, n_bins), dtype=float)
+    selected_weight_sums_draws = np.zeros((n_draws, n_bins), dtype=float)
+    return trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws
+
+
 def _simulate_trend_chunk(
     posterior_draws: np.ndarray,
     start_index: int,
@@ -1501,6 +1667,8 @@ def _simulate_trend_chunk(
     sigma_table_path: str,
     observation_flavor: str,
     mass_bin_edges: np.ndarray,
+    log_re_bin_edges: np.ndarray,
+    delta_r_bin_edges: np.ndarray,
     n_parent_sample: int,
     random_seed: int,
 ) -> dict[str, Any]:
@@ -1522,10 +1690,18 @@ def _simulate_trend_chunk(
     )
     chunk_draw_count = int(posterior_draws.shape[0])
     n_mass_bins = int(mass_bin_edges.size - 1)
+    n_log_re_bins = int(log_re_bin_edges.size - 1)
+    n_delta_r_bins = int(delta_r_bin_edges.size - 1)
     quantity_names = _trend_quantity_names(mass_definition)
     trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws = (
         _allocate_trend_arrays(chunk_draw_count, n_mass_bins, mass_definition)
     )
+    gamma_vs_logre_draws, gamma_vs_logre_parent_bin_counts_draws, gamma_vs_logre_detectable_weight_sums_draws, (
+        gamma_vs_logre_selected_weight_sums_draws
+    ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_log_re_bins)
+    gamma_vs_delta_r_draws, gamma_vs_delta_r_parent_bin_counts_draws, gamma_vs_delta_r_detectable_weight_sums_draws, (
+        gamma_vs_delta_r_selected_weight_sums_draws
+    ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_delta_r_bins)
 
     for local_index, theta in enumerate(posterior_draws):
         global_index = start_index + local_index
@@ -1559,6 +1735,34 @@ def _simulate_trend_chunk(
                 detectable_weight_sums_draws[local_index] = reduced["detectable_weight_sums"]
                 selected_weight_sums_draws[local_index] = reduced["selected_weight_sums"]
 
+        gamma_vs_logre_reduced = _reduce_population_to_bins(
+            x_values=parent_population["log_re_kpc"],
+            values=parent_population["gamma"],
+            bin_edges=log_re_bin_edges,
+            detectable_weights=parent_population["detectable_weights"],
+            selected_weights=parent_population["selected_weights"],
+        )
+        for category_name in TREND_CATEGORY_NAMES:
+            gamma_vs_logre_draws[category_name][local_index] = gamma_vs_logre_reduced[category_name]
+        gamma_vs_logre_parent_bin_counts_draws[local_index] = gamma_vs_logre_reduced["parent_bin_counts"]
+        gamma_vs_logre_detectable_weight_sums_draws[local_index] = gamma_vs_logre_reduced["detectable_weight_sums"]
+        gamma_vs_logre_selected_weight_sums_draws[local_index] = gamma_vs_logre_reduced["selected_weight_sums"]
+
+        gamma_vs_delta_r_reduced = _reduce_population_to_bins(
+            x_values=parent_population["delta_r"],
+            values=parent_population["gamma"],
+            bin_edges=delta_r_bin_edges,
+            detectable_weights=parent_population["detectable_weights"],
+            selected_weights=parent_population["selected_weights"],
+        )
+        for category_name in TREND_CATEGORY_NAMES:
+            gamma_vs_delta_r_draws[category_name][local_index] = gamma_vs_delta_r_reduced[category_name]
+        gamma_vs_delta_r_parent_bin_counts_draws[local_index] = gamma_vs_delta_r_reduced["parent_bin_counts"]
+        gamma_vs_delta_r_detectable_weight_sums_draws[local_index] = gamma_vs_delta_r_reduced[
+            "detectable_weight_sums"
+        ]
+        gamma_vs_delta_r_selected_weight_sums_draws[local_index] = gamma_vs_delta_r_reduced["selected_weight_sums"]
+
     return {
         "start_index": int(start_index),
         "draw_count": chunk_draw_count,
@@ -1566,6 +1770,14 @@ def _simulate_trend_chunk(
         "parent_bin_counts_draws": parent_bin_counts_draws,
         "detectable_weight_sums_draws": detectable_weight_sums_draws,
         "selected_weight_sums_draws": selected_weight_sums_draws,
+        "gamma_vs_logre_draws": gamma_vs_logre_draws,
+        "gamma_vs_logre_parent_bin_counts_draws": gamma_vs_logre_parent_bin_counts_draws,
+        "gamma_vs_logre_detectable_weight_sums_draws": gamma_vs_logre_detectable_weight_sums_draws,
+        "gamma_vs_logre_selected_weight_sums_draws": gamma_vs_logre_selected_weight_sums_draws,
+        "gamma_vs_delta_r_draws": gamma_vs_delta_r_draws,
+        "gamma_vs_delta_r_parent_bin_counts_draws": gamma_vs_delta_r_parent_bin_counts_draws,
+        "gamma_vs_delta_r_detectable_weight_sums_draws": gamma_vs_delta_r_detectable_weight_sums_draws,
+        "gamma_vs_delta_r_selected_weight_sums_draws": gamma_vs_delta_r_selected_weight_sums_draws,
     }
 
 
@@ -1573,14 +1785,35 @@ def _merge_trend_chunk_results(
     chunk_results: list[dict[str, Any]],
     n_draws: int,
     n_mass_bins: int,
+    n_log_re_bins: int,
+    n_delta_r_bins: int,
     mass_definition: MassDefinition,
-) -> tuple[dict[str, dict[str, np.ndarray]], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    dict[str, dict[str, np.ndarray]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     """Merge chunk-level trend arrays back into full-run buffers in draw order."""
 
     quantity_names = _trend_quantity_names(mass_definition)
     trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws = (
         _allocate_trend_arrays(n_draws, n_mass_bins, mass_definition)
     )
+    gamma_vs_logre_draws, gamma_vs_logre_parent_bin_counts_draws, gamma_vs_logre_detectable_weight_sums_draws, (
+        gamma_vs_logre_selected_weight_sums_draws
+    ) = _allocate_single_quantity_trend_arrays(n_draws, n_log_re_bins)
+    gamma_vs_delta_r_draws, gamma_vs_delta_r_parent_bin_counts_draws, gamma_vs_delta_r_detectable_weight_sums_draws, (
+        gamma_vs_delta_r_selected_weight_sums_draws
+    ) = _allocate_single_quantity_trend_arrays(n_draws, n_delta_r_bins)
     for chunk_result in chunk_results:
         start = int(chunk_result["start_index"])
         stop = start + int(chunk_result["draw_count"])
@@ -1592,7 +1825,37 @@ def _merge_trend_chunk_results(
         parent_bin_counts_draws[start:stop] = chunk_result["parent_bin_counts_draws"]
         detectable_weight_sums_draws[start:stop] = chunk_result["detectable_weight_sums_draws"]
         selected_weight_sums_draws[start:stop] = chunk_result["selected_weight_sums_draws"]
-    return trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws
+        for category_name in TREND_CATEGORY_NAMES:
+            gamma_vs_logre_draws[category_name][start:stop] = chunk_result["gamma_vs_logre_draws"][category_name]
+            gamma_vs_delta_r_draws[category_name][start:stop] = chunk_result["gamma_vs_delta_r_draws"][category_name]
+        gamma_vs_logre_parent_bin_counts_draws[start:stop] = chunk_result["gamma_vs_logre_parent_bin_counts_draws"]
+        gamma_vs_logre_detectable_weight_sums_draws[start:stop] = chunk_result[
+            "gamma_vs_logre_detectable_weight_sums_draws"
+        ]
+        gamma_vs_logre_selected_weight_sums_draws[start:stop] = chunk_result[
+            "gamma_vs_logre_selected_weight_sums_draws"
+        ]
+        gamma_vs_delta_r_parent_bin_counts_draws[start:stop] = chunk_result["gamma_vs_delta_r_parent_bin_counts_draws"]
+        gamma_vs_delta_r_detectable_weight_sums_draws[start:stop] = chunk_result[
+            "gamma_vs_delta_r_detectable_weight_sums_draws"
+        ]
+        gamma_vs_delta_r_selected_weight_sums_draws[start:stop] = chunk_result[
+            "gamma_vs_delta_r_selected_weight_sums_draws"
+        ]
+    return (
+        trend_draws,
+        parent_bin_counts_draws,
+        detectable_weight_sums_draws,
+        selected_weight_sums_draws,
+        gamma_vs_logre_draws,
+        gamma_vs_logre_parent_bin_counts_draws,
+        gamma_vs_logre_detectable_weight_sums_draws,
+        gamma_vs_logre_selected_weight_sums_draws,
+        gamma_vs_delta_r_draws,
+        gamma_vs_delta_r_parent_bin_counts_draws,
+        gamma_vs_delta_r_detectable_weight_sums_draws,
+        gamma_vs_delta_r_selected_weight_sums_draws,
+    )
 
 
 def _run_trend_draws(
@@ -1603,10 +1866,25 @@ def _run_trend_draws(
     sigma_table_path: str,
     observation_flavor: str,
     mass_bin_edges: np.ndarray,
+    log_re_bin_edges: np.ndarray,
+    delta_r_bin_edges: np.ndarray,
     n_parent_sample: int,
     random_seed: int,
     parallelism: ResolvedParallelism,
-) -> tuple[dict[str, dict[str, np.ndarray]], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    dict[str, dict[str, np.ndarray]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     """
     Execute trend draws either serially or with a process pool.
 
@@ -1618,6 +1896,8 @@ def _run_trend_draws(
 
     n_draws = int(posterior_draws.shape[0])
     n_mass_bins = int(mass_bin_edges.size - 1)
+    n_log_re_bins = int(log_re_bin_edges.size - 1)
+    n_delta_r_bins = int(delta_r_bin_edges.size - 1)
     chunk_count = max(1, parallelism.worker_processes) if parallelism.strategy == "process_pool" else 1
     slices = _chunk_slices(n_draws, chunk_count)
 
@@ -1633,6 +1913,8 @@ def _run_trend_draws(
                     sigma_table_path=sigma_table_path,
                     observation_flavor=observation_flavor,
                     mass_bin_edges=mass_bin_edges,
+                    log_re_bin_edges=log_re_bin_edges,
+                    delta_r_bin_edges=delta_r_bin_edges,
                     n_parent_sample=n_parent_sample,
                     random_seed=random_seed,
                 )
@@ -1640,6 +1922,8 @@ def _run_trend_draws(
             ],
             n_draws=n_draws,
             n_mass_bins=n_mass_bins,
+            n_log_re_bins=n_log_re_bins,
+            n_delta_r_bins=n_delta_r_bins,
             mass_definition=mass_definition,
         )
 
@@ -1660,6 +1944,8 @@ def _run_trend_draws(
                 sigma_table_path,
                 observation_flavor,
                 mass_bin_edges,
+                log_re_bin_edges,
+                delta_r_bin_edges,
                 n_parent_sample,
                 random_seed,
             )
@@ -1672,6 +1958,8 @@ def _run_trend_draws(
         chunk_results,
         n_draws=n_draws,
         n_mass_bins=n_mass_bins,
+        n_log_re_bins=n_log_re_bins,
+        n_delta_r_bins=n_delta_r_bins,
         mass_definition=mass_definition,
     )
 
@@ -2388,6 +2676,162 @@ def _load_observed_trend_points(
     }
 
 
+def _load_observed_gamma_measurements(
+    observation_path: Path,
+    profile_name: str,
+    observations: list[ObservationRecord],
+    cosmology: FlatLambdaCDM,
+) -> ObservedGammaMeasurements:
+    """
+    Load the observed gamma sample together with structural coordinates.
+
+    The standalone gamma trend figures need the same observed gamma summaries
+    used by the Fig. 8 overlay, but they also need structural x-coordinates in
+    physical units. We therefore join the raw HDF5 attrs with the already
+    prepared observation records returned by `build_compiled_context(...)`.
+    """
+
+    profile_spec = build_profile_spec(profile_name)
+    observation_by_id = {observation.lens_id: observation for observation in observations}
+    lens_ids: list[str] = []
+    log_mstar_values: list[float] = []
+    log_re_kpc_values: list[float] = []
+    n_values: list[float] = []
+    gamma_mid_values: list[float] = []
+    gamma_lower_errors: list[float] = []
+    gamma_upper_errors: list[float] = []
+
+    with h5py.File(observation_path, "r") as handle:
+        for group_name in sorted(handle.keys()):
+            group = handle[group_name]
+            num_sigma = int(group.attrs.get("num_sigma", 0))
+            if num_sigma <= 0:
+                continue
+
+            if group_name not in observation_by_id:
+                raise KeyError(f"Observed gamma group '{group_name}' is missing from the prepared observation map.")
+            prepared_observation = observation_by_id[group_name]
+
+            gamma_mid = float(group.attrs["gamma_mid"])
+            gamma_lower = float(group.attrs["gamma_lower"])
+            gamma_upper = float(group.attrs["gamma_upper"])
+            gamma_lower_error, gamma_upper_error = _coerce_observed_error_components(
+                mid_value=gamma_mid,
+                lower_value=gamma_lower,
+                upper_value=gamma_upper,
+            )
+
+            lens_ids.append(group_name)
+            log_mstar_values.append(
+                _resolve_first_matching_attr(group, profile_spec.observation_field_aliases["stellar_mass"])
+            )
+            radius_kpc = float(prepared_observation.effective_radius_arcsec) * float(
+                cosmology.kpc_per_arcsec(prepared_observation.z_d)
+            )
+            log_re_kpc_values.append(math.log10(max(radius_kpc, 1.0e-12)))
+            n_values.append(float(profile_spec.fixed_n if profile_spec.fixed_n is not None else prepared_observation.n_observed))
+            gamma_mid_values.append(gamma_mid)
+            gamma_lower_errors.append(gamma_lower_error)
+            gamma_upper_errors.append(gamma_upper_error)
+
+    return ObservedGammaMeasurements(
+        lens_ids=tuple(lens_ids),
+        log_mstar=np.asarray(log_mstar_values, dtype=float),
+        log_re_kpc=np.asarray(log_re_kpc_values, dtype=float),
+        n_value=np.asarray(n_values, dtype=float),
+        gamma_mid=np.asarray(gamma_mid_values, dtype=float),
+        gamma_yerr_lower=np.asarray(gamma_lower_errors, dtype=float),
+        gamma_yerr_upper=np.asarray(gamma_upper_errors, dtype=float),
+    )
+
+
+def _build_trend_axis_spec(
+    name: str,
+    label: str,
+    reference_values: np.ndarray,
+    n_bins: int,
+    padding_fraction: float,
+    minimum_padding: float,
+    observed_overlay_mode: str,
+) -> TrendAxisSpec:
+    """Build one explicit x-axis contract from a reference value range."""
+
+    bin_edges = _build_padded_bin_edges(
+        values=reference_values,
+        n_bins=n_bins,
+        padding_fraction=padding_fraction,
+        minimum_padding=minimum_padding,
+    )
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    return TrendAxisSpec(
+        name=name,
+        label=label,
+        bin_edges=bin_edges,
+        bin_centers=bin_centers,
+        observed_overlay_mode=observed_overlay_mode,
+    )
+
+
+def _build_observed_gamma_logre_overlay(measurements: ObservedGammaMeasurements) -> ObservedTrendSeries:
+    """Convert observed gamma measurements into fixed `logre_kpc` errorbar points."""
+
+    return ObservedTrendSeries(
+        x=np.asarray(measurements.log_re_kpc, dtype=float),
+        y=np.asarray(measurements.gamma_mid, dtype=float),
+        yerr_lower=np.asarray(measurements.gamma_yerr_lower, dtype=float),
+        yerr_upper=np.asarray(measurements.gamma_yerr_upper, dtype=float),
+    )
+
+
+def _build_observed_gamma_delta_r_overlay(
+    measurements: ObservedGammaMeasurements,
+    profile: ProfileSpec,
+    axis_spec: TrendAxisSpec,
+) -> ObservedTrendSeries:
+    """
+    Convert observed gamma measurements into fixed `delta_r` errorbar points.
+
+    The current model keeps `mu_r` fixed in `ProfileSpec`, so each observed
+    lens has one well-defined `delta_r = logre_kpc - mu_r` coordinate. That
+    makes the scientifically faithful overlay a point series, not a posterior
+    band summarized over bins.
+    """
+
+    delta_r = _compute_observed_delta_r(
+        log_mstar=measurements.log_mstar,
+        n_value=measurements.n_value,
+        log_re_kpc=measurements.log_re_kpc,
+        profile=profile,
+    )
+    del axis_spec
+    return ObservedTrendSeries(
+        x=np.asarray(delta_r, dtype=float),
+        y=np.asarray(measurements.gamma_mid, dtype=float),
+        yerr_lower=np.asarray(measurements.gamma_yerr_lower, dtype=float),
+        yerr_upper=np.asarray(measurements.gamma_yerr_upper, dtype=float),
+    )
+
+
+def _serialize_observed_overlay(overlay: ObservedTrendOverlay) -> dict[str, Any]:
+    """Convert one observed overlay object into JSON-friendly arrays."""
+
+    if isinstance(overlay, ObservedTrendSeries):
+        return {
+            "mode": "points",
+            "x": overlay.x.tolist(),
+            "y": overlay.y.tolist(),
+            "yerr_lower": overlay.yerr_lower.tolist(),
+            "yerr_upper": overlay.yerr_upper.tolist(),
+        }
+    return {
+        "mode": "band",
+        "x": overlay.x.tolist(),
+        "p16": overlay.p16.tolist(),
+        "p50": overlay.p50.tolist(),
+        "p84": overlay.p84.tolist(),
+    }
+
+
 def _coerce_observed_error_components(mid_value: float, lower_value: float, upper_value: float) -> tuple[float, float]:
     """
     Convert raw `lower` / `upper` attrs into strictly non-negative y-errors.
@@ -2411,7 +2855,7 @@ def _write_trend_panel(
     detectable_summary: dict[str, np.ndarray],
     selected_summary: dict[str, np.ndarray],
     y_label: str,
-    observed_series: ObservedTrendSeries | None = None,
+    observed_series: ObservedTrendOverlay | None = None,
     observed_label: str | None = None,
 ) -> None:
     """
@@ -2462,7 +2906,7 @@ def _write_trend_panel(
         linewidth=2.0,
         linestyle="--",
     )
-    if observed_series is not None and observed_series.x.size > 0:
+    if isinstance(observed_series, ObservedTrendSeries) and observed_series.x.size > 0:
         ax.errorbar(
             observed_series.x,
             observed_series.y,
@@ -2478,6 +2922,24 @@ def _write_trend_panel(
             linestyle="none",
             zorder=6,
             label=observed_label,
+        )
+    elif isinstance(observed_series, ObservedTrendBand) and observed_series.x.size > 0:
+        ax.fill_between(
+            observed_series.x,
+            observed_series.p16,
+            observed_series.p84,
+            color="#111111",
+            alpha=0.14,
+            label=observed_label,
+            zorder=5,
+        )
+        ax.plot(
+            observed_series.x,
+            observed_series.p50,
+            color="#111111",
+            linewidth=1.8,
+            linestyle="-",
+            zorder=6,
         )
     ax.set_ylabel(y_label, fontsize=10)
     ax.tick_params(labelsize=8)
@@ -2518,6 +2980,44 @@ def _write_fig8_like_figure(
     if figure_title:
         figure.suptitle(figure_title, fontsize=13)
         figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
+    else:
+        figure.tight_layout()
+    figure.savefig(figure_path, dpi=180)
+    plt.close(figure)
+
+
+def _write_gamma_trend_figure(
+    figure_path: Path,
+    x_grid: np.ndarray,
+    summary_payload: dict[str, dict[str, np.ndarray]],
+    x_label: str,
+    observed_overlay: ObservedTrendOverlay,
+    figure_title: str | None = None,
+) -> None:
+    """
+    Render a standalone gamma trend figure for one structural x-axis.
+
+    Keeping the new plots in their own helper avoids entangling the stable
+    three-panel Fig. 8 output with the new one-panel diagnostic products.
+    """
+
+    figure, axis = plt.subplots(1, 1, figsize=(8, 4.6))
+    _write_trend_panel(
+        axis,
+        mass_grid=x_grid,
+        parent_summary=summary_payload["parent"],
+        detectable_summary=summary_payload["detectable"],
+        selected_summary=summary_payload["selected"],
+        y_label="gamma",
+        observed_series=observed_overlay,
+        observed_label="Observed lenses",
+    )
+    handles, labels = axis.get_legend_handles_labels()
+    axis.legend(handles, labels, loc="upper left", fontsize=8, frameon=False)
+    axis.set_xlabel(x_label, fontsize=10)
+    if figure_title:
+        figure.suptitle(figure_title, fontsize=13)
+        figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
     else:
         figure.tight_layout()
     figure.savefig(figure_path, dpi=180)
@@ -2647,6 +3147,82 @@ def _materialize_result_dir(output_root_dir: Path, profile_name: str, run_id: st
     return result_dir
 
 
+def _write_standalone_gamma_trend_artifacts(
+    result_dir: Path,
+    artifact_stem: str,
+    axis_spec: TrendAxisSpec,
+    gamma_summary: dict[str, dict[str, np.ndarray]],
+    gamma_draws: dict[str, np.ndarray],
+    parent_bin_counts_draws: np.ndarray,
+    detectable_weight_sums_draws: np.ndarray,
+    selected_weight_sums_draws: np.ndarray,
+    observed_overlay: ObservedTrendOverlay,
+    observed_overlay_draws: np.ndarray | None,
+    base_metadata: dict[str, Any],
+    figure_title: str,
+) -> None:
+    """
+    Write one standalone gamma-trend PNG, summary JSON, and raw NPZ arrays.
+
+    The new structural trend diagnostics intentionally live beside
+    `fig8_like.*`, but each one carries its own explicit x-axis metadata and
+    observed-overlay contract so downstream inspection does not need to infer
+    what was plotted.
+    """
+
+    serializable_summary = {
+        category_name: {key: value.tolist() for key, value in gamma_summary[category_name].items()}
+        for category_name in TREND_CATEGORY_NAMES
+    }
+    summary_payload = {
+        **base_metadata,
+        "figure_title": figure_title,
+        "x_axis_name": axis_spec.name,
+        "x_axis_label": axis_spec.label,
+        "x_bin_edges": axis_spec.bin_edges.tolist(),
+        "x_bin_centers": axis_spec.bin_centers.tolist(),
+        "observed_overlay_mode": axis_spec.observed_overlay_mode,
+        "quantities": {"gamma": {"label": "gamma"}},
+        "bands": {"gamma": serializable_summary},
+        "observed_overlay": _serialize_observed_overlay(observed_overlay),
+    }
+    (result_dir / f"{artifact_stem}_summary.json").write_text(
+        json.dumps(summary_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    np_save_payload: dict[str, np.ndarray] = {
+        "x_bin_edges": np.asarray(axis_spec.bin_edges, dtype=float),
+        "x_bin_centers": np.asarray(axis_spec.bin_centers, dtype=float),
+        "parent_bin_counts_draws": np.asarray(parent_bin_counts_draws),
+        "detectable_weight_sums_draws": np.asarray(detectable_weight_sums_draws),
+        "selected_weight_sums_draws": np.asarray(selected_weight_sums_draws),
+    }
+    for category_name in TREND_CATEGORY_NAMES:
+        np_save_payload[f"{category_name}_gamma_draws"] = np.asarray(gamma_draws[category_name], dtype=float)
+    if isinstance(observed_overlay, ObservedTrendSeries):
+        np_save_payload["observed_x"] = np.asarray(observed_overlay.x, dtype=float)
+        np_save_payload["observed_y"] = np.asarray(observed_overlay.y, dtype=float)
+        np_save_payload["observed_yerr_lower"] = np.asarray(observed_overlay.yerr_lower, dtype=float)
+        np_save_payload["observed_yerr_upper"] = np.asarray(observed_overlay.yerr_upper, dtype=float)
+    else:
+        np_save_payload["observed_p16"] = np.asarray(observed_overlay.p16, dtype=float)
+        np_save_payload["observed_p50"] = np.asarray(observed_overlay.p50, dtype=float)
+        np_save_payload["observed_p84"] = np.asarray(observed_overlay.p84, dtype=float)
+        if observed_overlay_draws is not None:
+            np_save_payload["observed_gamma_draws"] = np.asarray(observed_overlay_draws, dtype=float)
+    np.savez(result_dir / f"{artifact_stem}_curves.npz", **np_save_payload)
+
+    _write_gamma_trend_figure(
+        figure_path=result_dir / f"{artifact_stem}.png",
+        x_grid=axis_spec.bin_centers,
+        summary_payload=gamma_summary,
+        x_label=axis_spec.label,
+        observed_overlay=observed_overlay,
+        figure_title=figure_title,
+    )
+
+
 def run_posterior_trends(
     run_dir: str,
     sigma_table_path: str,
@@ -2702,9 +3278,10 @@ def run_posterior_trends(
     )
     n_posterior_draws_used = int(posterior_draws.shape[0])
 
-    compiled_context, profile_spec, _, _, _, _ = build_compiled_context(runtime_config)
+    compiled_context, profile_spec, _, cosmology, _, observations = build_compiled_context(runtime_config)
     observation_contract = _load_observation_contract_from_path(runtime_config.data.observation_path)
     observation_flavor = observation_contract.observation_flavor
+    resolved_sigma_table_path = Path(sigma_table_path).expanduser().resolve()
     sigma_table = SigmaUnitTable.from_path(
         sigma_table_path,
         mass_definition=mass_definition,
@@ -2720,20 +3297,66 @@ def run_posterior_trends(
 
     mass_bin_edges = np.linspace(mass_bin_min, mass_bin_max, n_mass_bins + 1, dtype=float)
     mass_bin_centers = 0.5 * (mass_bin_edges[:-1] + mass_bin_edges[1:])
+    observed_gamma_measurements = _load_observed_gamma_measurements(
+        observation_path=Path(runtime_config.data.observation_path),
+        profile_name=runtime_config.profile.name,
+        observations=observations,
+        cosmology=cosmology,
+    )
+    log_re_axis_spec = _build_trend_axis_spec(
+        name="logre_kpc",
+        label=r"log $r_e$ [kpc]",
+        reference_values=observed_gamma_measurements.log_re_kpc,
+        n_bins=n_mass_bins,
+        padding_fraction=0.05,
+        minimum_padding=0.02,
+        observed_overlay_mode="points",
+    )
+    delta_r_reference = _compute_observed_delta_r(
+        log_mstar=observed_gamma_measurements.log_mstar,
+        n_value=observed_gamma_measurements.n_value,
+        log_re_kpc=observed_gamma_measurements.log_re_kpc,
+        profile=profile_spec,
+        theta=np.median(posterior_draws, axis=0),
+    )
+    delta_r_axis_spec = _build_trend_axis_spec(
+        name="delta_r",
+        label=r"log $r_e$ [kpc] - $\mu_r$",
+        reference_values=delta_r_reference,
+        n_bins=n_mass_bins,
+        padding_fraction=0.05,
+        minimum_padding=0.01,
+        observed_overlay_mode="points",
+    )
 
     parallelism = _resolve_ppc_parallelism(
         runtime_config=runtime_config,
         requested_worker_processes=worker_processes,
         n_draws=n_posterior_draws_used,
     )
-    trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws = _run_trend_draws(
+    (
+        trend_draws,
+        parent_bin_counts_draws,
+        detectable_weight_sums_draws,
+        selected_weight_sums_draws,
+        gamma_vs_logre_draws,
+        gamma_vs_logre_parent_bin_counts_draws,
+        gamma_vs_logre_detectable_weight_sums_draws,
+        gamma_vs_logre_selected_weight_sums_draws,
+        gamma_vs_delta_r_draws,
+        gamma_vs_delta_r_parent_bin_counts_draws,
+        gamma_vs_delta_r_detectable_weight_sums_draws,
+        gamma_vs_delta_r_selected_weight_sums_draws,
+    ) = _run_trend_draws(
         posterior_draws=posterior_draws,
         profile=profile_spec,
         context=compiled_context,
         mass_definition=mass_definition,
-        sigma_table_path=str(Path(sigma_table_path).expanduser().resolve()),
+        sigma_table_path=str(resolved_sigma_table_path),
         observation_flavor=observation_flavor,
         mass_bin_edges=mass_bin_edges,
+        log_re_bin_edges=log_re_axis_spec.bin_edges,
+        delta_r_bin_edges=delta_r_axis_spec.bin_edges,
         n_parent_sample=n_parent_sample,
         random_seed=random_seed,
         parallelism=parallelism,
@@ -2746,10 +3369,20 @@ def run_posterior_trends(
         }
         for quantity_name in trend_quantity_names
     }
+    gamma_vs_logre_summary = {
+        category_name: _summarize_trend_draws(gamma_vs_logre_draws[category_name])
+        for category_name in TREND_CATEGORY_NAMES
+    }
+    gamma_vs_delta_r_summary = {
+        category_name: _summarize_trend_draws(gamma_vs_delta_r_draws[category_name])
+        for category_name in TREND_CATEGORY_NAMES
+    }
     figure_title = _format_fig8_like_title(
         mass_definition=mass_definition,
         gamma_mode=runtime_config.gamma_model.mode,
     )
+    gamma_vs_logre_title = f"{figure_title} | gamma vs log $r_e$"
+    gamma_vs_delta_r_title = f"{figure_title} | gamma vs $\\Delta_R$"
 
     result_dir = _materialize_result_dir(Path(output_root_dir), runtime_config.profile.name, resolved_run_dir.name)
     serializable_summary = {
@@ -2823,6 +3456,71 @@ def run_posterior_trends(
         figure_title=figure_title,
     )
 
+    observed_gamma_logre_overlay = _build_observed_gamma_logre_overlay(observed_gamma_measurements)
+    observed_gamma_delta_r_overlay = _build_observed_gamma_delta_r_overlay(
+        measurements=observed_gamma_measurements,
+        profile=profile_spec,
+        axis_spec=delta_r_axis_spec,
+    )
+    standalone_base_metadata = {
+        "run_id": resolved_run_dir.name,
+        "profile_name": runtime_config.profile.name,
+        "gamma_mode": runtime_config.gamma_model.mode,
+        "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
+        "input_run_dir": str(resolved_run_dir),
+        "observation_path": str(runtime_config.data.observation_path),
+        "observation_flavor": observation_flavor,
+        "result_dir": str(result_dir),
+        "burn_in_applied": burn_in_steps,
+        "requested_n_posterior_draws": None if n_posterior_draws is None else int(n_posterior_draws),
+        "n_posterior_draws": n_posterior_draws_used,
+        "n_posterior_draws_used": n_posterior_draws_used,
+        "posterior_draw_mode": posterior_draw_mode,
+        "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
+        "sigma_table_path": str(resolved_sigma_table_path),
+        "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
+        "n_parent_sample": int(n_parent_sample),
+        "n_bins": int(n_mass_bins),
+        "generator_mode": "sampled_population_binned",
+        "mass_definition": mass_definition_metadata(mass_definition),
+        "parallel_strategy": parallelism.strategy,
+        "worker_processes": int(parallelism.worker_processes),
+        "parallelism": parallelism.to_dict(),
+        "categories": {
+            "parent": {"label": "Parent population"},
+            "detectable": {"label": "Detectable lenses"},
+            "selected": {"label": "full_selection"},
+        },
+    }
+    _write_standalone_gamma_trend_artifacts(
+        result_dir=result_dir,
+        artifact_stem="gamma_vs_logre_kpc",
+        axis_spec=log_re_axis_spec,
+        gamma_summary=gamma_vs_logre_summary,
+        gamma_draws=gamma_vs_logre_draws,
+        parent_bin_counts_draws=gamma_vs_logre_parent_bin_counts_draws,
+        detectable_weight_sums_draws=gamma_vs_logre_detectable_weight_sums_draws,
+        selected_weight_sums_draws=gamma_vs_logre_selected_weight_sums_draws,
+        observed_overlay=observed_gamma_logre_overlay,
+        observed_overlay_draws=None,
+        base_metadata=standalone_base_metadata,
+        figure_title=gamma_vs_logre_title,
+    )
+    _write_standalone_gamma_trend_artifacts(
+        result_dir=result_dir,
+        artifact_stem="gamma_vs_delta_r",
+        axis_spec=delta_r_axis_spec,
+        gamma_summary=gamma_vs_delta_r_summary,
+        gamma_draws=gamma_vs_delta_r_draws,
+        parent_bin_counts_draws=gamma_vs_delta_r_parent_bin_counts_draws,
+        detectable_weight_sums_draws=gamma_vs_delta_r_detectable_weight_sums_draws,
+        selected_weight_sums_draws=gamma_vs_delta_r_selected_weight_sums_draws,
+        observed_overlay=observed_gamma_delta_r_overlay,
+        observed_overlay_draws=None,
+        base_metadata=standalone_base_metadata,
+        figure_title=gamma_vs_delta_r_title,
+    )
+
     return PosteriorTrendResult(
         run_id=resolved_run_dir.name,
         profile_name=runtime_config.profile.name,
@@ -2832,7 +3530,7 @@ def run_posterior_trends(
         burn_in_applied=burn_in_steps,
         n_posterior_draws=n_posterior_draws_used,
         n_mass_bins=int(n_mass_bins),
-        sigma_table_path=Path(sigma_table_path).expanduser().resolve(),
+        sigma_table_path=resolved_sigma_table_path,
         metadata={
             "requested_n_posterior_draws": None if n_posterior_draws is None else int(n_posterior_draws),
             "n_posterior_draws_used": n_posterior_draws_used,
@@ -2840,6 +3538,7 @@ def run_posterior_trends(
             "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
             "observation_path": str(runtime_config.data.observation_path),
             "observation_flavor": observation_flavor,
+            "sigma_table_path": str(resolved_sigma_table_path),
             "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
             "gamma_mode": runtime_config.gamma_model.mode,
             "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
@@ -2853,6 +3552,12 @@ def run_posterior_trends(
             "worker_processes": int(parallelism.worker_processes),
             "parallelism": parallelism.to_dict(),
             "figure_title": figure_title,
+            "gamma_vs_logre_kpc_figure": str(result_dir / "gamma_vs_logre_kpc.png"),
+            "gamma_vs_logre_kpc_summary": str(result_dir / "gamma_vs_logre_kpc_summary.json"),
+            "gamma_vs_logre_kpc_curves": str(result_dir / "gamma_vs_logre_kpc_curves.npz"),
+            "gamma_vs_delta_r_figure": str(result_dir / "gamma_vs_delta_r.png"),
+            "gamma_vs_delta_r_summary": str(result_dir / "gamma_vs_delta_r_summary.json"),
+            "gamma_vs_delta_r_curves": str(result_dir / "gamma_vs_delta_r_curves.npz"),
         },
     )
 

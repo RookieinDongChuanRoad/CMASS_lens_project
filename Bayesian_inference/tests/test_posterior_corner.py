@@ -30,6 +30,58 @@ from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 
 
+def _box_prior_for_gamma_mode(
+    mass_radius_kpc: int,
+    gamma_mode: str,
+) -> dict[str, list[float]]:
+    """Return the explicit box-prior payload matching one corner-test schema."""
+
+    if mass_radius_kpc == 10:
+        mass_bounds = {
+            "mu10_0": [9.0, 12.0],
+            "beta10": [-3.0, 3.0],
+            "xi10": [-3.0, 3.0],
+            "sigma10": [1.0e-2, 0.2],
+        }
+    else:
+        mass_bounds = {
+            "mu5_0": [9.0, 12.0],
+            "beta5": [-3.0, 3.0],
+            "xi5": [-3.0, 3.0],
+            "sigma5": [1.0e-2, 0.2],
+        }
+
+    if gamma_mode == "dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_gamma": [-3.0, 3.0],
+            "xi_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "independent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "sigma_star_dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_sigma_star_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    else:
+        raise ValueError(f"Unsupported corner-test gamma mode '{gamma_mode}'.")
+
+    return {
+        **mass_bounds,
+        **gamma_bounds,
+        "mu_zs": [1.0, 3.0],
+        "sigma_zs": [0.0, 2.0],
+        "theta0": [0.0, 3.0],
+        "loga": [-1.0, 3.0],
+    }
+
+
 def _initial_center_for_gamma_mode(
     mass_initial_center: dict[str, float],
     gamma_mode: str,
@@ -133,6 +185,7 @@ def _write_corner_config(
             "observation_path": str(output_root / f"{profile_name}_observations.hdf5"),
             "cross_section_path": str(output_root / "cs_grid_power.h5"),
         },
+        "box_prior": _box_prior_for_gamma_mode(mass_radius_kpc, gamma_mode),
         "sampling": {
             "n_walkers": 24,
             "n_steps": 5,

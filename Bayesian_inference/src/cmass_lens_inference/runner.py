@@ -90,6 +90,7 @@ def _run_with_layout(
                 runtime_context.config.mass_definition
             ),
         },
+        "box_prior": runtime_context.config.parameter_schema.serialize_public_box_prior(),
         "integration": {
             "gamma_points": runtime_context.config.integration.gamma_points,
             "mstar_points": runtime_context.config.integration.mstar_points,

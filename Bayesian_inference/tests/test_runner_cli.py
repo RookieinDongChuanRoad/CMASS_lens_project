@@ -86,6 +86,7 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
     metadata = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["chain_storage"] == "emcee_hdf_backend"
     assert metadata["config_summary"]["gamma_mode"] == "dependent"
+    assert metadata["config_summary"]["box_prior"]["mu5_0"] == [9.0, 12.0]
     assert metadata["parallelism"]["compute_budget"] >= 1
     assert metadata["parallelism"]["cpu_count"] >= metadata["parallelism"]["compute_budget"]
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
@@ -313,6 +314,7 @@ def test_resume_inference_migrates_legacy_run_snapshot_missing_gamma_mode(
     )
     legacy_config_payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
     legacy_config_payload.pop("gamma_model")
+    legacy_config_payload.pop("box_prior")
     (run_layout.run_dir / "config_snapshot.yaml").write_text(
         yaml.safe_dump(legacy_config_payload, sort_keys=False),
         encoding="utf-8",
@@ -323,6 +325,7 @@ def test_resume_inference_migrates_legacy_run_snapshot_missing_gamma_mode(
     assert run_result.status == "completed"
     migrated_snapshot = yaml.safe_load((run_layout.run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
     assert migrated_snapshot["gamma_model"]["mode"] == "dependent"
+    assert migrated_snapshot["box_prior"]["mu5_0"] == [9.0, 12.0]
 
 
 def test_cli_run_command_executes_minimal_pipeline(synthetic_config_path: Path) -> None:

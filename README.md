@@ -192,11 +192,29 @@ Every inference config now must include:
 ```yaml
 mass_definition:
   enclosed_radius_kpc: 5  # or 10
+
+box_prior:
+  mu5_0: [9.0, 12.0]
+  beta5: [-3.0, 3.0]
+  xi5: [-3.0, 3.0]
+  sigma5: [1.0e-2, 0.2]
+  mu_gamma_0: [1.5, 2.5]
+  beta_gamma: [-3.0, 3.0]
+  xi_gamma: [-3.0, 3.0]
+  sigma_gamma: [0.0, 0.5]
+  mu_zs: [1.0, 3.0]
+  sigma_zs: [0.0, 2.0]
+  theta0: [0.0, 3.0]
+  loga: [-1.0, 3.0]
 ```
 
 The public hyper-parameter names follow that choice:
 - `5 kpc`: `mu5_0`, `beta5`, `xi5`, `sigma5`
 - `10 kpc`: `mu10_0`, `beta10`, `xi10`, `sigma10`
+
+`box_prior` is now an explicit required contract rather than an implicit code
+default. Historical run-local `config_snapshot.yaml` files may be auto-migrated
+when resumed, but user-authored source configs should be updated in place.
 
 Run the de Vaucouleurs branch:
 

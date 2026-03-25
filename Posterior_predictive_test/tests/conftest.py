@@ -39,6 +39,65 @@ for entry in (str(PPT_SOURCE_ROOT), str(INFERENCE_SOURCE_ROOT), *existing_python
 os.environ["PYTHONPATH"] = os.pathsep.join(merged_pythonpath_entries)
 
 
+def _default_box_prior_config(
+    *,
+    mass_radius_kpc: int,
+    gamma_mode: str = "dependent",
+) -> dict[str, list[float]]:
+    """
+    Return one explicit public-name box-prior mapping for PPT synthetic configs.
+
+    These tests intentionally write the full `box_prior` section into every
+    synthetic YAML so the PPT package exercises the same strict configuration
+    contract that production runs now require.
+    """
+
+    if mass_radius_kpc == 10:
+        mass_bounds = {
+            "mu10_0": [9.0, 12.0],
+            "beta10": [-3.0, 3.0],
+            "xi10": [-3.0, 3.0],
+            "sigma10": [1.0e-2, 0.2],
+        }
+    else:
+        mass_bounds = {
+            "mu5_0": [9.0, 12.0],
+            "beta5": [-3.0, 3.0],
+            "xi5": [-3.0, 3.0],
+            "sigma5": [1.0e-2, 0.2],
+        }
+
+    if gamma_mode == "dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_gamma": [-3.0, 3.0],
+            "xi_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "independent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    elif gamma_mode == "sigma_star_dependent":
+        gamma_bounds = {
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_sigma_star_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+        }
+    else:
+        raise ValueError(f"Unsupported gamma mode for PPT test box-prior fixture: {gamma_mode}")
+
+    return {
+        **mass_bounds,
+        **gamma_bounds,
+        "mu_zs": [1.0, 3.0],
+        "sigma_zs": [0.0, 2.0],
+        "theta0": [0.0, 3.0],
+        "loga": [-1.0, 3.0],
+    }
+
+
 @pytest.fixture
 def synthetic_observation_file(tmp_path: Path) -> Path:
     """
@@ -151,6 +210,7 @@ def synthetic_config_path(
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
         },
+        "box_prior": _default_box_prior_config(mass_radius_kpc=5, gamma_mode="dependent"),
         "sampling": {
             "n_walkers": 24,
             "n_steps": 3,
@@ -225,6 +285,7 @@ def synthetic_m10_config_path(
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
         },
+        "box_prior": _default_box_prior_config(mass_radius_kpc=10, gamma_mode="dependent"),
         "sampling": {
             "n_walkers": 24,
             "n_steps": 3,
@@ -300,6 +361,7 @@ def synthetic_independent_config_path(
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
         },
+        "box_prior": _default_box_prior_config(mass_radius_kpc=5, gamma_mode="independent"),
         "sampling": {
             "n_walkers": 24,
             "n_steps": 3,
