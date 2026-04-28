@@ -25,6 +25,8 @@ from spherical_jeans.mass_profiles import powerlaw
 from interpolation_grids.config import (
     DEFAULT_RADIAL_GRID_SIZE,
     DEFAULT_PRODUCTION_APERTURE_POLICY,
+    OBSERVED_APERTURE_SIGMA_DEFINITION,
+    WITHIN_RE_SIGMA_DEFINITION,
 )
 from interpolation_grids.models import AperturePolicy, GalaxyInputs
 
@@ -75,7 +77,9 @@ def uses_devaucouleurs_branch(source_filename: str) -> bool:
 
 def _build_aperture_and_seeing_kpc(
     zd: float,
+    re_kpc: float | None = None,
     aperture_policy: AperturePolicy | None = None,
+    sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
 ) -> tuple[float | list[float], float]:
     """Convert one explicit aperture policy from arcsec into physical kpc.
 
@@ -83,6 +87,14 @@ def _build_aperture_and_seeing_kpc(
     different physical aperture without mutating the behavior of every Jeans
     calculation in the repository.
     """
+
+    normalized_sigma_definition = sigma_definition.strip().lower()
+    if normalized_sigma_definition == WITHIN_RE_SIGMA_DEFINITION:
+        if re_kpc is None or re_kpc <= 0.0:
+            raise ValueError("The within-Re sigma definition requires a strictly positive `re_kpc`.")
+        return float(re_kpc), None
+    if normalized_sigma_definition != OBSERVED_APERTURE_SIGMA_DEFINITION:
+        raise ValueError(f"Unsupported sigma definition: {sigma_definition}")
 
     physical_kpc_per_arcsec = kpc_per_arcsec(zd)
     resolved_policy = aperture_policy or DEFAULT_PRODUCTION_APERTURE_POLICY
@@ -134,7 +146,7 @@ def _resolve_tracer_setup(
 def _compute_sigma_unit_values_for_prepared_inputs(
     gamma_grid: np.ndarray,
     aperture_kpc: float | list[float],
-    seeing_kpc: float,
+    seeing_kpc: float | None,
     tracer_parameters: float | tuple[float, float],
     tracer_profile: object,
     radial_grid: np.ndarray,
@@ -152,12 +164,15 @@ def _compute_sigma_unit_values_for_prepared_inputs(
     for index, gamma in enumerate(np.asarray(gamma_grid, dtype=float)):
         normalization = 1.0 / powerlaw.M2d(5.0, gamma)
         enclosed_mass_grid = normalization * powerlaw.M3d(radial_grid, gamma)
+        sigma2_kwargs = {}
+        if seeing_kpc is not None:
+            sigma2_kwargs["seeing"] = seeing_kpc
         sigma2_over_g = sigma_model.sigma2(
             (radial_grid, enclosed_mass_grid),
             aperture_kpc,
             tracer_parameters,
             tracer_profile,
-            seeing=seeing_kpc,
+            **sigma2_kwargs,
         )
         output[index] = sigma2_over_g * SIGMA2_TO_KM2_PER_S2
     return output
@@ -171,6 +186,7 @@ def compute_sigma_unit(
     n_value: float | None = None,
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
+    sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
 ) -> float:
     """Evaluate the unit-mass Jeans response for one physical lens coordinate.
 
@@ -185,7 +201,12 @@ def compute_sigma_unit(
     unit `10**m5` normalization.
     """
 
-    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd, aperture_policy=aperture_policy)
+    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(
+        zd,
+        re_kpc=re_kpc,
+        aperture_policy=aperture_policy,
+        sigma_definition=sigma_definition,
+    )
     tracer_parameters, tracer_profile, radial_grid = _resolve_tracer_setup(
         profile_name=profile_name,
         re_kpc=re_kpc,
@@ -211,10 +232,16 @@ def compute_sigma_unit_grid(
     n_value: float | None = None,
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
+    sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
 ) -> np.ndarray:
     """Evaluate `S_unit` over one gamma axis for fixed non-gamma lens inputs."""
 
-    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd, aperture_policy=aperture_policy)
+    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(
+        zd,
+        re_kpc=re_kpc,
+        aperture_policy=aperture_policy,
+        sigma_definition=sigma_definition,
+    )
     tracer_parameters, tracer_profile, radial_grid = _resolve_tracer_setup(
         profile_name=profile_name,
         re_kpc=re_kpc,

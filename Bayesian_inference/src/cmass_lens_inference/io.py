@@ -14,17 +14,11 @@ import h5py
 import numpy as np
 
 from .mass_definition import (
-    LEGACY_M5_DERIVATIVE_DATASET_NAME,
-    LEGACY_M5_GRID_DATASET_NAME,
-    LEGACY_M5_SIGMA_DATASET_NAME,
     MASS_DERIVATIVE_DATASET_NAME,
     MASS_GRID_DATASET_NAME,
     MASS_GROUP_ROOT_NAME,
     MASS_SIGMA_DATASET_NAME,
     MassDefinition,
-    convert_log_enclosed_mass,
-    convert_sigma_unit_grid,
-    get_mass_definition,
 )
 from .types import CrossSectionGrid, ObservationRecord, ProfileSpec, SigmaUnitTable
 
@@ -36,6 +30,8 @@ DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC = 0.9
 DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC = 1.0
 DEFAULT_SLIT_SEEING_FWHM_ARCSEC = 0.9
 DEFAULT_BOSS_SEEING_FWHM_ARCSEC = 1.5
+OBSERVED_APERTURE_SIGMA_DEFINITION = "observed_aperture"
+WITHIN_RE_SIGMA_DEFINITION = "within_re"
 
 
 def _resolve_attribute(group: h5py.Group, aliases: tuple[str, ...]) -> float:
@@ -163,6 +159,7 @@ def load_sigma_unit_table(
     profile_spec: ProfileSpec,
     mass_definition: MassDefinition,
     observation_flavor: str | None = None,
+    bundle_group: str | None = None,
 ) -> SigmaUnitTable:
     """
     Load and validate the sigma-unit table used by the optional FP prior.
@@ -176,32 +173,34 @@ def load_sigma_unit_table(
         schema_version = _decode_hdf5_scalar_string(handle.attrs.get("schema_version", ""))
 
         if schema_version == SIGMA_UNIT_BUNDLE_SCHEMA_VERSION:
-            if observation_flavor is None:
+            selected_bundle_group = bundle_group.strip().lower() if bundle_group is not None else None
+            if selected_bundle_group is None:
+                if observation_flavor is None:
+                    raise ValueError(
+                        f"Sigma bundle '{path}' requires either `bundle_group` or `observation_flavor` to select the correct leaf."
+                    )
+                selected_bundle_group = observation_flavor.strip().lower()
+
+            if selected_bundle_group not in handle:
                 raise ValueError(
-                    f"Sigma bundle '{path}' requires an explicit observation_flavor to select the correct leaf."
+                    f"Sigma bundle '{path}' does not contain the bundle group '{selected_bundle_group}'."
                 )
 
-            normalized_observation_flavor = observation_flavor.strip().lower()
-            if normalized_observation_flavor not in {SLIT_OBSERVATION_FLAVOR, BOSS_OBSERVATION_FLAVOR}:
-                raise ValueError(f"Unsupported observation flavor '{observation_flavor}' for sigma bundle '{path}'.")
-            if normalized_observation_flavor not in handle:
-                raise ValueError(
-                    f"Sigma bundle '{path}' does not contain the observation flavor '{normalized_observation_flavor}'."
-                )
-
-            flavor_group = handle[normalized_observation_flavor]
-            if mass_definition.label not in flavor_group:
+            bundle_root_group = handle[selected_bundle_group]
+            if mass_definition.label not in bundle_root_group:
                 raise ValueError(
                     f"Sigma bundle '{path}' does not contain the mass-definition leaf "
-                    f"'{normalized_observation_flavor}/{mass_definition.label}'."
+                    f"'{selected_bundle_group}/{mass_definition.label}'."
                 )
 
-            leaf = flavor_group[mass_definition.label]
-            required_dataset_names = {"gamma_axis", "zd_axis", "log_re_kpc_axis", "s_unit_grid"}
+            leaf = bundle_root_group[mass_definition.label]
+            required_dataset_names = {"gamma_axis", "log_re_kpc_axis", "s_unit_grid"}
+            if selected_bundle_group != WITHIN_RE_SIGMA_DEFINITION:
+                required_dataset_names.add("zd_axis")
             missing = sorted(required_dataset_names.difference(leaf.keys()))
             if missing:
                 raise ValueError(
-                    f"Sigma bundle leaf '{path}:{normalized_observation_flavor}/{mass_definition.label}' "
+                    f"Sigma bundle leaf '{path}:{selected_bundle_group}/{mass_definition.label}' "
                     f"is missing datasets: {missing}."
                 )
 
@@ -226,11 +225,75 @@ def load_sigma_unit_table(
                     f"({mass_definition.radius_kpc:g} kpc)."
                 )
 
+            sigma_definition = _decode_hdf5_scalar_string(
+                leaf.attrs.get(
+                    "sigma_definition",
+                    WITHIN_RE_SIGMA_DEFINITION
+                    if selected_bundle_group == WITHIN_RE_SIGMA_DEFINITION
+                    else OBSERVED_APERTURE_SIGMA_DEFINITION,
+                )
+            ).strip().lower()
             aperture_shape = _decode_hdf5_scalar_string(leaf.attrs.get("aperture_shape", "")).strip().lower()
             aperture_width_arcsec = _optional_hdf5_float(leaf.attrs.get("aperture_width_arcsec"))
             aperture_height_arcsec = _optional_hdf5_float(leaf.attrs.get("aperture_height_arcsec"))
             aperture_radius_arcsec = _optional_hdf5_float(leaf.attrs.get("aperture_radius_arcsec"))
             seeing_fwhm_arcsec = _optional_hdf5_float(leaf.attrs.get("seeing_fwhm_arcsec"))
+            n_axis = np.asarray(leaf["n_axis"][()], dtype=float) if "n_axis" in leaf else None
+            if profile_spec.uses_observed_n_in_likelihood and n_axis is None:
+                raise ValueError(
+                    f"Sigma table '{path}' is missing n_axis for the sersic profile schema."
+                )
+
+            if selected_bundle_group == WITHIN_RE_SIGMA_DEFINITION:
+                aperture_radius_mode = _decode_hdf5_scalar_string(leaf.attrs.get("aperture_radius_mode", "")).strip().lower()
+                seeing_mode = _decode_hdf5_scalar_string(leaf.attrs.get("seeing_mode", "")).strip().lower()
+                if sigma_definition != WITHIN_RE_SIGMA_DEFINITION:
+                    raise ValueError(
+                        f"Sigma bundle leaf '{path}:{selected_bundle_group}/{mass_definition.label}' "
+                        "does not declare sigma_definition='within_re'."
+                    )
+                if aperture_shape != "circular":
+                    raise ValueError("Within-Re sigma bundle metadata must declare a circular aperture.")
+                if aperture_radius_mode != "effective_radius":
+                    raise ValueError("Within-Re sigma bundle metadata must declare aperture_radius_mode='effective_radius'.")
+                if seeing_mode != "none":
+                    raise ValueError("Within-Re sigma bundle metadata must declare seeing_mode='none'.")
+                if any(value is not None for value in (aperture_width_arcsec, aperture_height_arcsec, aperture_radius_arcsec)):
+                    raise ValueError("Within-Re sigma bundle metadata must not carry fixed angular aperture sizes.")
+                if seeing_fwhm_arcsec is not None:
+                    raise ValueError("Within-Re sigma bundle metadata must not carry a seeing_fwhm_arcsec value.")
+
+                return SigmaUnitTable(
+                    profile_name=profile_name,
+                    mass_definition_label=mass_definition_label,
+                    mass_radius_kpc=mass_radius_kpc,
+                    units=_decode_hdf5_scalar_string(leaf.attrs.get("units", mass_definition.sigma_unit_units)),
+                    gamma_axis=np.asarray(leaf["gamma_axis"][()], dtype=float),
+                    zd_axis=None,
+                    log_re_kpc_axis=np.asarray(leaf["log_re_kpc_axis"][()], dtype=float),
+                    sigma_unit_grid=np.asarray(leaf["s_unit_grid"][()], dtype=float),
+                    n_axis=n_axis,
+                    sigma_definition=sigma_definition,
+                    bundle_group_name=selected_bundle_group,
+                    observation_flavor=None,
+                    aperture_shape=aperture_shape,
+                    aperture_width_arcsec=None,
+                    aperture_height_arcsec=None,
+                    aperture_radius_arcsec=None,
+                    seeing_fwhm_arcsec=None,
+                    bundle_leaf_path=f"/{selected_bundle_group}/{mass_definition.label}",
+                )
+
+            normalized_observation_flavor = selected_bundle_group
+            if normalized_observation_flavor not in {SLIT_OBSERVATION_FLAVOR, BOSS_OBSERVATION_FLAVOR}:
+                raise ValueError(
+                    f"Unsupported observation flavor '{normalized_observation_flavor}' for sigma bundle '{path}'."
+                )
+            if sigma_definition != OBSERVED_APERTURE_SIGMA_DEFINITION:
+                raise ValueError(
+                    f"Sigma bundle leaf '{path}:{selected_bundle_group}/{mass_definition.label}' "
+                    "does not declare sigma_definition='observed_aperture'."
+                )
             if normalized_observation_flavor == BOSS_OBSERVATION_FLAVOR:
                 if aperture_shape != "circular" or aperture_radius_arcsec is None or not np.isclose(
                     aperture_radius_arcsec,
@@ -251,12 +314,6 @@ def load_sigma_unit_table(
                 if seeing_fwhm_arcsec is None or not np.isclose(seeing_fwhm_arcsec, DEFAULT_SLIT_SEEING_FWHM_ARCSEC):
                     raise ValueError("Sigma bundle seeing metadata does not match the slit 0.9 arcsec contract.")
 
-            n_axis = np.asarray(leaf["n_axis"][()], dtype=float) if "n_axis" in leaf else None
-            if profile_spec.uses_observed_n_in_likelihood and n_axis is None:
-                raise ValueError(
-                    f"Sigma table '{path}' is missing n_axis for the sersic profile schema."
-                )
-
             return SigmaUnitTable(
                 profile_name=profile_name,
                 mass_definition_label=mass_definition_label,
@@ -267,13 +324,15 @@ def load_sigma_unit_table(
                 log_re_kpc_axis=np.asarray(leaf["log_re_kpc_axis"][()], dtype=float),
                 sigma_unit_grid=np.asarray(leaf["s_unit_grid"][()], dtype=float),
                 n_axis=n_axis,
+                sigma_definition=sigma_definition,
+                bundle_group_name=selected_bundle_group,
                 observation_flavor=normalized_observation_flavor,
                 aperture_shape=aperture_shape,
                 aperture_width_arcsec=aperture_width_arcsec,
                 aperture_height_arcsec=aperture_height_arcsec,
                 aperture_radius_arcsec=aperture_radius_arcsec,
                 seeing_fwhm_arcsec=float(seeing_fwhm_arcsec),
-                bundle_leaf_path=f"/{normalized_observation_flavor}/{mass_definition.label}",
+                bundle_leaf_path=f"/{selected_bundle_group}/{mass_definition.label}",
             )
 
         required_dataset_names = {
@@ -344,6 +403,8 @@ def load_sigma_unit_table(
             log_re_kpc_axis=np.asarray(handle["log_re_kpc_axis"][()], dtype=float),
             sigma_unit_grid=np.asarray(handle["s_unit_grid"][()], dtype=float),
             n_axis=n_axis,
+            sigma_definition=OBSERVED_APERTURE_SIGMA_DEFINITION,
+            bundle_group_name=table_observation_flavor,
             observation_flavor=table_observation_flavor,
             aperture_shape=aperture_shape,
             aperture_width_arcsec=aperture_width_arcsec,
@@ -369,54 +430,36 @@ def _load_mass_dependent_grids(
     """
     Resolve the mass-dependent grids for the selected definition.
 
-    The migration needs to support two physical layouts:
-    - new files storing data under `<lens>/mass_definitions/<label>/`
-    - legacy files exposing only root-level `m5_*` datasets
+    Supported layout:
+    - files store mass-dependent data under `<lens>/mass_definitions/<label>/`
     """
 
-    if MASS_GROUP_ROOT_NAME in group and mass_definition.subgroup_name in group[MASS_GROUP_ROOT_NAME]:
-        selected_group = group[MASS_GROUP_ROOT_NAME][mass_definition.subgroup_name]
-        mass_grid = np.asarray(selected_group[MASS_GRID_DATASET_NAME][()], dtype=float)
-        dmass_grid = np.asarray(selected_group[MASS_DERIVATIVE_DATASET_NAME][()], dtype=float)
-        s2_grid = (
-            np.asarray(selected_group[MASS_SIGMA_DATASET_NAME][()], dtype=float)
-            if MASS_SIGMA_DATASET_NAME in selected_group
-            else None
-        )
-        return mass_grid, dmass_grid, s2_grid
-
-    legacy_m5 = get_mass_definition(5)
-    if LEGACY_M5_GRID_DATASET_NAME not in group or LEGACY_M5_DERIVATIVE_DATASET_NAME not in group:
+    if MASS_GROUP_ROOT_NAME not in group or mass_definition.subgroup_name not in group[MASS_GROUP_ROOT_NAME]:
         raise KeyError(
-            "Observation group is missing both the new mass-definition subgroup "
-            "schema and the legacy root-level m5 datasets."
+            "Observation group is missing the required mass-definition subgroup "
+            f"schema for '{mass_definition.subgroup_name}'."
         )
 
-    legacy_mass_grid = np.asarray(group[LEGACY_M5_GRID_DATASET_NAME][()], dtype=float)
-    legacy_dmass_grid = np.asarray(group[LEGACY_M5_DERIVATIVE_DATASET_NAME][()], dtype=float)
-    legacy_s2_grid = (
-        np.asarray(group[LEGACY_M5_SIGMA_DATASET_NAME][()], dtype=float)
-        if LEGACY_M5_SIGMA_DATASET_NAME in group
+    selected_group = group[MASS_GROUP_ROOT_NAME][mass_definition.subgroup_name]
+    if MASS_GRID_DATASET_NAME not in selected_group:
+        raise KeyError(
+            "Observation mass-definition subgroup is missing required dataset "
+            f"'{mass_definition.subgroup_name}/{MASS_GRID_DATASET_NAME}'."
+        )
+    if MASS_DERIVATIVE_DATASET_NAME not in selected_group:
+        raise KeyError(
+            "Observation mass-definition subgroup is missing required dataset "
+            f"'{mass_definition.subgroup_name}/{MASS_DERIVATIVE_DATASET_NAME}'."
+        )
+
+    mass_grid = np.asarray(selected_group[MASS_GRID_DATASET_NAME][()], dtype=float)
+    dmass_grid = np.asarray(selected_group[MASS_DERIVATIVE_DATASET_NAME][()], dtype=float)
+    s2_grid = (
+        np.asarray(selected_group[MASS_SIGMA_DATASET_NAME][()], dtype=float)
+        if MASS_SIGMA_DATASET_NAME in selected_group
         else None
     )
-    if mass_definition.radius_kpc == legacy_m5.radius_kpc:
-        return legacy_mass_grid, legacy_dmass_grid, legacy_s2_grid
-
-    converted_mass_grid = convert_log_enclosed_mass(
-        log_mass=legacy_mass_grid,
-        gamma=gamma_grid,
-        from_radius_kpc=legacy_m5.radius_kpc,
-        to_radius_kpc=mass_definition.radius_kpc,
-    )
-    converted_s2_grid = None
-    if legacy_s2_grid is not None:
-        converted_s2_grid = convert_sigma_unit_grid(
-            sigma_unit_grid=legacy_s2_grid,
-            gamma=gamma_grid,
-            from_radius_kpc=legacy_m5.radius_kpc,
-            to_radius_kpc=mass_definition.radius_kpc,
-        )
-    return converted_mass_grid, legacy_dmass_grid, converted_s2_grid
+    return mass_grid, dmass_grid, s2_grid
 
 
 def load_observations(

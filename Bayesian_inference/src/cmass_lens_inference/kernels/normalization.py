@@ -29,17 +29,13 @@ from .primitives import (
     truncnorm_sample,
 )
 
-FP_OLS_SUMMARY_SIZE = 10
+FP_OLS_SUMMARY_SIZE = 6
 FP_OLS_COUNT_INDEX = 0
 FP_OLS_SUM_X1_INDEX = 1
-FP_OLS_SUM_X2_INDEX = 2
-FP_OLS_SUM_X1X1_INDEX = 3
-FP_OLS_SUM_X1X2_INDEX = 4
-FP_OLS_SUM_X2X2_INDEX = 5
-FP_OLS_SUM_Y_INDEX = 6
-FP_OLS_SUM_X1Y_INDEX = 7
-FP_OLS_SUM_X2Y_INDEX = 8
-FP_OLS_SUM_YY_INDEX = 9
+FP_OLS_SUM_X1X1_INDEX = 2
+FP_OLS_SUM_Y_INDEX = 3
+FP_OLS_SUM_X1Y_INDEX = 4
+FP_OLS_SUM_YY_INDEX = 5
 
 
 @nb.njit(cache=True, inline="always")
@@ -129,31 +125,25 @@ def _draw_population_state(
 def _accumulate_fp_ols_summary(
     fp_summary: np.ndarray,
     mstar: float,
-    delta_r: float,
     log_sigma_model: float,
     pivot_mstar: float,
 ) -> None:
     """
-    Update the sufficient statistics for the linear FP regression.
+    Update the sufficient statistics for the 1D sigma-logM* regression.
 
     The regression model is:
-        log10(sigma) = a + b * (mstar - pivot) + c * delta_r
+        log10(sigma) = a + b * (mstar - pivot)
     Only the aggregate moments are needed downstream, so the hot kernel never
     stores the full synthetic population in memory.
     """
 
     x1 = mstar - pivot_mstar
-    x2 = delta_r
 
     fp_summary[FP_OLS_COUNT_INDEX] += 1.0
     fp_summary[FP_OLS_SUM_X1_INDEX] += x1
-    fp_summary[FP_OLS_SUM_X2_INDEX] += x2
     fp_summary[FP_OLS_SUM_X1X1_INDEX] += x1 * x1
-    fp_summary[FP_OLS_SUM_X1X2_INDEX] += x1 * x2
-    fp_summary[FP_OLS_SUM_X2X2_INDEX] += x2 * x2
     fp_summary[FP_OLS_SUM_Y_INDEX] += log_sigma_model
     fp_summary[FP_OLS_SUM_X1Y_INDEX] += x1 * log_sigma_model
-    fp_summary[FP_OLS_SUM_X2Y_INDEX] += x2 * log_sigma_model
     fp_summary[FP_OLS_SUM_YY_INDEX] += log_sigma_model * log_sigma_model
 
 
@@ -408,7 +398,6 @@ def _population_summary_mc_serial_reference_numba(
                     _accumulate_fp_ols_summary(
                         fp_summary,
                         mstar,
-                        delta_r,
                         log_sigma_model,
                         fp_pivot_mstar,
                     )
@@ -567,7 +556,6 @@ def population_summary_mc_numba(
                     _accumulate_fp_ols_summary(
                         row,
                         mstar,
-                        delta_r,
                         log_sigma_model,
                         fp_pivot_mstar,
                     )

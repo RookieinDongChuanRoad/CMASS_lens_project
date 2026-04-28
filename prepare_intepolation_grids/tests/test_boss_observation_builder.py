@@ -112,9 +112,9 @@ def test_build_boss_observation_hdf5_files_writes_full_grid_products(tmp_path: P
                     assert attr_name in group.attrs
 
                 assert "gamma_grid" in group
-                assert "m5_grid" in group
-                assert "dm5_dthetaein_grid" in group
-                assert "s2_grid" in group
+                assert "m5_grid" not in group
+                assert "dm5_dthetaein_grid" not in group
+                assert "s2_grid" not in group
                 assert "mass_definitions" in group
                 for label in ("m5", "m10"):
                     subgroup = group["mass_definitions"][label]

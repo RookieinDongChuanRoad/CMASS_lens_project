@@ -24,8 +24,8 @@ import math
 import multiprocessing
 import shutil
 import time
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ import numpy as np
 import yaml
 from scipy.interpolate import RegularGridInterpolator
 from scipy.special import ndtr, ndtri
+from tqdm.auto import tqdm
 
 from cmass_lens_inference.compiled_context import build_compiled_context
 from cmass_lens_inference.config import load_runtime_config
@@ -95,6 +96,8 @@ DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC = 0.9
 DEFAULT_BOSS_APERTURE_RADIUS_ARCSEC = 1.0
 DEFAULT_SLIT_SEEING_FWHM_ARCSEC = 0.9
 DEFAULT_BOSS_SEEING_FWHM_ARCSEC = 1.5
+OBSERVED_APERTURE_SIGMA_DEFINITION = "observed_aperture"
+WITHIN_RE_SIGMA_DEFINITION = "within_re"
 # Keep the historical name as a slit alias so older call sites and tests
 # continue to resolve the canonical 0.9" slit contract.
 DEFAULT_SEEING_FWHM_ARCSEC = DEFAULT_SLIT_SEEING_FWHM_ARCSEC
@@ -170,6 +173,7 @@ class TrendAxisSpec:
     bin_edges: np.ndarray
     bin_centers: np.ndarray
     observed_overlay_mode: str
+    figure_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +190,7 @@ class ObservedGammaMeasurements:
     lens_ids: tuple[str, ...]
     log_mstar: np.ndarray
     log_re_kpc: np.ndarray
+    log_sigma_star: np.ndarray
     n_value: np.ndarray
     gamma_mid: np.ndarray
     gamma_yerr_lower: np.ndarray
@@ -241,34 +246,39 @@ class SigmaUnitTable:
     mass_radius_kpc: float
     units: str
     gamma_axis: np.ndarray
-    zd_axis: np.ndarray
+    zd_axis: np.ndarray | None
     log_re_kpc_axis: np.ndarray
     values: np.ndarray
     n_axis: np.ndarray | None = None
-    observation_flavor: str = SLIT_OBSERVATION_FLAVOR
+    sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION
+    bundle_group_name: str = SLIT_OBSERVATION_FLAVOR
+    observation_flavor: str | None = SLIT_OBSERVATION_FLAVOR
     aperture_shape: str = "rectangular"
     aperture_width_arcsec: float | None = DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC
     aperture_height_arcsec: float | None = DEFAULT_SLIT_APERTURE_HEIGHT_ARCSEC
     aperture_radius_arcsec: float | None = None
-    seeing_fwhm_arcsec: float = DEFAULT_SEEING_FWHM_ARCSEC
+    seeing_fwhm_arcsec: float | None = DEFAULT_SEEING_FWHM_ARCSEC
     bundle_leaf_path: str = "/"
 
     def __post_init__(self) -> None:
-        axes = (self.gamma_axis, self.zd_axis, self.log_re_kpc_axis)
-        if self.n_axis is None:
-            interpolator = RegularGridInterpolator(
-                axes,
-                self.values,
-                bounds_error=False,
-                fill_value=None,
-            )
+        """
+        Build the interpolator for either the historical or within-Re schema.
+
+        The PPC code needs one object that can represent both:
+        - historical observed-aperture tables with explicit `(gamma, zd, logRe[, n])`
+        - new within-Re tables where `zd` is not a physical axis
+        """
+
+        base_axes: tuple[np.ndarray, ...]
+        if self.zd_axis is None:
+            base_axes = (self.gamma_axis, self.log_re_kpc_axis)
         else:
-            interpolator = RegularGridInterpolator(
-                axes + (self.n_axis,),
-                self.values,
-                bounds_error=False,
-                fill_value=None,
-            )
+            base_axes = (self.gamma_axis, self.zd_axis, self.log_re_kpc_axis)
+
+        if self.n_axis is None:
+            interpolator = RegularGridInterpolator(base_axes, self.values, bounds_error=False, fill_value=None)
+        else:
+            interpolator = RegularGridInterpolator(base_axes + (self.n_axis,), self.values, bounds_error=False, fill_value=None)
         object.__setattr__(self, "_interpolator", interpolator)
 
     @classmethod
@@ -278,6 +288,7 @@ class SigmaUnitTable:
         *,
         mass_definition: MassDefinition | None = None,
         observation_flavor: str | None = None,
+        bundle_group: str | None = None,
     ) -> "SigmaUnitTable":
         """
         Load a sigma-unit interpolation table from `.npz` or HDF5.
@@ -295,6 +306,7 @@ class SigmaUnitTable:
                 path,
                 mass_definition=mass_definition,
                 observation_flavor=observation_flavor,
+                bundle_group=bundle_group,
             )
         raise ValueError(f"Unsupported sigma table format for '{path}'. Expected .npz, .h5, or .hdf5.")
 
@@ -327,6 +339,8 @@ class SigmaUnitTable:
                 log_re_kpc_axis=np.asarray(payload["log_re_kpc_axis"], dtype=float),
                 values=_validate_sigma_unit_grid(np.asarray(payload["s_unit_grid"], dtype=float), source_path=path),
                 n_axis=None if n_axis is None else np.asarray(n_axis, dtype=float),
+                sigma_definition=OBSERVED_APERTURE_SIGMA_DEFINITION,
+                bundle_group_name=SLIT_OBSERVATION_FLAVOR,
                 observation_flavor=SLIT_OBSERVATION_FLAVOR,
                 aperture_shape="rectangular",
                 aperture_width_arcsec=DEFAULT_SLIT_APERTURE_WIDTH_ARCSEC,
@@ -343,15 +357,16 @@ class SigmaUnitTable:
         *,
         mass_definition: MassDefinition | None = None,
         observation_flavor: str | None = None,
+        bundle_group: str | None = None,
     ) -> "SigmaUnitTable":
         """Load either the legacy single-table schema or the new bundle schema."""
 
         with h5py.File(path, "r") as handle:
             schema_version = _decode_hdf5_string(handle.attrs.get("schema_version", ""))
             if schema_version == SIGMA_UNIT_BUNDLE_SCHEMA_VERSION:
-                if mass_definition is None or observation_flavor is None:
+                if mass_definition is None or (observation_flavor is None and bundle_group is None):
                     raise ValueError(
-                        f"Sigma bundle '{path}' requires both `mass_definition` and `observation_flavor` "
+                        f"Sigma bundle '{path}' requires `mass_definition` plus either `bundle_group` or `observation_flavor` "
                         "to select one leaf."
                     )
                 return cls._from_hdf5_bundle(
@@ -359,6 +374,7 @@ class SigmaUnitTable:
                     handle,
                     mass_definition=mass_definition,
                     observation_flavor=observation_flavor,
+                    bundle_group=bundle_group,
                 )
             return cls._from_hdf5_single_table(path, handle)
 
@@ -410,6 +426,8 @@ class SigmaUnitTable:
             log_re_kpc_axis=np.asarray(handle["log_re_kpc_axis"], dtype=float),
             values=_validate_sigma_unit_grid(np.asarray(handle["s_unit_grid"], dtype=float), source_path=path),
             n_axis=n_axis,
+            sigma_definition=OBSERVED_APERTURE_SIGMA_DEFINITION,
+            bundle_group_name=observation_flavor,
             observation_flavor=observation_flavor,
             aperture_shape=aperture_shape,
             aperture_width_arcsec=aperture_width_arcsec,
@@ -426,31 +444,38 @@ class SigmaUnitTable:
         handle: h5py.File,
         *,
         mass_definition: MassDefinition,
-        observation_flavor: str,
+        observation_flavor: str | None,
+        bundle_group: str | None,
     ) -> "SigmaUnitTable":
         """Load one selected leaf from the v2 per-profile bundle schema."""
 
-        normalized_observation_flavor = observation_flavor.strip().lower()
-        if normalized_observation_flavor not in {SLIT_OBSERVATION_FLAVOR, BOSS_OBSERVATION_FLAVOR}:
-            raise ValueError(f"Unsupported observation flavor '{observation_flavor}' for sigma bundle '{path}'.")
-        if normalized_observation_flavor not in handle:
+        selected_bundle_group = bundle_group.strip().lower() if bundle_group is not None else None
+        if selected_bundle_group is None:
+            if observation_flavor is None:
+                raise ValueError(
+                    f"Sigma bundle '{path}' requires either `bundle_group` or `observation_flavor`."
+                )
+            selected_bundle_group = observation_flavor.strip().lower()
+        if selected_bundle_group not in handle:
             raise ValueError(
-                f"Sigma bundle '{path}' does not contain the observation flavor '{normalized_observation_flavor}'."
+                f"Sigma bundle '{path}' does not contain the bundle group '{selected_bundle_group}'."
             )
-        flavor_group = handle[normalized_observation_flavor]
-        if mass_definition.label not in flavor_group:
+        bundle_root_group = handle[selected_bundle_group]
+        if mass_definition.label not in bundle_root_group:
             raise ValueError(
                 f"Sigma bundle '{path}' does not contain the mass-definition leaf "
-                f"'{normalized_observation_flavor}/{mass_definition.label}'."
+                f"'{selected_bundle_group}/{mass_definition.label}'."
             )
 
-        leaf = flavor_group[mass_definition.label]
+        leaf = bundle_root_group[mass_definition.label]
         dataset_names = set(leaf.keys())
-        required_dataset_names = {"gamma_axis", "zd_axis", "log_re_kpc_axis", "s_unit_grid"}
+        required_dataset_names = {"gamma_axis", "log_re_kpc_axis", "s_unit_grid"}
+        if selected_bundle_group != WITHIN_RE_SIGMA_DEFINITION:
+            required_dataset_names.add("zd_axis")
         missing = sorted(required_dataset_names.difference(dataset_names))
         if missing:
             raise ValueError(
-                f"Sigma bundle leaf '{path}:{normalized_observation_flavor}/{mass_definition.label}' is missing datasets: {missing}."
+                f"Sigma bundle leaf '{path}:{selected_bundle_group}/{mass_definition.label}' is missing datasets: {missing}."
             )
 
         raw_profile_name = handle["profile_name"][()]
@@ -459,6 +484,37 @@ class SigmaUnitTable:
         raw_mass_radius = leaf.attrs.get("mass_radius_kpc", float(mass_definition.radius_kpc))
         raw_units = leaf.attrs.get("units", mass_definition.sigma_unit_units)
         n_axis = np.asarray(leaf["n_axis"], dtype=float) if "n_axis" in leaf else None
+        sigma_definition = _decode_hdf5_string(
+            leaf.attrs.get(
+                "sigma_definition",
+                WITHIN_RE_SIGMA_DEFINITION
+                if selected_bundle_group == WITHIN_RE_SIGMA_DEFINITION
+                else OBSERVED_APERTURE_SIGMA_DEFINITION,
+            )
+        ).strip().lower()
+        if selected_bundle_group == WITHIN_RE_SIGMA_DEFINITION:
+            return cls(
+                profile_name=profile_name,
+                mass_definition_label=_decode_hdf5_string(raw_mass_label),
+                mass_radius_kpc=float(raw_mass_radius),
+                units=_decode_hdf5_string(raw_units),
+                gamma_axis=np.asarray(leaf["gamma_axis"], dtype=float),
+                zd_axis=None,
+                log_re_kpc_axis=np.asarray(leaf["log_re_kpc_axis"], dtype=float),
+                values=_validate_sigma_unit_grid(np.asarray(leaf["s_unit_grid"], dtype=float), source_path=path),
+                n_axis=n_axis,
+                sigma_definition=sigma_definition,
+                bundle_group_name=selected_bundle_group,
+                observation_flavor=None,
+                aperture_shape=_decode_hdf5_string(leaf.attrs.get("aperture_shape", "")),
+                aperture_width_arcsec=None,
+                aperture_height_arcsec=None,
+                aperture_radius_arcsec=None,
+                seeing_fwhm_arcsec=None,
+                bundle_leaf_path=f"/{selected_bundle_group}/{mass_definition.label}",
+            )
+
+        normalized_observation_flavor = selected_bundle_group
         return cls(
             profile_name=profile_name,
             mass_definition_label=_decode_hdf5_string(raw_mass_label),
@@ -469,6 +525,8 @@ class SigmaUnitTable:
             log_re_kpc_axis=np.asarray(leaf["log_re_kpc_axis"], dtype=float),
             values=_validate_sigma_unit_grid(np.asarray(leaf["s_unit_grid"], dtype=float), source_path=path),
             n_axis=n_axis,
+            sigma_definition=sigma_definition,
+            bundle_group_name=selected_bundle_group,
             observation_flavor=normalized_observation_flavor,
             aperture_shape=_decode_hdf5_string(leaf.attrs.get("aperture_shape", "")),
             aperture_width_arcsec=_optional_hdf5_float(leaf.attrs.get("aperture_width_arcsec")),
@@ -494,16 +552,25 @@ class SigmaUnitTable:
         """
 
         gamma_clipped = np.clip(gamma, self.gamma_axis[0], self.gamma_axis[-1])
-        zd_clipped = np.clip(zd, self.zd_axis[0], self.zd_axis[-1])
         log_re_clipped = np.clip(log_re_kpc, self.log_re_kpc_axis[0], self.log_re_kpc_axis[-1])
 
-        if self.n_axis is None:
-            query_points = np.column_stack((gamma_clipped, zd_clipped, log_re_clipped))
+        if self.zd_axis is None:
+            if self.n_axis is None:
+                query_points = np.column_stack((gamma_clipped, log_re_clipped))
+            else:
+                if n_values is None:
+                    raise ValueError("Sersic sigma interpolation requires `n_values`.")
+                n_clipped = np.clip(n_values, self.n_axis[0], self.n_axis[-1])
+                query_points = np.column_stack((gamma_clipped, log_re_clipped, n_clipped))
         else:
-            if n_values is None:
-                raise ValueError("Sersic sigma interpolation requires `n_values`.")
-            n_clipped = np.clip(n_values, self.n_axis[0], self.n_axis[-1])
-            query_points = np.column_stack((gamma_clipped, zd_clipped, log_re_clipped, n_clipped))
+            zd_clipped = np.clip(zd, self.zd_axis[0], self.zd_axis[-1])
+            if self.n_axis is None:
+                query_points = np.column_stack((gamma_clipped, zd_clipped, log_re_clipped))
+            else:
+                if n_values is None:
+                    raise ValueError("Sersic sigma interpolation requires `n_values`.")
+                n_clipped = np.clip(n_values, self.n_axis[0], self.n_axis[-1])
+                query_points = np.column_stack((gamma_clipped, zd_clipped, log_re_clipped, n_clipped))
 
         return np.asarray(self._interpolator(query_points), dtype=float)
 
@@ -1479,7 +1546,8 @@ def _draw_candidate_population(
         delta_r = re_log_kpc - mu_r
         log_enclosed_mass = mu5_0 + beta5 * mstar_shift11p4 + xi5 * delta_r + sigma5 * normals[:, 5]
 
-    sigma_star_shift9p0 = mstar - LOG10_2PI - 2.0 * re_log_kpc - 9.0
+    log_sigma_star = _compute_log_sigma_star(mstar, re_log_kpc)
+    sigma_star_shift9p0 = log_sigma_star - 9.0
     mu_gamma = _gamma_population_mean(
         mu_gamma_0=mu_gamma_0,
         beta_gamma=beta_gamma,
@@ -1543,6 +1611,7 @@ def _draw_candidate_population(
         "zs": zs,
         "mass": log_enclosed_mass,
         "log_re_kpc": re_log_kpc,
+        "log_sigma_star": log_sigma_star,
         "re_kpc": re_kpc,
         "delta_r": delta_r,
         "n": n_value,
@@ -1551,6 +1620,20 @@ def _draw_candidate_population(
         # Keep the legacy key so the histogram PPC code path remains unchanged.
         "weights": selected_weights,
     }
+
+
+def _compute_log_sigma_star(log_mstar: np.ndarray, log_re_kpc: np.ndarray) -> np.ndarray:
+    """
+    Compute the stellar surface-density proxy used by the sigma-star gamma model.
+
+    The scientific definition in this project is the log surface density within
+    one effective radius:
+    `log Sigma_* = log M_* - log10(2π) - 2 log r_e`.
+    Centralizing the formula keeps the observed overlays, posterior trend
+    panels, and latent-population simulation on the exact same contract.
+    """
+
+    return np.asarray(log_mstar, dtype=float) - LOG10_2PI - 2.0 * np.asarray(log_re_kpc, dtype=float)
 
 
 def _draw_trend_parent_population(
@@ -1592,6 +1675,7 @@ def _draw_trend_parent_population(
 
     return {
         "log_mstar": population["log_mstar"],
+        "log_sigma_star": population["log_sigma_star"],
         "zd": population["zd"],
         "zs": population["zs"],
         "n": population["n"],
@@ -1667,6 +1751,7 @@ def _simulate_trend_chunk(
     sigma_table_path: str,
     observation_flavor: str,
     mass_bin_edges: np.ndarray,
+    sigma_star_bin_edges: np.ndarray,
     log_re_bin_edges: np.ndarray,
     delta_r_bin_edges: np.ndarray,
     n_parent_sample: int,
@@ -1690,6 +1775,7 @@ def _simulate_trend_chunk(
     )
     chunk_draw_count = int(posterior_draws.shape[0])
     n_mass_bins = int(mass_bin_edges.size - 1)
+    n_sigma_star_bins = int(sigma_star_bin_edges.size - 1)
     n_log_re_bins = int(log_re_bin_edges.size - 1)
     n_delta_r_bins = int(delta_r_bin_edges.size - 1)
     quantity_names = _trend_quantity_names(mass_definition)
@@ -1699,6 +1785,9 @@ def _simulate_trend_chunk(
     gamma_vs_logre_draws, gamma_vs_logre_parent_bin_counts_draws, gamma_vs_logre_detectable_weight_sums_draws, (
         gamma_vs_logre_selected_weight_sums_draws
     ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_log_re_bins)
+    gamma_vs_sigma_star_draws, gamma_vs_sigma_star_parent_bin_counts_draws, gamma_vs_sigma_star_detectable_weight_sums_draws, (
+        gamma_vs_sigma_star_selected_weight_sums_draws
+    ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_sigma_star_bins)
     gamma_vs_delta_r_draws, gamma_vs_delta_r_parent_bin_counts_draws, gamma_vs_delta_r_detectable_weight_sums_draws, (
         gamma_vs_delta_r_selected_weight_sums_draws
     ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_delta_r_bins)
@@ -1748,6 +1837,21 @@ def _simulate_trend_chunk(
         gamma_vs_logre_detectable_weight_sums_draws[local_index] = gamma_vs_logre_reduced["detectable_weight_sums"]
         gamma_vs_logre_selected_weight_sums_draws[local_index] = gamma_vs_logre_reduced["selected_weight_sums"]
 
+        gamma_vs_sigma_star_reduced = _reduce_population_to_bins(
+            x_values=parent_population["log_sigma_star"],
+            values=parent_population["gamma"],
+            bin_edges=sigma_star_bin_edges,
+            detectable_weights=parent_population["detectable_weights"],
+            selected_weights=parent_population["selected_weights"],
+        )
+        for category_name in TREND_CATEGORY_NAMES:
+            gamma_vs_sigma_star_draws[category_name][local_index] = gamma_vs_sigma_star_reduced[category_name]
+        gamma_vs_sigma_star_parent_bin_counts_draws[local_index] = gamma_vs_sigma_star_reduced["parent_bin_counts"]
+        gamma_vs_sigma_star_detectable_weight_sums_draws[local_index] = gamma_vs_sigma_star_reduced[
+            "detectable_weight_sums"
+        ]
+        gamma_vs_sigma_star_selected_weight_sums_draws[local_index] = gamma_vs_sigma_star_reduced["selected_weight_sums"]
+
         gamma_vs_delta_r_reduced = _reduce_population_to_bins(
             x_values=parent_population["delta_r"],
             values=parent_population["gamma"],
@@ -1774,6 +1878,10 @@ def _simulate_trend_chunk(
         "gamma_vs_logre_parent_bin_counts_draws": gamma_vs_logre_parent_bin_counts_draws,
         "gamma_vs_logre_detectable_weight_sums_draws": gamma_vs_logre_detectable_weight_sums_draws,
         "gamma_vs_logre_selected_weight_sums_draws": gamma_vs_logre_selected_weight_sums_draws,
+        "gamma_vs_sigma_star_draws": gamma_vs_sigma_star_draws,
+        "gamma_vs_sigma_star_parent_bin_counts_draws": gamma_vs_sigma_star_parent_bin_counts_draws,
+        "gamma_vs_sigma_star_detectable_weight_sums_draws": gamma_vs_sigma_star_detectable_weight_sums_draws,
+        "gamma_vs_sigma_star_selected_weight_sums_draws": gamma_vs_sigma_star_selected_weight_sums_draws,
         "gamma_vs_delta_r_draws": gamma_vs_delta_r_draws,
         "gamma_vs_delta_r_parent_bin_counts_draws": gamma_vs_delta_r_parent_bin_counts_draws,
         "gamma_vs_delta_r_detectable_weight_sums_draws": gamma_vs_delta_r_detectable_weight_sums_draws,
@@ -1785,11 +1893,16 @@ def _merge_trend_chunk_results(
     chunk_results: list[dict[str, Any]],
     n_draws: int,
     n_mass_bins: int,
+    n_sigma_star_bins: int,
     n_log_re_bins: int,
     n_delta_r_bins: int,
     mass_definition: MassDefinition,
 ) -> tuple[
     dict[str, dict[str, np.ndarray]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, np.ndarray],
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -1811,6 +1924,9 @@ def _merge_trend_chunk_results(
     gamma_vs_logre_draws, gamma_vs_logre_parent_bin_counts_draws, gamma_vs_logre_detectable_weight_sums_draws, (
         gamma_vs_logre_selected_weight_sums_draws
     ) = _allocate_single_quantity_trend_arrays(n_draws, n_log_re_bins)
+    gamma_vs_sigma_star_draws, gamma_vs_sigma_star_parent_bin_counts_draws, gamma_vs_sigma_star_detectable_weight_sums_draws, (
+        gamma_vs_sigma_star_selected_weight_sums_draws
+    ) = _allocate_single_quantity_trend_arrays(n_draws, n_sigma_star_bins)
     gamma_vs_delta_r_draws, gamma_vs_delta_r_parent_bin_counts_draws, gamma_vs_delta_r_detectable_weight_sums_draws, (
         gamma_vs_delta_r_selected_weight_sums_draws
     ) = _allocate_single_quantity_trend_arrays(n_draws, n_delta_r_bins)
@@ -1827,6 +1943,9 @@ def _merge_trend_chunk_results(
         selected_weight_sums_draws[start:stop] = chunk_result["selected_weight_sums_draws"]
         for category_name in TREND_CATEGORY_NAMES:
             gamma_vs_logre_draws[category_name][start:stop] = chunk_result["gamma_vs_logre_draws"][category_name]
+            gamma_vs_sigma_star_draws[category_name][start:stop] = chunk_result["gamma_vs_sigma_star_draws"][
+                category_name
+            ]
             gamma_vs_delta_r_draws[category_name][start:stop] = chunk_result["gamma_vs_delta_r_draws"][category_name]
         gamma_vs_logre_parent_bin_counts_draws[start:stop] = chunk_result["gamma_vs_logre_parent_bin_counts_draws"]
         gamma_vs_logre_detectable_weight_sums_draws[start:stop] = chunk_result[
@@ -1834,6 +1953,15 @@ def _merge_trend_chunk_results(
         ]
         gamma_vs_logre_selected_weight_sums_draws[start:stop] = chunk_result[
             "gamma_vs_logre_selected_weight_sums_draws"
+        ]
+        gamma_vs_sigma_star_parent_bin_counts_draws[start:stop] = chunk_result[
+            "gamma_vs_sigma_star_parent_bin_counts_draws"
+        ]
+        gamma_vs_sigma_star_detectable_weight_sums_draws[start:stop] = chunk_result[
+            "gamma_vs_sigma_star_detectable_weight_sums_draws"
+        ]
+        gamma_vs_sigma_star_selected_weight_sums_draws[start:stop] = chunk_result[
+            "gamma_vs_sigma_star_selected_weight_sums_draws"
         ]
         gamma_vs_delta_r_parent_bin_counts_draws[start:stop] = chunk_result["gamma_vs_delta_r_parent_bin_counts_draws"]
         gamma_vs_delta_r_detectable_weight_sums_draws[start:stop] = chunk_result[
@@ -1851,6 +1979,10 @@ def _merge_trend_chunk_results(
         gamma_vs_logre_parent_bin_counts_draws,
         gamma_vs_logre_detectable_weight_sums_draws,
         gamma_vs_logre_selected_weight_sums_draws,
+        gamma_vs_sigma_star_draws,
+        gamma_vs_sigma_star_parent_bin_counts_draws,
+        gamma_vs_sigma_star_detectable_weight_sums_draws,
+        gamma_vs_sigma_star_selected_weight_sums_draws,
         gamma_vs_delta_r_draws,
         gamma_vs_delta_r_parent_bin_counts_draws,
         gamma_vs_delta_r_detectable_weight_sums_draws,
@@ -1866,6 +1998,7 @@ def _run_trend_draws(
     sigma_table_path: str,
     observation_flavor: str,
     mass_bin_edges: np.ndarray,
+    sigma_star_bin_edges: np.ndarray,
     log_re_bin_edges: np.ndarray,
     delta_r_bin_edges: np.ndarray,
     n_parent_sample: int,
@@ -1873,6 +2006,10 @@ def _run_trend_draws(
     parallelism: ResolvedParallelism,
 ) -> tuple[
     dict[str, dict[str, np.ndarray]],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, np.ndarray],
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -1896,32 +2033,45 @@ def _run_trend_draws(
 
     n_draws = int(posterior_draws.shape[0])
     n_mass_bins = int(mass_bin_edges.size - 1)
+    n_sigma_star_bins = int(sigma_star_bin_edges.size - 1)
     n_log_re_bins = int(log_re_bin_edges.size - 1)
     n_delta_r_bins = int(delta_r_bin_edges.size - 1)
     chunk_count = max(1, parallelism.worker_processes) if parallelism.strategy == "process_pool" else 1
     slices = _chunk_slices(n_draws, chunk_count)
+    progress_description = f"{profile.name} trend draws"
 
     if parallelism.strategy != "process_pool":
-        return _merge_trend_chunk_results(
-            [
-                _simulate_trend_chunk(
-                    posterior_draws=posterior_draws[work_slice],
-                    start_index=work_slice.start,
-                    profile=profile,
-                    context=context,
-                    mass_definition=mass_definition,
-                    sigma_table_path=sigma_table_path,
-                    observation_flavor=observation_flavor,
-                    mass_bin_edges=mass_bin_edges,
-                    log_re_bin_edges=log_re_bin_edges,
-                    delta_r_bin_edges=delta_r_bin_edges,
-                    n_parent_sample=n_parent_sample,
-                    random_seed=random_seed,
+        chunk_results: list[dict[str, Any]] = []
+        with tqdm(
+            total=n_draws,
+            desc=progress_description,
+            unit="draw",
+            dynamic_ncols=True,
+        ) as progress_bar:
+            for work_slice in slices:
+                chunk_results.append(
+                    _simulate_trend_chunk(
+                        posterior_draws=posterior_draws[work_slice],
+                        start_index=work_slice.start,
+                        profile=profile,
+                        context=context,
+                        mass_definition=mass_definition,
+                        sigma_table_path=sigma_table_path,
+                        observation_flavor=observation_flavor,
+                        mass_bin_edges=mass_bin_edges,
+                        sigma_star_bin_edges=sigma_star_bin_edges,
+                        log_re_bin_edges=log_re_bin_edges,
+                        delta_r_bin_edges=delta_r_bin_edges,
+                        n_parent_sample=n_parent_sample,
+                        random_seed=random_seed,
+                    )
                 )
-                for work_slice in slices
-            ],
+                progress_bar.update(int(work_slice.stop - work_slice.start))
+        return _merge_trend_chunk_results(
+            chunk_results,
             n_draws=n_draws,
             n_mass_bins=n_mass_bins,
+            n_sigma_star_bins=n_sigma_star_bins,
             n_log_re_bins=n_log_re_bins,
             n_delta_r_bins=n_delta_r_bins,
             mass_definition=mass_definition,
@@ -1933,7 +2083,7 @@ def _run_trend_draws(
         max_workers=parallelism.worker_processes,
         mp_context=spawn_context,
     ) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 _simulate_trend_chunk,
                 posterior_draws[work_slice],
@@ -1944,20 +2094,30 @@ def _run_trend_draws(
                 sigma_table_path,
                 observation_flavor,
                 mass_bin_edges,
+                sigma_star_bin_edges,
                 log_re_bin_edges,
                 delta_r_bin_edges,
                 n_parent_sample,
                 random_seed,
-            )
+            ): work_slice
             for work_slice in slices
-        ]
-        for future in futures:
-            chunk_results.append(future.result())
+        }
+        with tqdm(
+            total=n_draws,
+            desc=progress_description,
+            unit="draw",
+            dynamic_ncols=True,
+        ) as progress_bar:
+            for future in as_completed(futures):
+                work_slice = futures[future]
+                chunk_results.append(future.result())
+                progress_bar.update(int(work_slice.stop - work_slice.start))
 
     return _merge_trend_chunk_results(
         chunk_results,
         n_draws=n_draws,
         n_mass_bins=n_mass_bins,
+        n_sigma_star_bins=n_sigma_star_bins,
         n_log_re_bins=n_log_re_bins,
         n_delta_r_bins=n_delta_r_bins,
         mass_definition=mass_definition,
@@ -2210,23 +2370,33 @@ def _run_ppc_replicates(
     n_draws = int(posterior_draws.shape[0])
     chunk_count = max(1, parallelism.worker_processes) if parallelism.strategy == "process_pool" else 1
     slices = _chunk_slices(n_draws, chunk_count)
+    progress_description = f"{profile.name} ppc draws"
 
     if parallelism.strategy != "process_pool":
-        return _merge_ppc_chunk_results(
-            [
-                _simulate_ppc_chunk(
-                    posterior_draws=posterior_draws[work_slice],
-                    start_index=work_slice.start,
-                    profile=profile,
-                    context=context,
-                    mass_definition=mass_definition,
-                    sigma_table_path=sigma_table_path,
-                    observation_flavor=observation_flavor,
-                    candidate_pool_size=candidate_pool_size,
-                    random_seed=random_seed,
+        chunk_results: list[dict[str, Any]] = []
+        with tqdm(
+            total=n_draws,
+            desc=progress_description,
+            unit="draw",
+            dynamic_ncols=True,
+        ) as progress_bar:
+            for work_slice in slices:
+                chunk_results.append(
+                    _simulate_ppc_chunk(
+                        posterior_draws=posterior_draws[work_slice],
+                        start_index=work_slice.start,
+                        profile=profile,
+                        context=context,
+                        mass_definition=mass_definition,
+                        sigma_table_path=sigma_table_path,
+                        observation_flavor=observation_flavor,
+                        candidate_pool_size=candidate_pool_size,
+                        random_seed=random_seed,
+                    )
                 )
-                for work_slice in slices
-            ],
+                progress_bar.update(int(work_slice.stop - work_slice.start))
+        return _merge_ppc_chunk_results(
+            chunk_results,
             n_draws=n_draws,
             mass_definition=mass_definition,
         )
@@ -2237,7 +2407,7 @@ def _run_ppc_replicates(
         max_workers=parallelism.worker_processes,
         mp_context=spawn_context,
     ) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 _simulate_ppc_chunk,
                 posterior_draws[work_slice],
@@ -2249,11 +2419,19 @@ def _run_ppc_replicates(
                 observation_flavor,
                 candidate_pool_size,
                 random_seed,
-            )
+            ): work_slice
             for work_slice in slices
-        ]
-        for future in futures:
-            chunk_results.append(future.result())
+        }
+        with tqdm(
+            total=n_draws,
+            desc=progress_description,
+            unit="draw",
+            dynamic_ncols=True,
+        ) as progress_bar:
+            for future in as_completed(futures):
+                work_slice = futures[future]
+                chunk_results.append(future.result())
+                progress_bar.update(int(work_slice.stop - work_slice.start))
 
     return _merge_ppc_chunk_results(chunk_results, n_draws=n_draws, mass_definition=mass_definition)
 
@@ -2492,6 +2670,27 @@ def _load_trend_summary_from_npz(npz_path: Path) -> tuple[np.ndarray, MassDefini
     return mass_grid, mass_definition, summary_payload
 
 
+def _load_single_quantity_trend_summary_from_npz(
+    npz_path: Path,
+) -> tuple[np.ndarray, dict[str, dict[str, np.ndarray]]]:
+    """
+    Reconstruct one gamma-only structural trend summary from its saved draw NPZ.
+
+    The standalone trend products persist the raw per-draw gamma curves. The
+    historical redraw workflow should reuse those arrays directly so the
+    resulting composite figure remains numerically tied to the already-saved
+    Monte Carlo output rather than any secondary summary JSON.
+    """
+
+    with np.load(npz_path) as arrays:
+        x_grid = np.asarray(arrays["x_bin_centers"], dtype=float)
+        summary_payload = {
+            category_name: _summarize_trend_draws(np.asarray(arrays[f"{category_name}_gamma_draws"], dtype=float))
+            for category_name in TREND_CATEGORY_NAMES
+        }
+    return x_grid, summary_payload
+
+
 def _normalize_gamma_mode(raw_mode: Any) -> str | None:
     """Normalize a raw mode string into one of the supported gamma modes."""
 
@@ -2558,6 +2757,157 @@ def _format_fig8_like_title(mass_definition: MassDefinition, gamma_mode: str) ->
     normalized_mode = _normalize_gamma_mode(gamma_mode) or GAMMA_MODE_DEPENDENT
     mode_label = _GAMMA_MODE_TITLE_LABELS[normalized_mode]
     return f"{mass_definition.label} | {mode_label} gamma"
+
+
+def _load_bic_value_from_run_dir(run_dir: Path) -> float:
+    """
+    Load the precomputed BIC value for one completed run.
+
+    Why this helper exists:
+    - the redraw workflow should reuse the already-materialized scientific
+      result instead of silently recomputing model-comparison metrics
+    - the user explicitly asked for fail-fast behavior when a target run is
+      missing the required BIC artifact
+    - keeping the JSON access in one place makes error handling and future
+      schema changes easier to audit
+    """
+
+    bic_result_path = run_dir / "bic_result.json"
+    if not bic_result_path.exists():
+        raise FileNotFoundError(
+            f"Cannot annotate Fig. 8-like figure for '{run_dir}': missing '{bic_result_path.name}'."
+        )
+
+    try:
+        bic_payload = json.loads(bic_result_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - surfaced through CLI result payload
+        raise ValueError(f"Failed to parse BIC payload '{bic_result_path}': {exc}") from exc
+
+    bic_value = bic_payload.get("bic")
+    if bic_value is None:
+        raise ValueError(f"BIC payload '{bic_result_path}' does not contain a 'bic' field.")
+    return float(bic_value)
+
+
+def _build_annotated_fig8_title(
+    run_dir: Path,
+    profile_name: str,
+    mass_definition: MassDefinition,
+    gamma_mode: str,
+) -> str:
+    """
+    Build the custom one-line title used by the redraw-only annotation command.
+
+    The underlying Fig. 8-like trend computation remains unchanged. This title
+    helper only enriches the visual presentation for already-generated figures
+    by prepending the profile name and appending the precomputed BIC value.
+    """
+
+    base_title = _format_fig8_like_title(mass_definition=mass_definition, gamma_mode=gamma_mode)
+    bic_value = _load_bic_value_from_run_dir(run_dir)
+    return f"{profile_name} | {base_title} | BIC={bic_value:.2f}"
+
+
+def _build_fixed_fig8_display_ylim_by_panel(mass_definition: MassDefinition) -> dict[str, tuple[float, float]]:
+    """
+    Return the fixed per-panel y-axis ranges used for the curated historical redraws.
+
+    Why this helper exists:
+    - the user wants the same panel ranges across a selected set of four
+      already-generated figures so visual comparison is direct
+    - these limits are presentation choices, not scientific recalculations, so
+      they should stay explicit and centralized instead of being scattered as
+      anonymous literals through the redraw path
+    - binding the mass panel key to the active mass definition keeps the helper
+      safe for `m10` naming without hardcoding a bare `"m10"` everywhere
+    """
+
+    return {
+        mass_definition.label: (11.2, 12.3),
+        "gamma": (1.45, 2.35),
+        "sigma_ap": (140.0, 370.0),
+        "gamma_vs_sigma_star": (1.45, 2.35),
+        "gamma_vs_logre_kpc": (1.45, 2.35),
+    }
+
+
+def _build_fixed_fig8_display_xlim_by_panel(
+    mass_definition: MassDefinition,
+    profile_name: str,
+) -> dict[str, tuple[float, float]]:
+    """
+    Return the fixed per-panel x-axis ranges used for the curated historical redraws.
+
+    The first three panels continue to share stellar-mass on the x-axis, while
+    the two newly added gamma-only diagnostic panels use their own structural
+    coordinates. The user wants `gamma_vs_sigma_star` to be consistent within
+    one profile family, but not necessarily identical across `devauc` and
+    `sersic`, so that panel gets a profile-specific window.
+    """
+
+    normalized_profile_name = profile_name.strip().lower()
+    if normalized_profile_name == "devauc":
+        sigma_star_xlim = (8.9, 9.6)
+        logre_xlim = (0.45, 0.95)
+    elif normalized_profile_name == "sersic":
+        sigma_star_xlim = (8.1, 9.5)
+        logre_xlim = (0.50, 1.40)
+    else:
+        raise ValueError(f"Unsupported profile '{profile_name}' for fixed Fig. 8 x-axis limits.")
+
+    return {
+        mass_definition.label: (11.0, 11.8),
+        "gamma": (11.0, 11.8),
+        "sigma_ap": (11.0, 11.8),
+        "gamma_vs_sigma_star": sigma_star_xlim,
+        "gamma_vs_logre_kpc": logre_xlim,
+    }
+
+
+def _update_existing_fig8_summary_metadata(
+    fig8_summary_path: Path,
+    figure_title: str,
+    display_xlim_by_panel: dict[str, tuple[float, float]],
+    display_ylim_by_panel: dict[str, tuple[float, float]],
+) -> None:
+    """
+    Keep the Fig. 8 summary JSON aligned with the rewritten PNG.
+
+    The annotate command redraws an already-finished figure without rerunning
+    the expensive trend simulation. Once the visual title and visible x-range
+    change, the sidecar summary must be updated as well; otherwise the image
+    and machine-readable metadata drift apart and become hard to trust later.
+    """
+
+    if not fig8_summary_path.exists():
+        raise FileNotFoundError(
+            f"Cannot update Fig. 8 summary metadata because '{fig8_summary_path}' does not exist."
+        )
+
+    try:
+        summary_payload = json.loads(fig8_summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - surfaced through CLI result payload
+        raise ValueError(f"Failed to parse Fig. 8 summary '{fig8_summary_path}': {exc}") from exc
+
+    if not isinstance(summary_payload, dict):
+        raise ValueError(f"Fig. 8 summary '{fig8_summary_path}' must contain a JSON object.")
+
+    summary_payload["figure_title"] = figure_title
+    summary_payload["layout"] = "5x1"
+    summary_payload["panel_order"] = ["m10", "gamma", "sigma_ap", "gamma_vs_sigma_star", "gamma_vs_logre_kpc"]
+    summary_payload["display_xlim"] = [11.0, 11.8]
+    summary_payload["display_xlim_by_panel"] = {
+        quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+        for quantity_name, axis_limits in display_xlim_by_panel.items()
+    }
+    summary_payload["display_ylim_by_panel"] = {
+        quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+        for quantity_name, axis_limits in display_ylim_by_panel.items()
+    }
+    fig8_summary_path.write_text(
+        json.dumps(summary_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _resolve_first_matching_attr(group: h5py.Group, aliases: tuple[str, ...]) -> float:
@@ -2738,6 +3088,10 @@ def _load_observed_gamma_measurements(
         lens_ids=tuple(lens_ids),
         log_mstar=np.asarray(log_mstar_values, dtype=float),
         log_re_kpc=np.asarray(log_re_kpc_values, dtype=float),
+        log_sigma_star=_compute_log_sigma_star(
+            np.asarray(log_mstar_values, dtype=float),
+            np.asarray(log_re_kpc_values, dtype=float),
+        ),
         n_value=np.asarray(n_values, dtype=float),
         gamma_mid=np.asarray(gamma_mid_values, dtype=float),
         gamma_yerr_lower=np.asarray(gamma_lower_errors, dtype=float),
@@ -2753,6 +3107,7 @@ def _build_trend_axis_spec(
     padding_fraction: float,
     minimum_padding: float,
     observed_overlay_mode: str,
+    figure_label: str | None = None,
 ) -> TrendAxisSpec:
     """Build one explicit x-axis contract from a reference value range."""
 
@@ -2769,6 +3124,7 @@ def _build_trend_axis_spec(
         bin_edges=bin_edges,
         bin_centers=bin_centers,
         observed_overlay_mode=observed_overlay_mode,
+        figure_label=figure_label,
     )
 
 
@@ -2777,6 +3133,22 @@ def _build_observed_gamma_logre_overlay(measurements: ObservedGammaMeasurements)
 
     return ObservedTrendSeries(
         x=np.asarray(measurements.log_re_kpc, dtype=float),
+        y=np.asarray(measurements.gamma_mid, dtype=float),
+        yerr_lower=np.asarray(measurements.gamma_yerr_lower, dtype=float),
+        yerr_upper=np.asarray(measurements.gamma_yerr_upper, dtype=float),
+    )
+
+
+def _build_observed_gamma_sigma_star_overlay(measurements: ObservedGammaMeasurements) -> ObservedTrendSeries:
+    """
+    Convert observed gamma measurements into fixed `log Sigma_*` errorbar points.
+
+    This overlay is a direct point series because the x-coordinate depends only
+    on the observed stellar mass and effective radius, not on posterior draws.
+    """
+
+    return ObservedTrendSeries(
+        x=np.asarray(measurements.log_sigma_star, dtype=float),
         y=np.asarray(measurements.gamma_mid, dtype=float),
         yerr_lower=np.asarray(measurements.gamma_yerr_lower, dtype=float),
         yerr_upper=np.asarray(measurements.gamma_yerr_upper, dtype=float),
@@ -2951,32 +3323,92 @@ def _write_fig8_like_figure(
     summary_payload: dict[str, dict[str, dict[str, np.ndarray]]],
     mass_definition: MassDefinition,
     observed_points: dict[str, ObservedTrendSeries] | None = None,
+    extra_gamma_panels: list[dict[str, Any]] | None = None,
     figure_title: str | None = None,
+    display_xlim_by_panel: dict[str, tuple[float, float]] | None = None,
+    display_ylim_by_panel: dict[str, tuple[float, float]] | None = None,
 ) -> None:
-    """Render the three-panel Fig. 8-like trend figure."""
+    """
+    Render the composite Fig. 8-like trend figure.
 
-    figure, axes = plt.subplots(3, 1, figsize=(8, 10), sharex=True)
-    panel_specs = (
-        (mass_definition.label, mass_definition.label),
-        ("gamma", "gamma"),
-        ("sigma_ap", "sigma_ap [km/s]"),
-    )
+    Parameters
+    ----------
+    extra_gamma_panels:
+        Optional standalone gamma-only panels appended below the historical
+        three-panel Fig. 8 block. Each panel definition must provide:
+        `panel_id`, `x_grid`, `summary_payload`, `x_label`, and
+        `observed_overlay`.
+    display_xlim_by_panel:
+        Optional mapping from panel identifier to its visible x-axis range.
+    display_ylim_by_panel:
+        Optional mapping from panel quantity name to a fixed visible y-axis
+        range. This exists for curated figure redraws where multiple runs must
+        share identical panel limits for fair visual comparison.
+    """
 
-    for axis, (quantity_name, y_label) in zip(axes, panel_specs, strict=True):
+    historical_panels = [
+        {
+            "panel_id": mass_definition.label,
+            "summary_payload": summary_payload[mass_definition.label],
+            "x_grid": mass_grid,
+            "y_label": mass_definition.label,
+            "x_label": None,
+            "observed_overlay": None if observed_points is None else observed_points.get(mass_definition.label),
+            "observed_label": "Observed lenses" if observed_points is not None else None,
+        },
+        {
+            "panel_id": "gamma",
+            "summary_payload": summary_payload["gamma"],
+            "x_grid": mass_grid,
+            "y_label": "gamma",
+            "x_label": None,
+            "observed_overlay": None if observed_points is None else observed_points.get("gamma"),
+            "observed_label": None,
+        },
+        {
+            "panel_id": "sigma_ap",
+            "summary_payload": summary_payload["sigma_ap"],
+            "x_grid": mass_grid,
+            "y_label": "sigma_ap [km/s]",
+            "x_label": r"log $M_*/M_\odot$",
+            "observed_overlay": None if observed_points is None else observed_points.get("sigma_ap"),
+            "observed_label": None,
+        },
+    ]
+    panel_specs = historical_panels + ([] if extra_gamma_panels is None else list(extra_gamma_panels))
+
+    figure_height = 2.7 * len(panel_specs) + 1.2
+    figure, axes = plt.subplots(len(panel_specs), 1, figsize=(8, figure_height), sharex=False)
+    if not isinstance(axes, np.ndarray):
+        axes = np.asarray([axes], dtype=object)
+
+    for axis, panel_spec in zip(axes, panel_specs, strict=True):
+        panel_id = str(panel_spec["panel_id"])
         _write_trend_panel(
             axis,
-            mass_grid=mass_grid,
-            parent_summary=summary_payload[quantity_name]["parent"],
-            detectable_summary=summary_payload[quantity_name]["detectable"],
-            selected_summary=summary_payload[quantity_name]["selected"],
-            y_label=y_label,
-            observed_series=None if observed_points is None else observed_points.get(quantity_name),
-            observed_label="Observed lenses" if observed_points is not None and quantity_name == mass_definition.label else None,
+            mass_grid=np.asarray(panel_spec["x_grid"], dtype=float),
+            parent_summary=panel_spec["summary_payload"]["parent"],
+            detectable_summary=panel_spec["summary_payload"]["detectable"],
+            selected_summary=panel_spec["summary_payload"]["selected"],
+            y_label=str(panel_spec["y_label"]),
+            observed_series=panel_spec.get("observed_overlay"),
+            observed_label=panel_spec.get("observed_label"),
         )
+        if display_xlim_by_panel is not None and panel_id in display_xlim_by_panel:
+            x_axis_limits = display_xlim_by_panel[panel_id]
+            axis.set_xlim(float(x_axis_limits[0]), float(x_axis_limits[1]))
+        if display_ylim_by_panel is not None and panel_id in display_ylim_by_panel:
+            # The redraw command uses explicit, shared panel limits across
+            # multiple historical runs. We only apply ranges that are present
+            # in the supplied mapping so the base writer remains reusable.
+            y_axis_limits = display_ylim_by_panel[panel_id]
+            axis.set_ylim(float(y_axis_limits[0]), float(y_axis_limits[1]))
+        x_label = panel_spec.get("x_label")
+        if x_label:
+            axis.set_xlabel(str(x_label), fontsize=10)
 
     handles, labels = axes[0].get_legend_handles_labels()
     axes[0].legend(handles, labels, loc="upper left", fontsize=8, frameon=False)
-    axes[-1].set_xlabel(r"log $M_*/M_\odot$", fontsize=10)
     if figure_title:
         figure.suptitle(figure_title, fontsize=13)
         figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
@@ -3217,7 +3649,7 @@ def _write_standalone_gamma_trend_artifacts(
         figure_path=result_dir / f"{artifact_stem}.png",
         x_grid=axis_spec.bin_centers,
         summary_payload=gamma_summary,
-        x_label=axis_spec.label,
+        x_label=axis_spec.figure_label or axis_spec.label,
         observed_overlay=observed_overlay,
         figure_title=figure_title,
     )
@@ -3303,6 +3735,16 @@ def run_posterior_trends(
         observations=observations,
         cosmology=cosmology,
     )
+    sigma_star_axis_spec = _build_trend_axis_spec(
+        name="sigma_star",
+        label="log Σ_* [M_\\odot kpc^{-2}]",
+        reference_values=observed_gamma_measurements.log_sigma_star,
+        n_bins=n_mass_bins,
+        padding_fraction=0.05,
+        minimum_padding=0.02,
+        observed_overlay_mode="points",
+        figure_label=r"log $\Sigma_*$ [$M_\odot$ kpc$^{-2}$]",
+    )
     log_re_axis_spec = _build_trend_axis_spec(
         name="logre_kpc",
         label=r"log $r_e$ [kpc]",
@@ -3343,6 +3785,10 @@ def run_posterior_trends(
         gamma_vs_logre_parent_bin_counts_draws,
         gamma_vs_logre_detectable_weight_sums_draws,
         gamma_vs_logre_selected_weight_sums_draws,
+        gamma_vs_sigma_star_draws,
+        gamma_vs_sigma_star_parent_bin_counts_draws,
+        gamma_vs_sigma_star_detectable_weight_sums_draws,
+        gamma_vs_sigma_star_selected_weight_sums_draws,
         gamma_vs_delta_r_draws,
         gamma_vs_delta_r_parent_bin_counts_draws,
         gamma_vs_delta_r_detectable_weight_sums_draws,
@@ -3355,6 +3801,7 @@ def run_posterior_trends(
         sigma_table_path=str(resolved_sigma_table_path),
         observation_flavor=observation_flavor,
         mass_bin_edges=mass_bin_edges,
+        sigma_star_bin_edges=sigma_star_axis_spec.bin_edges,
         log_re_bin_edges=log_re_axis_spec.bin_edges,
         delta_r_bin_edges=delta_r_axis_spec.bin_edges,
         n_parent_sample=n_parent_sample,
@@ -3373,6 +3820,10 @@ def run_posterior_trends(
         category_name: _summarize_trend_draws(gamma_vs_logre_draws[category_name])
         for category_name in TREND_CATEGORY_NAMES
     }
+    gamma_vs_sigma_star_summary = {
+        category_name: _summarize_trend_draws(gamma_vs_sigma_star_draws[category_name])
+        for category_name in TREND_CATEGORY_NAMES
+    }
     gamma_vs_delta_r_summary = {
         category_name: _summarize_trend_draws(gamma_vs_delta_r_draws[category_name])
         for category_name in TREND_CATEGORY_NAMES
@@ -3381,6 +3832,7 @@ def run_posterior_trends(
         mass_definition=mass_definition,
         gamma_mode=runtime_config.gamma_model.mode,
     )
+    gamma_vs_sigma_star_title = f"{figure_title} | gamma vs log $\\Sigma_*$"
     gamma_vs_logre_title = f"{figure_title} | gamma vs log $r_e$"
     gamma_vs_delta_r_title = f"{figure_title} | gamma vs $\\Delta_R$"
 
@@ -3422,6 +3874,8 @@ def run_posterior_trends(
         "parallel_strategy": parallelism.strategy,
         "worker_processes": int(parallelism.worker_processes),
         "parallelism": parallelism.to_dict(),
+        "layout": "5x1",
+        "panel_order": [mass_definition.label, "gamma", "sigma_ap", "gamma_vs_sigma_star", "gamma_vs_logre_kpc"],
         "figure_title": figure_title,
         "quantities": {name: {"label": name} for name in trend_quantity_names},
         "categories": {
@@ -3448,15 +3902,42 @@ def run_posterior_trends(
             np_save_payload[f"{category_name}_{quantity_name}_draws"] = trend_draws[quantity_name][category_name]
     np.savez(result_dir / "fig8_like_curves.npz", **np_save_payload)
 
+    observed_gamma_sigma_star_overlay = _build_observed_gamma_sigma_star_overlay(observed_gamma_measurements)
+    composite_extra_panels = [
+        {
+            "panel_id": "gamma_vs_sigma_star",
+            "summary_payload": gamma_vs_sigma_star_summary,
+            "x_grid": sigma_star_axis_spec.bin_centers,
+            "y_label": "gamma",
+            "x_label": sigma_star_axis_spec.figure_label or sigma_star_axis_spec.label,
+            "observed_overlay": observed_gamma_sigma_star_overlay,
+            "observed_label": None,
+        },
+        {
+            "panel_id": "gamma_vs_logre_kpc",
+            "summary_payload": gamma_vs_logre_summary,
+            "x_grid": log_re_axis_spec.bin_centers,
+            "y_label": "gamma",
+            "x_label": log_re_axis_spec.figure_label or log_re_axis_spec.label,
+            "observed_overlay": _build_observed_gamma_logre_overlay(observed_gamma_measurements),
+            "observed_label": None,
+        },
+    ]
     _write_fig8_like_figure(
         figure_path=result_dir / "fig8_like.png",
         mass_grid=mass_bin_centers,
         summary_payload=trend_summary,
         mass_definition=mass_definition,
+        observed_points=_load_observed_trend_points(
+            observation_path=Path(runtime_config.data.observation_path),
+            profile_name=runtime_config.profile.name,
+            mass_definition=mass_definition,
+        ),
+        extra_gamma_panels=composite_extra_panels,
         figure_title=figure_title,
     )
 
-    observed_gamma_logre_overlay = _build_observed_gamma_logre_overlay(observed_gamma_measurements)
+    observed_gamma_logre_overlay = composite_extra_panels[1]["observed_overlay"]
     observed_gamma_delta_r_overlay = _build_observed_gamma_delta_r_overlay(
         measurements=observed_gamma_measurements,
         profile=profile_spec,
@@ -3492,6 +3973,20 @@ def run_posterior_trends(
             "selected": {"label": "full_selection"},
         },
     }
+    _write_standalone_gamma_trend_artifacts(
+        result_dir=result_dir,
+        artifact_stem="gamma_vs_sigma_star",
+        axis_spec=sigma_star_axis_spec,
+        gamma_summary=gamma_vs_sigma_star_summary,
+        gamma_draws=gamma_vs_sigma_star_draws,
+        parent_bin_counts_draws=gamma_vs_sigma_star_parent_bin_counts_draws,
+        detectable_weight_sums_draws=gamma_vs_sigma_star_detectable_weight_sums_draws,
+        selected_weight_sums_draws=gamma_vs_sigma_star_selected_weight_sums_draws,
+        observed_overlay=observed_gamma_sigma_star_overlay,
+        observed_overlay_draws=None,
+        base_metadata=standalone_base_metadata,
+        figure_title=gamma_vs_sigma_star_title,
+    )
     _write_standalone_gamma_trend_artifacts(
         result_dir=result_dir,
         artifact_stem="gamma_vs_logre_kpc",
@@ -3552,6 +4047,9 @@ def run_posterior_trends(
             "worker_processes": int(parallelism.worker_processes),
             "parallelism": parallelism.to_dict(),
             "figure_title": figure_title,
+            "gamma_vs_sigma_star_figure": str(result_dir / "gamma_vs_sigma_star.png"),
+            "gamma_vs_sigma_star_summary": str(result_dir / "gamma_vs_sigma_star_summary.json"),
+            "gamma_vs_sigma_star_curves": str(result_dir / "gamma_vs_sigma_star_curves.npz"),
             "gamma_vs_logre_kpc_figure": str(result_dir / "gamma_vs_logre_kpc.png"),
             "gamma_vs_logre_kpc_summary": str(result_dir / "gamma_vs_logre_kpc_summary.json"),
             "gamma_vs_logre_kpc_curves": str(result_dir / "gamma_vs_logre_kpc_curves.npz"),
@@ -3632,9 +4130,15 @@ def _resolve_requested_annotation_runs(
         if not run_dir.exists() or not run_dir.is_dir():
             raise ValueError(f"Explicit run directory '{run_dir}' does not exist or is not a directory.")
         ppc_dir = run_dir / "ppc"
-        if not (ppc_dir / "fig8_like_curves.npz").exists() or not (ppc_dir / "fig8_like.png").exists():
+        required_paths = [
+            ppc_dir / "fig8_like_curves.npz",
+            ppc_dir / "fig8_like.png",
+            ppc_dir / "gamma_vs_logre_kpc_curves.npz",
+            ppc_dir / "gamma_vs_sigma_star_curves.npz",
+        ]
+        if not all(path.exists() for path in required_paths):
             raise ValueError(
-                f"Explicit run directory '{run_dir}' is missing 'ppc/fig8_like_curves.npz' or 'ppc/fig8_like.png'."
+                f"Explicit run directory '{run_dir}' is missing one or more required trend artifacts for 5-panel redraw."
             )
         resolved_pairs.append((_resolve_profile_name_for_annotation_run(run_dir, outputs_root), run_dir))
     return resolved_pairs
@@ -3693,6 +4197,54 @@ def _resolve_annotation_observation_path(
     return Path(runtime_config.data.observation_path).expanduser().resolve()
 
 
+def _resolve_annotation_runtime_config(
+    profile_name: str,
+    run_dir: Path,
+    raw_devauc_path: str | Path | None,
+    raw_sersic_path: str | Path | None,
+):
+    """
+    Load the runtime config used to rebuild observed overlays for one run.
+
+    The annotation command may override the raw observation file path while
+    still reusing the run's original scientific configuration. We therefore
+    load the stored config snapshot and replace only `data.observation_path`
+    when an explicit override is provided.
+    """
+
+    config_snapshot_path = run_dir / "config_snapshot.yaml"
+    if not config_snapshot_path.exists():
+        fig8_summary_path = run_dir / "ppc" / "fig8_like_summary.json"
+        if not fig8_summary_path.exists():
+            raise FileNotFoundError(
+                f"Cannot resolve runtime config for '{run_dir}': missing both "
+                f"'{config_snapshot_path}' and '{fig8_summary_path}'."
+            )
+        fig8_summary = json.loads(fig8_summary_path.read_text(encoding="utf-8"))
+        input_run_dir = fig8_summary.get("input_run_dir")
+        if not input_run_dir:
+            raise ValueError(
+                f"Fig. 8 summary '{fig8_summary_path}' does not record `input_run_dir`, "
+                "so the annotation command cannot infer the stored runtime config."
+            )
+        config_snapshot_path = Path(str(input_run_dir)).expanduser().resolve() / "config_snapshot.yaml"
+
+    runtime_config = load_runtime_config(config_snapshot_path)
+    resolved_observation_path = _resolve_annotation_observation_path(
+        profile_name=profile_name,
+        run_dir=run_dir,
+        raw_devauc_path=raw_devauc_path,
+        raw_sersic_path=raw_sersic_path,
+    )
+    if resolved_observation_path == runtime_config.data.observation_path:
+        return runtime_config
+
+    return replace(
+        runtime_config,
+        data=replace(runtime_config.data, observation_path=resolved_observation_path),
+    )
+
+
 def annotate_existing_fig8_like_figures_with_observations(
     outputs_root: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
     run_dirs: list[str] | None = None,
@@ -3715,30 +4267,71 @@ def annotate_existing_fig8_like_figures_with_observations(
 
     for profile_name, run_dir in _resolve_requested_annotation_runs(resolved_outputs_root, run_dirs):
         ppc_dir = run_dir / "ppc"
-        npz_path = ppc_dir / "fig8_like_curves.npz"
         figure_path = ppc_dir / "fig8_like.png"
         fig8_summary_path = ppc_dir / "fig8_like_summary.json"
         try:
-            mass_grid, mass_definition, trend_summary = _load_trend_summary_from_npz(npz_path)
+            mass_grid, mass_definition, trend_summary = _load_trend_summary_from_npz(ppc_dir / "fig8_like_curves.npz")
+            gamma_vs_logre_grid, gamma_vs_logre_summary = _load_single_quantity_trend_summary_from_npz(
+                ppc_dir / "gamma_vs_logre_kpc_curves.npz"
+            )
+            gamma_vs_sigma_star_grid, gamma_vs_sigma_star_summary = _load_single_quantity_trend_summary_from_npz(
+                ppc_dir / "gamma_vs_sigma_star_curves.npz"
+            )
             gamma_mode = _resolve_gamma_mode_for_fig8_run(
                 run_dir=run_dir,
                 fig8_summary_path=fig8_summary_path,
             )
-            figure_title = _format_fig8_like_title(
+            figure_title = _build_annotated_fig8_title(
+                run_dir=run_dir,
+                profile_name=profile_name,
                 mass_definition=mass_definition,
                 gamma_mode=gamma_mode,
             )
-            resolved_observation_path = _resolve_annotation_observation_path(
+            runtime_config = _resolve_annotation_runtime_config(
                 profile_name=profile_name,
                 run_dir=run_dir,
                 raw_devauc_path=raw_devauc_path,
                 raw_sersic_path=raw_sersic_path,
             )
+            resolved_observation_path = runtime_config.data.observation_path
             observed_points = _load_observed_trend_points(
                 observation_path=resolved_observation_path,
                 profile_name=profile_name,
                 mass_definition=mass_definition,
             )
+            compiled_context, profile_spec, _, cosmology, _, observations = build_compiled_context(runtime_config)
+            del compiled_context
+            observed_gamma_measurements = _load_observed_gamma_measurements(
+                observation_path=resolved_observation_path,
+                profile_name=profile_name,
+                observations=observations,
+                cosmology=cosmology,
+            )
+            extra_gamma_panels = [
+                {
+                    "panel_id": "gamma_vs_sigma_star",
+                    "summary_payload": gamma_vs_sigma_star_summary,
+                    "x_grid": gamma_vs_sigma_star_grid,
+                    "y_label": "gamma",
+                    "x_label": r"log $\Sigma_*$ [$M_\odot$ kpc$^{-2}$]",
+                    "observed_overlay": _build_observed_gamma_sigma_star_overlay(observed_gamma_measurements),
+                    "observed_label": None,
+                },
+                {
+                    "panel_id": "gamma_vs_logre_kpc",
+                    "summary_payload": gamma_vs_logre_summary,
+                    "x_grid": gamma_vs_logre_grid,
+                    "y_label": "gamma",
+                    "x_label": r"log $r_e$ [kpc]",
+                    "observed_overlay": _build_observed_gamma_logre_overlay(observed_gamma_measurements),
+                    "observed_label": None,
+                },
+            ]
+            annotated_display_xlim_by_panel = _build_fixed_fig8_display_xlim_by_panel(
+                mass_definition=mass_definition,
+                profile_name=profile_name,
+            )
+            annotated_display_ylim_by_panel = _build_fixed_fig8_display_ylim_by_panel(mass_definition)
             backup_path = _backup_existing_figure(figure_path=figure_path, backup_prefix=backup_prefix)
             _write_fig8_like_figure(
                 figure_path=figure_path,
@@ -3746,7 +4339,16 @@ def annotate_existing_fig8_like_figures_with_observations(
                 summary_payload=trend_summary,
                 mass_definition=mass_definition,
                 observed_points=observed_points,
+                extra_gamma_panels=extra_gamma_panels,
                 figure_title=figure_title,
+                display_xlim_by_panel=annotated_display_xlim_by_panel,
+                display_ylim_by_panel=annotated_display_ylim_by_panel,
+            )
+            _update_existing_fig8_summary_metadata(
+                fig8_summary_path=fig8_summary_path,
+                figure_title=figure_title,
+                display_xlim_by_panel=annotated_display_xlim_by_panel,
+                display_ylim_by_panel=annotated_display_ylim_by_panel,
             )
             processed_runs.append(
                 {
@@ -3757,6 +4359,14 @@ def annotate_existing_fig8_like_figures_with_observations(
                     "observation_path": str(resolved_observation_path),
                     "gamma_mode": gamma_mode,
                     "figure_title": figure_title,
+                    "display_xlim_by_panel": {
+                        quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+                        for quantity_name, axis_limits in annotated_display_xlim_by_panel.items()
+                    },
+                    "display_ylim_by_panel": {
+                        quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+                        for quantity_name, axis_limits in annotated_display_ylim_by_panel.items()
+                    },
                     "mass_quantity": mass_definition.label,
                     "observed_mass_points": int(observed_points[mass_definition.label].x.size),
                     "observed_gamma_points": int(observed_points["gamma"].x.size),

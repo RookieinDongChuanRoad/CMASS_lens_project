@@ -63,7 +63,7 @@ def _load_gamma_model_section(path: Path, raw_data: dict) -> GammaModelConfig:
 
 def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
     """
-    Load the optional FP-prior section with legacy-calibrated defaults.
+    Load the optional FP-prior section with the 1D sigma-logM* defaults.
 
     The section is intentionally optional so existing configurations keep the
     same posterior unless users opt in explicitly.
@@ -79,12 +79,12 @@ def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
         enabled=bool(fp_prior_raw.get("enabled", False)),
         fit_mstar_min=float(fp_prior_raw.get("fit_mstar_min", 11.0)),
         pivot_mstar=float(fp_prior_raw.get("pivot_mstar", 11.3)),
-        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", 0.047)),
-        scatter_error=float(fp_prior_raw.get("scatter_error", 0.008)),
-        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", 2.341871)),
-        mu_v_error=float(fp_prior_raw.get("mu_v_error", 0.03)),
-        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", 0.25774)),
-        beta_v_error=float(fp_prior_raw.get("beta_v_error", 0.03)),
+        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", 0.075)),
+        scatter_error=float(fp_prior_raw.get("scatter_error", 0.003)),
+        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", 2.34548)),
+        mu_v_error=float(fp_prior_raw.get("mu_v_error", 0.00611)),
+        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", 0.176)),
+        beta_v_error=float(fp_prior_raw.get("beta_v_error", 0.011)),
     )
 
 

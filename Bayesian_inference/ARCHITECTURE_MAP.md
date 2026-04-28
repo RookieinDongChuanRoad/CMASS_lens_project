@@ -38,7 +38,7 @@
    - `profiles.py` 选择 `devauc` / `sersic` 固定常数和字段别名
    - `io.py` 读取 HDF5 观测、截面网格，以及可选的 FP sigma-unit table
    - `cosmology.py` 建距离表
-   - `compiled_context.py` 把高层对象压平成 `numba` 友好的数组上下文，并在启用 FP prior 时附带 sigma-table 轴和 grid
+   - `compiled_context.py` 把高层对象压平成 `numba` 友好的数组上下文，并在启用 FP prior 时附带 `within_re` sigma-table 的轴和 grid
 4. `runner.py` 同时调用 `parallel.py` 解析线程/进程策略，并组装 `CompiledModel`。
 5. `sampler.py` 启动 `emcee`，把每个 walker 的参数向量交给 `model.py:log_prob()`。
 6. `model.py` 做 box prior 检查，然后依次调用：
@@ -231,7 +231,7 @@ flowchart TB
 - 直接依赖：`mass_definition.py`、`types.py`
 - 被谁依赖：`compiled_context.py`
 - 是否在主热路径：是（主流程但非热点）
-- 关键备注：它承担新旧 HDF5 布局兼容，尤其是 `mass_definitions/<label>/` 新结构和 legacy `m5_*` 数据集之间的桥接；启用 FP prior 时，也由这里强校验 sigma-table 的 profile 与 `m5/m10` 质量定义是否匹配当前 run。
+- 关键备注：它承担新旧 HDF5 布局兼容，尤其是 `mass_definitions/<label>/` 新结构和 legacy `m5_*` 数据集之间的桥接；启用 FP prior 时，也由这里强校验 `within_re/<mass>` sigma-table leaf 的 profile、质量定义与 aperture contract 是否匹配当前 run。观测口径 `slit` / `boss` 的 sigma table 仍然服务于 likelihood 与 PPC，而不是 FP prior。
 
 #### `src/cmass_lens_inference/cosmology.py`
 
@@ -247,7 +247,7 @@ flowchart TB
 - 直接依赖：`cosmology.py`、`io.py`、`profiles.py`、`types.py`
 - 被谁依赖：`runner.py`、`model.py`、`normalization.py`
 - 是否在主热路径：是（主流程但非热点）
-- 关键备注：这是 Python 对象世界和 `numba` 数组世界的转换层；热路径优化的关键前提就是把工作尽可能前移到这里。FP prior 的 sigma-table 轴、grid 和 prior 常数也在这一层完成编译期整理。
+- 关键备注：这是 Python 对象世界和 `numba` 数组世界的转换层；热路径优化的关键前提就是把工作尽可能前移到这里。FP prior 的 `within_re` sigma-table 轴、grid 和 prior 常数也在这一层完成编译期整理；这里显式把 FP prior 与 observed-aperture sigma 预测分开，避免两套物理定义混用。
 
 ### C. 共享数据契约与物理定义层
 
@@ -275,7 +275,7 @@ flowchart TB
 - 直接依赖：`compiled_context.py`、`kernels/likelihood.py`、`kernels/normalization.py`、`parallel.py`、`types.py`
 - 被谁依赖：`sampler.py`
 - 是否在主热路径：是（数值热路径）
-- 关键备注：它是“采样器”和“内核”之间唯一的正式边界；如果要分析单次 `log_prob` 的行为，先从这里看。FP prior 的 OLS 解算也被刻意放在这里，而不是塞进 numba kernel。
+- 关键备注：它是“采样器”和“内核”之间唯一的正式边界；如果要分析单次 `log_prob` 的行为，先从这里看。FP prior 的 OLS 解算也被刻意放在这里，而不是塞进 numba kernel；该 prior 当前固定消费 `within_re` 定义的 synthetic sigma，而不是跟随 observation flavor 切换 aperture。
 
 #### `src/cmass_lens_inference/kernels/primitives.py`
 
@@ -299,7 +299,7 @@ flowchart TB
 - 直接依赖：`kernels/primitives.py`
 - 被谁依赖：`model.py`、`normalization.py`、`kernels/__init__.py`
 - 是否在主热路径：是（数值热路径）
-- 关键备注：它和 `likelihood.py` 共同组成生产版 `log_prob` 的两大数值核心。这里不直接做 FP 拟合，只输出最小充分统计量，把线性代数留给 Python 层的 `model.py`。
+- 关键备注：它和 `likelihood.py` 共同组成生产版 `log_prob` 的两大数值核心。这里不直接做 FP 拟合，只输出最小充分统计量，把线性代数留给 Python 层的 `model.py`。当 FP prior 打开时，这里累计的 synthetic sigma 统计量来自 `within_re` aperture contract，而不是 slit/boss observed-aperture contract。
 
 #### `src/cmass_lens_inference/kernels/__init__.py`
 
@@ -424,4 +424,4 @@ flowchart TB
 
 如果只看最核心的生产链，可以把这个子项目理解成：
 
-`cli/runner` 负责组织运行，`config + profiles + io + cosmology + compiled_context` 负责把高层输入预处理成数组，`sampler` 负责把参数向量不断送进 `model.log_prob()`，而 `model` 再把所有真正昂贵的工作下放给 `kernels/likelihood.py` 和 `kernels/normalization.py`；如果启用 FP prior，则 `normalization` 额外产出一组 FP sufficient statistics，`model` 用它们做一次小型 OLS 并把 global prior 加回 posterior；`types / mass_definition / parallel / outputs` 则是横切整个系统的基础设施层。
+`cli/runner` 负责组织运行，`config + profiles + io + cosmology + compiled_context` 负责把高层输入预处理成数组，`sampler` 负责把参数向量不断送进 `model.log_prob()`，而 `model` 再把所有真正昂贵的工作下放给 `kernels/likelihood.py` 和 `kernels/normalization.py`；如果启用 FP prior，则 `normalization` 额外产出一组基于 `within_re` synthetic sigma 的 FP sufficient statistics，`model` 用它们做一次小型 OLS 并把 global prior 加回 posterior；`types / mass_definition / parallel / outputs` 则是横切整个系统的基础设施层。likelihood 与 posterior-predictive 里的 `sigma_ap` 仍继续走 observation-flavor 对应的 observed-aperture 定义。

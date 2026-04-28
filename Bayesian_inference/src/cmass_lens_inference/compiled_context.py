@@ -14,7 +14,12 @@ import math
 import numpy as np
 
 from .cosmology import FlatLambdaCDM
-from .io import load_cross_section_grid, load_observation_contract, load_observations, load_sigma_unit_table
+from .io import (
+    WITHIN_RE_SIGMA_DEFINITION,
+    load_cross_section_grid,
+    load_observations,
+    load_sigma_unit_table,
+)
 from .profiles import build_profile_spec
 from .types import CompiledModelContext, RandomBasis, RuntimeConfig
 
@@ -62,12 +67,14 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
     if runtime_config.fp_prior.enabled:
         if runtime_config.data.sigma_table_path is None:
             raise ValueError("FP prior is enabled but no sigma table path was configured.")
-        observation_contract = load_observation_contract(runtime_config.data.observation_path)
+        # The FP prior follows the Cannarozzo+20 aperture contract, which is a
+        # within-effective-radius velocity dispersion rather than the observed
+        # slit/BOSS aperture used elsewhere in the pipeline.
         sigma_table = load_sigma_unit_table(
             runtime_config.data.sigma_table_path,
             profile,
             runtime_config.mass_definition,
-            observation_flavor=str(observation_contract["observation_flavor"]),
+            bundle_group=WITHIN_RE_SIGMA_DEFINITION,
         )
     cosmology = FlatLambdaCDM(
         h0=runtime_config.cosmology.h0,
@@ -200,15 +207,24 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         fp_has_n_axis = 0
     else:
         fp_gamma_axis = np.asarray(sigma_table.gamma_axis, dtype=np.float64)
-        fp_zd_axis = np.asarray(sigma_table.zd_axis, dtype=np.float64)
         fp_log_re_kpc_axis = np.asarray(sigma_table.log_re_kpc_axis, dtype=np.float64)
+        if sigma_table.zd_axis is None:
+            # The within-Re sigma definition is independent of lens redshift,
+            # but the compiled interpolation kernel still expects a formal `zd`
+            # axis. We therefore inject a singleton compatibility axis and let
+            # the interpolator clip every query onto that sole plane.
+            fp_zd_axis = np.asarray([0.0], dtype=np.float64)
+            fp_sigma_unit_grid_base = np.asarray(sigma_table.sigma_unit_grid, dtype=np.float64)[:, None, ...]
+        else:
+            fp_zd_axis = np.asarray(sigma_table.zd_axis, dtype=np.float64)
+            fp_sigma_unit_grid_base = np.asarray(sigma_table.sigma_unit_grid, dtype=np.float64)
         if sigma_table.n_axis is None:
             fp_n_axis = np.asarray([profile.fixed_n if profile.fixed_n is not None else 4.0], dtype=np.float64)
-            fp_sigma_unit_grid = np.asarray(sigma_table.sigma_unit_grid, dtype=np.float64)[..., None]
+            fp_sigma_unit_grid = fp_sigma_unit_grid_base[..., None]
             fp_has_n_axis = 0
         else:
             fp_n_axis = np.asarray(sigma_table.n_axis, dtype=np.float64)
-            fp_sigma_unit_grid = np.asarray(sigma_table.sigma_unit_grid, dtype=np.float64)
+            fp_sigma_unit_grid = fp_sigma_unit_grid_base
             fp_has_n_axis = 1
 
     context = CompiledModelContext(

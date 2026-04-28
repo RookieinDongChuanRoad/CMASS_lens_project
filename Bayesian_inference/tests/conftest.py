@@ -142,6 +142,7 @@ def _write_synthetic_sigma_bundle(
     mass_radius_kpc: float = 5.0,
     observation_flavor: str = "boss",
     seeing_fwhm_arcsec: float = 1.5,
+    include_within_re: bool = False,
 ) -> Path:
     """
     Write a tiny bundle-style sigma table for flavor-aware loader tests.
@@ -197,16 +198,48 @@ def _write_synthetic_sigma_bundle(
         leaf.create_dataset("s_unit_grid", data=values)
         leaf.attrs["seeing_fwhm_arcsec"] = float(seeing_fwhm_arcsec)
 
+        if include_within_re:
+            within_re_group = handle.create_group("within_re")
+            within_re_leaf = within_re_group.create_group(mass_definition_label)
+            within_re_leaf.create_dataset("gamma_axis", data=gamma_axis)
+            within_re_leaf.create_dataset("log_re_kpc_axis", data=log_re_kpc_axis)
+            within_re_leaf.attrs["mass_definition_label"] = mass_definition_label
+            within_re_leaf.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
+            within_re_leaf.attrs["units"] = f"km2 s-2 per 10**{mass_definition_label}"
+            within_re_leaf.attrs["sigma_definition"] = "within_re"
+            within_re_leaf.attrs["aperture_shape"] = "circular"
+            within_re_leaf.attrs["aperture_radius_mode"] = "effective_radius"
+            within_re_leaf.attrs["seeing_mode"] = "none"
+            if profile_name == "sersic":
+                n_axis = np.linspace(2.5, 10.5, 4)
+                within_re_leaf.create_dataset("n_axis", data=n_axis)
+                gamma_mesh, log_re_mesh, n_mesh = np.meshgrid(
+                    gamma_axis,
+                    log_re_kpc_axis,
+                    n_axis,
+                    indexing="ij",
+                )
+                within_re_values = 0.35 + 0.02 * gamma_mesh + 0.01 * log_re_mesh + 0.005 * n_mesh
+            else:
+                gamma_mesh, log_re_mesh = np.meshgrid(
+                    gamma_axis,
+                    log_re_kpc_axis,
+                    indexing="ij",
+                )
+                within_re_values = 0.4 + 0.03 * gamma_mesh + 0.01 * log_re_mesh
+            within_re_leaf.create_dataset("s_unit_grid", data=within_re_values)
+
     return path
 
 
 @pytest.fixture
 def synthetic_observation_file(tmp_path: Path) -> Path:
     """
-    Create a one-lens HDF5 observation file that mirrors the required schema.
+    Create a one-lens HDF5 observation file that mirrors the migrated schema.
 
     The synthetic lens is deliberately simple:
-    - 17-point grids exist for `gamma`, `m5`, and the Jacobian term.
+    - root-level `gamma_grid` remains present
+    - mass-dependent grids live under `mass_definitions/<label>/`
     - velocity-dispersion information is present so tests can cover the
       `num_sigma=1` branch and `s2_grid` loading.
     - attribute names follow the generic schema used by the `sersic` profile.
@@ -215,8 +248,10 @@ def synthetic_observation_file(tmp_path: Path) -> Path:
     path = tmp_path / "synthetic_observations.hdf5"
     gamma_grid = np.linspace(1.3, 2.7, 17)
     m5_grid = np.linspace(11.6, 10.8, 17)
+    m10_grid = np.linspace(11.9, 11.1, 17)
     dm5_dthetaein_grid = np.linspace(-2.0, -1.0, 17)
     s2_grid = np.linspace(0.8, 1.2, 17)
+    s2_m10_grid = np.linspace(0.55, 0.95, 17)
 
     with h5py.File(path, "w") as handle:
         group = handle.create_group("lens-0001")
@@ -234,9 +269,16 @@ def synthetic_observation_file(tmp_path: Path) -> Path:
         group.attrs["sigma"] = 320000.0
         group.attrs["sigma_err"] = 20000.0
         group.create_dataset("gamma_grid", data=gamma_grid)
-        group.create_dataset("m5_grid", data=m5_grid)
-        group.create_dataset("dm5_dthetaein_grid", data=dm5_dthetaein_grid)
-        group.create_dataset("s2_grid", data=s2_grid)
+        mass_root = group.create_group("mass_definitions")
+        m5_group = mass_root.create_group("m5")
+        m5_group.create_dataset("mass_grid", data=m5_grid)
+        m5_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+        m5_group.create_dataset("s2_grid", data=s2_grid)
+
+        m10_group = mass_root.create_group("m10")
+        m10_group.create_dataset("mass_grid", data=m10_grid)
+        m10_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+        m10_group.create_dataset("s2_grid", data=s2_m10_grid)
 
     return path
 
@@ -248,11 +290,13 @@ def synthetic_devauc_observation_file(tmp_path: Path) -> Path:
 
     This file adds `logmchab_deV` and `reff_deV`, which the `devauc` profile
     must prefer over the generic stellar-mass and effective-radius fields.
+    The mass-dependent grids follow the namespaced observation contract.
     """
 
     path = tmp_path / "synthetic_devauc_observations.hdf5"
     gamma_grid = np.linspace(1.25, 2.65, 17)
     m5_grid = np.linspace(11.5, 10.7, 17)
+    m10_grid = np.linspace(11.8, 11.0, 17)
     dm5_dthetaein_grid = np.linspace(-1.8, -1.1, 17)
 
     with h5py.File(path, "w") as handle:
@@ -268,8 +312,44 @@ def synthetic_devauc_observation_file(tmp_path: Path) -> Path:
         group.attrs["rein_arcsec"] = 1.0
         group.attrs["num_sigma"] = 0
         group.create_dataset("gamma_grid", data=gamma_grid)
+        mass_root = group.create_group("mass_definitions")
+        m5_group = mass_root.create_group("m5")
+        m5_group.create_dataset("mass_grid", data=m5_grid)
+        m5_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+
+        m10_group = mass_root.create_group("m10")
+        m10_group.create_dataset("mass_grid", data=m10_grid)
+        m10_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+
+    return path
+
+
+@pytest.fixture
+def synthetic_legacy_only_observation_file(tmp_path: Path) -> Path:
+    """Create a root-level legacy observation file used to verify hard failure."""
+
+    path = tmp_path / "synthetic_legacy_only_observations.hdf5"
+    gamma_grid = np.linspace(1.3, 2.7, 17)
+    m5_grid = np.linspace(11.6, 10.8, 17)
+    dm5_dthetaein_grid = np.linspace(-2.0, -1.0, 17)
+    s2_grid = np.linspace(0.8, 1.2, 17)
+
+    with h5py.File(path, "w") as handle:
+        group = handle.create_group("lens-legacy")
+        group.attrs["zd"] = 0.55
+        group.attrs["zs"] = 1.75
+        group.attrs["logmchab"] = 11.3
+        group.attrs["logmchab_err"] = 0.05
+        group.attrs["nser"] = 4.2
+        group.attrs["re_arcsec"] = 1.1
+        group.attrs["rein_arcsec"] = 1.3
+        group.attrs["num_sigma"] = 1
+        group.attrs["sigma"] = 320000.0
+        group.attrs["sigma_err"] = 20000.0
+        group.create_dataset("gamma_grid", data=gamma_grid)
         group.create_dataset("m5_grid", data=m5_grid)
         group.create_dataset("dm5_dthetaein_grid", data=dm5_dthetaein_grid)
+        group.create_dataset("s2_grid", data=s2_grid)
 
     return path
 
@@ -383,6 +463,9 @@ def synthetic_boss_observation_file(tmp_path: Path) -> Path:
     gamma_grid = np.linspace(1.25, 2.65, 17)
     mass_grid = np.linspace(11.5, 10.7, 17)
     dmass_grid = np.linspace(-1.8, -1.1, 17)
+    m10_grid = np.linspace(11.8, 11.0, 17)
+    s2_grid = np.linspace(0.65, 0.95, 17)
+    s2_m10_grid = np.linspace(0.4, 0.7, 17)
 
     with h5py.File(path, "w") as handle:
         group = handle.create_group("lens-boss")
@@ -402,8 +485,16 @@ def synthetic_boss_observation_file(tmp_path: Path) -> Path:
         group.attrs["aperture_radius_arcsec"] = 1.0
         group.attrs["seeing_fwhm_arcsec"] = 1.5
         group.create_dataset("gamma_grid", data=gamma_grid)
-        group.create_dataset("m5_grid", data=mass_grid)
-        group.create_dataset("dm5_dthetaein_grid", data=dmass_grid)
+        mass_root = group.create_group("mass_definitions")
+        m5_group = mass_root.create_group("m5")
+        m5_group.create_dataset("mass_grid", data=mass_grid)
+        m5_group.create_dataset("dmass_dthetaein_grid", data=dmass_grid)
+        m5_group.create_dataset("s2_grid", data=s2_grid)
+
+        m10_group = mass_root.create_group("m10")
+        m10_group.create_dataset("mass_grid", data=m10_grid)
+        m10_group.create_dataset("dmass_dthetaein_grid", data=dmass_grid)
+        m10_group.create_dataset("s2_grid", data=s2_m10_grid)
 
     return path
 
@@ -429,6 +520,38 @@ def synthetic_bad_boss_sigma_bundle_file(tmp_path: Path) -> Path:
         profile_name="devauc",
         observation_flavor="boss",
         seeing_fwhm_arcsec=0.9,
+    )
+
+
+@pytest.fixture
+def synthetic_within_re_sigma_bundle_file(tmp_path: Path) -> Path:
+    """Create a tiny bundle with an explicit within-Re leaf for loader tests."""
+
+    return _write_synthetic_sigma_bundle(
+        tmp_path / "synthetic_within_re_sigma_bundle.h5",
+        profile_name="sersic",
+        observation_flavor="slit",
+        seeing_fwhm_arcsec=0.9,
+        include_within_re=True,
+    )
+
+
+@pytest.fixture
+def synthetic_devauc_within_re_sigma_bundle_file(tmp_path: Path) -> Path:
+    """
+    Create a tiny devauc bundle with an explicit within-Re leaf for FP tests.
+
+    The inference FP-prior path now always reads `/within_re/<mass>` even for
+    de Vaucouleurs runs, so tests need a fixture whose profile metadata matches
+    `devauc` while still carrying the canonical within-Re datasets.
+    """
+
+    return _write_synthetic_sigma_bundle(
+        tmp_path / "synthetic_devauc_within_re_sigma_bundle.h5",
+        profile_name="devauc",
+        observation_flavor="slit",
+        seeing_fwhm_arcsec=0.9,
+        include_within_re=True,
     )
 
 
@@ -728,12 +851,12 @@ def synthetic_sigma_star_dependent_config_path(
 @pytest.fixture
 def synthetic_fp_prior_config_path(
     synthetic_config_path: Path,
-    synthetic_sersic_sigma_table_file: Path,
+    synthetic_within_re_sigma_bundle_file: Path,
 ) -> Path:
     """Create a `sersic + m5` config with the optional FP prior enabled."""
 
     payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
-    payload["data"]["sigma_table_path"] = str(synthetic_sersic_sigma_table_file)
+    payload["data"]["sigma_table_path"] = str(synthetic_within_re_sigma_bundle_file)
     payload["fp_prior"] = {"enabled": True}
     path = synthetic_config_path.parent / "synthetic_sersic_fp_prior.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
@@ -743,12 +866,12 @@ def synthetic_fp_prior_config_path(
 @pytest.fixture
 def synthetic_fp_prior_independent_config_path(
     synthetic_independent_config_path: Path,
-    synthetic_sersic_sigma_table_file: Path,
+    synthetic_within_re_sigma_bundle_file: Path,
 ) -> Path:
     """Create an `independent` gamma-mode config with FP prior enabled."""
 
     payload = yaml.safe_load(synthetic_independent_config_path.read_text(encoding="utf-8"))
-    payload["data"]["sigma_table_path"] = str(synthetic_sersic_sigma_table_file)
+    payload["data"]["sigma_table_path"] = str(synthetic_within_re_sigma_bundle_file)
     payload["fp_prior"] = {"enabled": True}
     path = synthetic_independent_config_path.parent / "synthetic_sersic_fp_prior_independent.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
@@ -758,13 +881,13 @@ def synthetic_fp_prior_independent_config_path(
 @pytest.fixture
 def synthetic_fp_prior_sigma_star_zero_slope_config_path(
     synthetic_sigma_star_dependent_config_path: Path,
-    synthetic_sersic_sigma_table_file: Path,
+    synthetic_within_re_sigma_bundle_file: Path,
 ) -> Path:
     """Create a zero-slope sigma-star config with the FP prior enabled."""
 
     payload = yaml.safe_load(synthetic_sigma_star_dependent_config_path.read_text(encoding="utf-8"))
     payload["sampling"]["initial_center"]["beta_sigma_star_gamma"] = 0.0
-    payload["data"]["sigma_table_path"] = str(synthetic_sersic_sigma_table_file)
+    payload["data"]["sigma_table_path"] = str(synthetic_within_re_sigma_bundle_file)
     payload["fp_prior"] = {"enabled": True}
     path = synthetic_sigma_star_dependent_config_path.parent / "synthetic_sersic_fp_prior_sigma_star_zero.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
@@ -776,7 +899,7 @@ def synthetic_devauc_fp_prior_config_path(
     tmp_path: Path,
     synthetic_devauc_observation_file: Path,
     synthetic_cross_section_file: Path,
-    synthetic_devauc_sigma_table_file: Path,
+    synthetic_devauc_within_re_sigma_bundle_file: Path,
 ) -> Path:
     """Create a `devauc + m5` config with the optional FP prior enabled."""
 
@@ -789,7 +912,7 @@ def synthetic_devauc_fp_prior_config_path(
         "data": {
             "observation_path": str(synthetic_devauc_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
-            "sigma_table_path": str(synthetic_devauc_sigma_table_file),
+            "sigma_table_path": str(synthetic_devauc_within_re_sigma_bundle_file),
         },
         "box_prior": _default_box_prior_config(mass_radius_kpc=5, gamma_mode="dependent"),
         "sampling": {

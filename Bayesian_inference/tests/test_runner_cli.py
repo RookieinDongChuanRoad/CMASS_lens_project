@@ -148,7 +148,14 @@ def test_progress_summary_includes_fp_prior_stage_timing() -> None:
 def test_run_inference_serializes_fp_prior_metadata(
     synthetic_fp_prior_config_path: Path,
 ) -> None:
-    """FP-enabled runs should persist the sigma-table contract in both metadata files."""
+    """
+    FP-enabled runs should persist the within-Re sigma contract in metadata.
+
+    The top-level `sigma_table_path` remains useful for provenance, but it no
+    longer describes the actual FP prior aperture on its own. The persisted
+    metadata must therefore record that the FP path uses the `/within_re/<mass>`
+    bundle leaf.
+    """
 
     runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
     run_result = run_inference(str(synthetic_fp_prior_config_path))
@@ -159,12 +166,21 @@ def test_run_inference_serializes_fp_prior_metadata(
     assert run_result.metadata["fp_prior"]["enabled"] is True
     assert run_result.metadata["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
     assert run_result.metadata["sigma_table_mass_definition"] == runtime_config.mass_definition.label
+    assert run_result.metadata["fp_sigma_definition"] == "within_re"
+    assert run_result.metadata["fp_sigma_table_leaf_path"] == f"/within_re/{runtime_config.mass_definition.label}"
     assert metadata_payload["fp_prior"]["enabled"] is True
     assert metadata_payload["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
     assert metadata_payload["sigma_table_mass_definition"] == runtime_config.mass_definition.label
+    assert metadata_payload["fp_sigma_definition"] == "within_re"
+    assert metadata_payload["fp_sigma_table_leaf_path"] == f"/within_re/{runtime_config.mass_definition.label}"
     assert run_result_payload["metadata"]["fp_prior"]["enabled"] is True
     assert run_result_payload["metadata"]["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
     assert run_result_payload["metadata"]["sigma_table_mass_definition"] == runtime_config.mass_definition.label
+    assert run_result_payload["metadata"]["fp_sigma_definition"] == "within_re"
+    assert (
+        run_result_payload["metadata"]["fp_sigma_table_leaf_path"]
+        == f"/within_re/{runtime_config.mass_definition.label}"
+    )
 
 
 def test_chain_h5_is_readable_by_emcee_hdf_backend(synthetic_config_path: Path) -> None:

@@ -19,7 +19,7 @@ import yaml
 
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.io import load_cross_section_grid, load_observations, load_sigma_unit_table
-from cmass_lens_inference.mass_definition import convert_log_enclosed_mass, get_mass_definition
+from cmass_lens_inference.mass_definition import get_mass_definition
 from cmass_lens_inference.profiles import build_profile_spec
 
 
@@ -145,12 +145,12 @@ def test_load_runtime_config_builds_fp_prior_config_when_enabled(
     assert runtime_config.data.sigma_table_path == synthetic_sersic_sigma_table_file
     assert runtime_config.fp_prior.fit_mstar_min == pytest.approx(11.0)
     assert runtime_config.fp_prior.pivot_mstar == pytest.approx(11.3)
-    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.047)
-    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.008)
-    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.341871, abs=1.0e-6)
-    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.03)
-    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.25774, abs=1.0e-5)
-    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.03)
+    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.075)
+    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.003)
+    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.34548, abs=1.0e-5)
+    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.00611, abs=1.0e-5)
+    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.176, abs=1.0e-6)
+    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.011)
 
 
 def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Path) -> None:
@@ -846,6 +846,75 @@ def test_load_sigma_unit_table_reads_requested_boss_bundle_leaf(
     assert sigma_table.sigma_unit_grid.shape == (5, 4, 3)
 
 
+def test_load_sigma_unit_table_reads_requested_within_re_bundle_leaf(
+    synthetic_within_re_sigma_bundle_file: Path,
+) -> None:
+    """The loader must support explicit bundle-group reads for within-Re leaves."""
+
+    sigma_table = load_sigma_unit_table(
+        synthetic_within_re_sigma_bundle_file,
+        build_profile_spec("sersic"),
+        get_mass_definition(5),
+        bundle_group="within_re",
+    )
+
+    assert sigma_table.profile_name == "sersic"
+    assert sigma_table.mass_definition_label == "m5"
+    assert sigma_table.mass_radius_kpc == pytest.approx(5.0)
+    assert sigma_table.gamma_axis.shape == (5,)
+    assert sigma_table.zd_axis is None
+    assert sigma_table.log_re_kpc_axis.shape == (3,)
+    assert sigma_table.n_axis is not None
+    assert sigma_table.n_axis.shape == (4,)
+    assert sigma_table.sigma_unit_grid.shape == (5, 3, 4)
+    assert sigma_table.sigma_definition == "within_re"
+    assert sigma_table.bundle_group_name == "within_re"
+    assert sigma_table.observation_flavor is None
+    assert sigma_table.bundle_leaf_path == "/within_re/m5"
+
+
+def test_load_sigma_unit_table_rejects_missing_within_re_bundle_group(
+    synthetic_boss_sigma_bundle_file: Path,
+) -> None:
+    """Explicit within-Re reads must fail on legacy-compatible bundles that only carry slit/boss."""
+
+    with pytest.raises(ValueError, match="does not contain the bundle group 'within_re'"):
+        load_sigma_unit_table(
+            synthetic_boss_sigma_bundle_file,
+            build_profile_spec("sersic"),
+            get_mass_definition(5),
+            bundle_group="within_re",
+        )
+
+
+def test_build_compiled_context_rejects_fp_prior_bundle_without_within_re_leaf(
+    synthetic_bad_boss_sigma_bundle_file: Path,
+    synthetic_fp_prior_config_path: Path,
+) -> None:
+    """
+    FP prior should fail fast when the configured sigma bundle lacks within-Re data.
+
+    The scientific contract now requires effective-radius sigma for every
+    FP-enabled inference run. A bundle that only carries observation-flavor
+    leaves must therefore be rejected immediately instead of silently falling
+    back to slit or BOSS apertures.
+    """
+
+    from cmass_lens_inference.compiled_context import build_compiled_context
+    from cmass_lens_inference.config import load_runtime_config
+
+    payload = yaml.safe_load(synthetic_fp_prior_config_path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    payload["data"]["sigma_table_path"] = str(synthetic_bad_boss_sigma_bundle_file)
+
+    broken_config_path = synthetic_fp_prior_config_path.parent / "missing_within_re_fp.yaml"
+    broken_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    runtime_config = load_runtime_config(broken_config_path)
+    with pytest.raises(ValueError, match="within_re"):
+        build_compiled_context(runtime_config)
+
+
 def test_load_sigma_unit_table_rejects_boss_bundle_with_wrong_seeing(
     synthetic_bad_boss_sigma_bundle_file: Path,
 ) -> None:
@@ -886,35 +955,24 @@ def test_load_sigma_unit_table_rejects_mass_definition_mismatch(
         )
 
 
-def test_load_observations_converts_legacy_m5_grid_to_selected_mass_definition(
-    synthetic_observation_file: Path,
+def test_load_observations_rejects_root_level_legacy_grids_without_namespaced_subgroups(
+    synthetic_legacy_only_observation_file: Path,
 ) -> None:
     """
-    Legacy observation files still store only root-level `m5` datasets.
+    Observation loading no longer supports root-level mass/sigma grids.
 
-    The loader must preserve backward compatibility by converting those
-    datasets analytically when a run requests `m10`.
+    Once the migration is complete, every supported file must expose
+    `mass_definitions/<label>/...` and the loader should fail fast instead of
+    silently falling back to deprecated root-level datasets.
     """
 
     profile_spec = build_profile_spec("sersic")
-    observations = load_observations(
-        synthetic_observation_file,
-        profile_spec,
-        get_mass_definition(10),
-    )
-
-    assert len(observations) == 1
-    observation = observations[0]
-    expected_mass_grid = convert_log_enclosed_mass(
-        log_mass=np.linspace(11.6, 10.8, 17),
-        gamma=np.linspace(1.3, 2.7, 17),
-        from_radius_kpc=5,
-        to_radius_kpc=10,
-    )
-
-    np.testing.assert_allclose(observation.mass_grid_17, expected_mass_grid)
-    np.testing.assert_allclose(observation.dmass_dthetaein_grid_17, np.linspace(-2.0, -1.0, 17))
-    assert observation.s2_grid_17 is not None
+    with pytest.raises(KeyError, match="mass-definition subgroup"):
+        load_observations(
+            synthetic_legacy_only_observation_file,
+            profile_spec,
+            get_mass_definition(10),
+        )
 
 
 def test_load_observations_reads_namespaced_mass_definition_subgroup_when_available(

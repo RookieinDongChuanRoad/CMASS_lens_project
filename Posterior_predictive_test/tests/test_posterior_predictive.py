@@ -451,6 +451,7 @@ def _write_sigma_bundle_hdf5(
     observation_flavors: tuple[str, ...] = ("slit", "boss"),
     mass_radii_kpc: tuple[int, ...] = (5, 10),
     boss_aperture_radius_arcsec: float = 1.0,
+    include_within_re: bool = False,
 ) -> Path:
     """Create one synthetic bundle file with multiple flavor/mass leaves."""
 
@@ -515,6 +516,41 @@ def _write_sigma_bundle_hdf5(
                     + 0.002 * log_re_mesh
                     + 0.001 * n_mesh
                 )
+                leaf.create_dataset("n_axis", data=n_axis)
+                leaf.create_dataset("s_unit_grid", data=values)
+
+        if include_within_re:
+            within_re_group = handle.create_group("within_re")
+            for mass_radius_kpc in mass_radii_kpc:
+                mass_label = f"m{int(mass_radius_kpc)}"
+                leaf = within_re_group.create_group(mass_label)
+                leaf.attrs["mass_definition_label"] = mass_label
+                leaf.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
+                leaf.attrs["units"] = f"km2 s-2 per 10**{mass_label}"
+                leaf.attrs["sigma_definition"] = "within_re"
+                leaf.attrs["aperture_shape"] = "circular"
+                leaf.attrs["aperture_radius_mode"] = "effective_radius"
+                leaf.attrs["seeing_mode"] = "none"
+                leaf.create_dataset("gamma_axis", data=gamma_axis)
+                leaf.create_dataset("log_re_kpc_axis", data=log_re_axis)
+                mass_offset = 0.002 * int(mass_radius_kpc)
+                if profile_name == "devauc":
+                    gamma_mesh, log_re_mesh = np.meshgrid(
+                        gamma_axis,
+                        log_re_axis,
+                        indexing="ij",
+                    )
+                    values = 0.05 + mass_offset + 0.004 * gamma_mesh + 0.003 * log_re_mesh
+                    leaf.create_dataset("s_unit_grid", data=values)
+                    continue
+
+                gamma_mesh, log_re_mesh, n_mesh = np.meshgrid(
+                    gamma_axis,
+                    log_re_axis,
+                    n_axis,
+                    indexing="ij",
+                )
+                values = 0.04 + mass_offset + 0.003 * gamma_mesh + 0.002 * log_re_mesh + 0.001 * n_mesh
                 leaf.create_dataset("n_axis", data=n_axis)
                 leaf.create_dataset("s_unit_grid", data=values)
     return path
@@ -903,6 +939,40 @@ def test_sigma_unit_table_from_bundle_selects_requested_boss_leaf(tmp_path: Path
     assert table.observation_flavor == "boss"
     assert table.aperture_shape == "circular"
     assert table.aperture_radius_arcsec == 1.0
+    assert np.isfinite(actual).all()
+
+
+def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path: Path) -> None:
+    """Bundle loaders must support the explicit low-dimensional within-Re leaf."""
+
+    from cmass_lens_inference.mass_definition import get_mass_definition
+    from cmass_posterior_predictive.predictive import SigmaUnitTable
+
+    table_path = _write_sigma_bundle_hdf5(
+        tmp_path / "jeans_sers_sigma_bundle.h5",
+        profile_name="sersic",
+        include_within_re=True,
+    )
+    table = SigmaUnitTable.from_path(
+        table_path,
+        mass_definition=get_mass_definition(10),
+        bundle_group="within_re",
+    )
+
+    actual = table.evaluate(
+        gamma=np.array([1.3, 1.8, 2.7]),
+        zd=np.array([0.45, 0.60, 0.79]),
+        log_re_kpc=np.array([0.55, 0.90, 1.20]),
+        n_values=np.array([2.8, 6.0, 9.5]),
+    )
+
+    assert table.profile_name == "sersic"
+    assert table.mass_definition_label == "m10"
+    assert table.sigma_definition == "within_re"
+    assert table.bundle_group_name == "within_re"
+    assert table.observation_flavor is None
+    assert table.zd_axis is None
+    assert table.bundle_leaf_path == "/within_re/m10"
     assert np.isfinite(actual).all()
 
 

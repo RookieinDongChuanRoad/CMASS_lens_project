@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .compiled_context import build_compiled_context
 from .config import load_runtime_config
+from .io import WITHIN_RE_SIGMA_DEFINITION
 from .outputs import (
     append_run_log,
     create_run_layout,
@@ -115,6 +116,16 @@ def _run_with_layout(
         "sigma_table_mass_definition": (
             runtime_context.config.mass_definition.label
             if runtime_context.config.data.sigma_table_path is not None
+            else None
+        ),
+        "fp_sigma_definition": (
+            WITHIN_RE_SIGMA_DEFINITION
+            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
+            else None
+        ),
+        "fp_sigma_table_leaf_path": (
+            f"/{WITHIN_RE_SIGMA_DEFINITION}/{runtime_context.config.mass_definition.label}"
+            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
             else None
         ),
         "parallelism": runtime_context.parallelism.to_dict(),

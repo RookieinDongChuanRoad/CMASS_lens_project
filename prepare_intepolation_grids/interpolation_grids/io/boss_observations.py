@@ -23,7 +23,6 @@ from interpolation_grids.config import (
     BOSS_SUMMARY_FILENAME,
     GAMMA_GRID,
     RAW_DATA_DIRECTORY,
-    S2_DATASET_NAME,
 )
 from interpolation_grids.io.flatprior_measurement_updates import update_flatprior_measurement_attrs_in_hdf5
 from interpolation_grids.io.hdf5 import process_hdf5_file
@@ -216,7 +215,12 @@ def _write_profile_specific_attrs(group_handle: h5py.Group, row: BossSummaryRow,
 
 
 def _write_skeleton_observation_file(output_path: Path, rows: list[BossSummaryRow], profile_name: str) -> None:
-    """Create the minimal HDF5 structure that the existing processors can enrich."""
+    """Create the minimal HDF5 structure that the rebuild pipeline can enrich.
+
+    We intentionally do not pre-create a placeholder `s2_grid`. The raw HDF5
+    processor now keys off `num_sigma`, so the BOSS files should prove that the
+    scientific contract alone is sufficient to trigger sigma-grid generation.
+    """
 
     if profile_name == "devauc" and not uses_devaucouleurs_branch(output_path.name):
         raise BossObservationBuildValidationError(
@@ -229,10 +233,6 @@ def _write_skeleton_observation_file(output_path: Path, rows: list[BossSummaryRo
             _write_common_group_attrs(group, row)
             _write_profile_specific_attrs(group, row, profile_name=profile_name)
             group.create_dataset("gamma_grid", data=np.asarray(GAMMA_GRID, dtype=float))
-            # The existing HDF5 processor refreshes `s2_grid` only when the
-            # dataset already exists. A zero placeholder lets us reuse that
-            # tested code path while still building the file from scratch.
-            group.create_dataset(S2_DATASET_NAME, data=np.zeros_like(GAMMA_GRID, dtype=float))
 
 
 def build_boss_observation_hdf5_files(
