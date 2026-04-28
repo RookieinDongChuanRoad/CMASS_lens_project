@@ -122,6 +122,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory containing the old flat sigma-unit HDF5 files when using --repack-legacy-sigma-unit-hdf5.",
     )
+    parser.add_argument(
+        "--unit-convention",
+        choices=("h_units_v1", "legacy_fixed_kpc"),
+        default="h_units_v1",
+        help="Unit convention for rebuilt mass grids and sigma-unit tables.",
+    )
+    parser.add_argument(
+        "--h-ref",
+        type=float,
+        default=0.7,
+        help="Reference h used when --unit-convention h_units_v1 is selected.",
+    )
     return parser
 
 
@@ -185,6 +197,8 @@ def main() -> int:
             observation_flavors=requested_observation_flavors,
             sigma_definitions=requested_sigma_definitions,
             workers=args.workers,
+            unit_convention=args.unit_convention,
+            h_ref=args.h_ref,
         )
         for profile_name, output_path in output_paths.items():
             print(f"{profile_name}: wrote {output_path}")
@@ -239,6 +253,8 @@ def main() -> int:
             output_path=output_path,
             overwrite_in_place=args.overwrite_in_place,
             group_names=tuple(args.groups) if args.groups else None,
+            unit_convention=args.unit_convention,
+            h_ref=args.h_ref,
         )
         print(
             f"{input_path.name}: groups={summary.total_groups} "

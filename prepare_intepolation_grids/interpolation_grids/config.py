@@ -47,9 +47,16 @@ MASS_DEFINITIONS_GROUP_NAME = "mass_definitions"
 MASS_GRID_DATASET_NAME = "mass_grid"
 MASS_DERIVATIVE_DATASET_NAME = "dmass_dthetaein_grid"
 SUPPORTED_MASS_RADII_KPC = (5.0, 10.0)
+UNIT_VERSION = "cmass_dual_units_v1"
+LEGACY_FIXED_KPC = "legacy_fixed_kpc"
+H_UNITS_V1 = "h_units_v1"
 MASS_DEFINITION_LABELS = {
     5.0: "m5",
     10.0: "m10",
+}
+H_UNIT_MASS_DEFINITION_LABELS = {
+    5.0: "m5_hinvkpc",
+    10.0: "m10_hinvkpc",
 }
 
 # Aperture and seeing are expressed in arcsec first and converted per galaxy to
@@ -131,7 +138,25 @@ def mass_definition_label(radius_kpc: float) -> str:
     return MASS_DEFINITION_LABELS[float(radius_kpc)]
 
 
-def sigma_unit_units_for_radius(radius_kpc: float) -> str:
+def mass_definition_label_for_convention(radius_kpc: float, unit_convention: str = LEGACY_FIXED_KPC) -> str:
+    """
+    Return the public mass-definition label for one unit convention.
+
+    The same numeric aperture coefficient maps to different public labels:
+    `5` is `m5` in fixed-kpc legacy mode, but `m5_hinvkpc` in h-units mode.
+    Centralizing that decision keeps HDF5 writers and sigma-table builders from
+    accidentally mixing naming families.
+    """
+
+    normalized = str(unit_convention).strip()
+    if normalized == H_UNITS_V1:
+        return H_UNIT_MASS_DEFINITION_LABELS[float(radius_kpc)]
+    if normalized == LEGACY_FIXED_KPC:
+        return MASS_DEFINITION_LABELS[float(radius_kpc)]
+    raise ValueError(f"Unsupported unit_convention: {unit_convention}")
+
+
+def sigma_unit_units_for_radius(radius_kpc: float, unit_convention: str = LEGACY_FIXED_KPC) -> str:
     """Return the sigma-unit table units string for one mass definition."""
 
-    return f"km2 s-2 per 10**{mass_definition_label(radius_kpc)}"
+    return f"km2 s-2 per 10**{mass_definition_label_for_convention(radius_kpc, unit_convention)}"

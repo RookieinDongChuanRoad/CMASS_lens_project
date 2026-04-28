@@ -48,6 +48,7 @@ def log_likelihood_lenses_numba(
     gamma_grid_int: np.ndarray,
     mass_radius_kpc: float,
     gamma_mode_code: int,
+    mass_log_physical_offset: float = 0.0,
 ) -> float:
     """
     Evaluate the full sample log-likelihood in one `numba` kernel.
@@ -113,6 +114,7 @@ def log_likelihood_lenses_numba(
                 z_grid,
                 chi_kpc_grid,
                 mass_radius_kpc,
+                mass_log_physical_offset,
             )
             if theta_e <= 0.0:
                 continue

@@ -308,6 +308,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
             gamma_trunc_high=context.gamma_trunc_high,
             mass_radius_kpc=context.mass_radius_kpc,
             gamma_mode_code=context.gamma_mode_code,
+            stellar_mass_pivot=context.stellar_mass_pivot,
+            mass_log_physical_offset=context.mass_log_physical_offset,
             fp_fit_mstar_min=context.fp_fit_mstar_min,
             fp_pivot_mstar=context.fp_pivot_mstar,
             fp_gamma_axis=context.fp_gamma_axis,
@@ -343,6 +345,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
             gamma_trunc_high=context.gamma_trunc_high,
             mass_radius_kpc=context.mass_radius_kpc,
             gamma_mode_code=context.gamma_mode_code,
+            stellar_mass_pivot=context.stellar_mass_pivot,
+            mass_log_physical_offset=context.mass_log_physical_offset,
         )
         fp_summary = None
     normalization_seconds = perf_counter() - normalization_start
@@ -373,6 +377,7 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         gamma_grid_int=context.gamma_grid_int,
         mass_radius_kpc=context.mass_radius_kpc,
         gamma_mode_code=context.gamma_mode_code,
+        mass_log_physical_offset=context.mass_log_physical_offset,
     )
     likelihood_seconds = perf_counter() - likelihood_start
 

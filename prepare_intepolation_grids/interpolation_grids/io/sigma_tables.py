@@ -22,10 +22,11 @@ import h5py
 import numpy as np
 
 from interpolation_grids.config import (
+    H_UNITS_V1,
+    LEGACY_FIXED_KPC,
     OBSERVED_APERTURE_SIGMA_DEFINITION,
     OBSERVATION_FLAVOR_APERTURE_POLICIES,
     EXTERNAL_DATA_DIRECTORY,
-    MASS_DEFINITION_LABELS,
     SIGMA_UNIT_BUNDLE_FILENAMES,
     SIGMA_UNIT_BUNDLE_SCHEMA_VERSION,
     SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS,
@@ -35,17 +36,19 @@ from interpolation_grids.config import (
     SIGMA_UNIT_SCHEMA_VERSION,
     SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS,
     SIGMA_UNIT_SERSIC_N_AXIS,
-    SIGMA_UNIT_UNITS,
     SIGMA_UNIT_ZD_AXIS,
     SIGMA_BUNDLE_GROUP_NAMES,
     SUPPORTED_SIGMA_DEFINITIONS,
     SUPPORTED_MASS_RADII_KPC,
     SUPPORTED_OBSERVATION_FLAVORS,
+    UNIT_VERSION,
     WITHIN_RE_SIGMA_DEFINITION,
+    mass_definition_label_for_convention,
     sigma_unit_units_for_radius,
 )
 from interpolation_grids.models import AperturePolicy, SigmaUnitTable
 from interpolation_grids.physics.jeans import compute_sigma_unit_grid
+from interpolation_grids.unit_conventions import Sunit_hinv_from_fixed_kpc
 
 
 def _normalize_profile_names(profiles: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
@@ -108,6 +111,80 @@ def _normalize_mass_radii(mass_radii_kpc: tuple[float, ...] | list[float] | None
         if normalized_radius not in normalized_radii:
             normalized_radii.append(normalized_radius)
     return tuple(normalized_radii)
+
+
+def _normalize_unit_convention(unit_convention: str) -> str:
+    """Validate the requested sigma-table unit convention."""
+
+    normalized = str(unit_convention).strip()
+    if normalized not in {LEGACY_FIXED_KPC, H_UNITS_V1}:
+        raise ValueError(
+            f"Unsupported unit_convention: {unit_convention}. "
+            f"Expected '{LEGACY_FIXED_KPC}' or '{H_UNITS_V1}'."
+        )
+    return normalized
+
+
+def _validate_h_ref(h_ref: float) -> float:
+    """Return a positive finite reference `h` for h-dependent products."""
+
+    normalized = float(h_ref)
+    if not np.isfinite(normalized) or normalized <= 0.0:
+        raise ValueError(f"h_ref must be a positive finite value, got {h_ref!r}.")
+    return normalized
+
+
+def _default_log_re_axis_for_unit_convention(
+    base_axis: np.ndarray,
+    *,
+    unit_convention: str,
+    h_ref: float,
+) -> np.ndarray:
+    """
+    Return the stored size axis for the selected convention.
+
+    Legacy tables store `log10[Re/kpc]`. h-units tables store
+    `log10[Re/(h^-1 kpc)]`, which is shifted by `log10(h_ref)` for the same
+    physical radii.
+    """
+
+    axis = np.asarray(base_axis, dtype=float)
+    if unit_convention == H_UNITS_V1:
+        return axis + np.log10(float(h_ref))
+    return axis
+
+
+def _physical_log_re_axis_for_jeans(
+    stored_log_re_axis: np.ndarray,
+    *,
+    unit_convention: str,
+    h_ref: float,
+) -> np.ndarray:
+    """Convert the stored size axis into physical `log10(kpc)` for Jeans solves."""
+
+    axis = np.asarray(stored_log_re_axis, dtype=float)
+    if unit_convention == H_UNITS_V1:
+        return axis - np.log10(float(h_ref))
+    return axis
+
+
+def _convert_sigma_values_for_unit_convention(
+    values: np.ndarray,
+    gamma_axis: np.ndarray,
+    *,
+    unit_convention: str,
+    h_ref: float,
+) -> np.ndarray:
+    """Convert legacy fixed-kpc sigma-unit values into the requested convention."""
+
+    if unit_convention == H_UNITS_V1:
+        gamma = np.asarray(gamma_axis, dtype=float)
+        return Sunit_hinv_from_fixed_kpc(
+            np.asarray(values, dtype=float),
+            gamma[(slice(None),) + (None,) * (np.asarray(values).ndim - 1)],
+            h_ref=h_ref,
+        )
+    return np.asarray(values, dtype=float)
 
 
 def _normalize_observation_flavors(
@@ -178,7 +255,10 @@ def _rescale_sigma_unit_table(
     scaled_values = np.asarray(table.values, dtype=float) * scaling[(slice(None),) + (None,) * (np.asarray(table.values).ndim - 1)]
     return replace(
         table,
-        mass_definition_label=MASS_DEFINITION_LABELS[target_mass_radius_kpc],
+        mass_definition_label=mass_definition_label_for_convention(
+            target_mass_radius_kpc,
+            table.unit_convention,
+        ),
         mass_radius_kpc=target_mass_radius_kpc,
         values=scaled_values,
     )
@@ -454,6 +534,8 @@ def build_sigma_unit_table(
     observation_flavor: str = "slit",
     aperture_policy: AperturePolicy | None = None,
     sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> SigmaUnitTable:
     """Build one in-memory sigma-unit table by direct Jeans evaluation.
 
@@ -465,6 +547,8 @@ def build_sigma_unit_table(
     normalized_profile = profile_name.strip().lower()
     normalized_observation_flavor = observation_flavor.strip().lower()
     normalized_sigma_definition = sigma_definition.strip().lower()
+    normalized_unit_convention = _normalize_unit_convention(unit_convention)
+    h_ref = _validate_h_ref(h_ref)
     gamma_axis = np.asarray(SIGMA_UNIT_GAMMA_AXIS if gamma_axis is None else gamma_axis, dtype=float)
     workers = _resolve_worker_count(workers)
     resolved_aperture_policy = (
@@ -477,22 +561,41 @@ def build_sigma_unit_table(
     if normalized_sigma_definition == WITHIN_RE_SIGMA_DEFINITION:
         if normalized_profile == "devauc":
             log_re_axis = np.asarray(
-                SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS if log_re_kpc_axis is None else log_re_kpc_axis,
+                _default_log_re_axis_for_unit_convention(
+                    SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
+                )
+                if log_re_kpc_axis is None
+                else log_re_kpc_axis,
                 dtype=float,
             )
             values = _build_devauc_within_re_values(
                 gamma_axis=gamma_axis,
-                log_re_axis=log_re_axis,
+                log_re_axis=_physical_log_re_axis_for_jeans(
+                    log_re_axis,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
+                ),
                 workers=workers,
             )
+            scaled_values = values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None]
             return SigmaUnitTable(
                 profile_name=normalized_profile,
-                mass_definition_label=MASS_DEFINITION_LABELS[float(mass_radius_kpc)],
+                mass_definition_label=mass_definition_label_for_convention(
+                    mass_radius_kpc,
+                    normalized_unit_convention,
+                ),
                 mass_radius_kpc=float(mass_radius_kpc),
                 gamma_axis=gamma_axis,
                 zd_axis=None,
                 log_re_kpc_axis=log_re_axis,
-                values=values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None],
+                values=_convert_sigma_values_for_unit_convention(
+                    scaled_values,
+                    gamma_axis,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
+                ),
                 sigma_definition=normalized_sigma_definition,
                 bundle_group_name=WITHIN_RE_SIGMA_DEFINITION,
                 observation_flavor=None,
@@ -501,29 +604,50 @@ def build_sigma_unit_table(
                 aperture_height_arcsec=None,
                 aperture_radius_arcsec=None,
                 seeing_fwhm_arcsec=None,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
             )
 
         if normalized_profile == "sersic":
             log_re_axis = np.asarray(
-                SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS if log_re_kpc_axis is None else log_re_kpc_axis,
+                _default_log_re_axis_for_unit_convention(
+                    SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
+                )
+                if log_re_kpc_axis is None
+                else log_re_kpc_axis,
                 dtype=float,
             )
             n_axis = np.asarray(SIGMA_UNIT_SERSIC_N_AXIS if n_axis is None else n_axis, dtype=float)
             values = _build_sersic_within_re_values(
                 gamma_axis=gamma_axis,
-                log_re_axis=log_re_axis,
+                log_re_axis=_physical_log_re_axis_for_jeans(
+                    log_re_axis,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
+                ),
                 n_axis=n_axis,
                 workers=workers,
             )
+            scaled_values = values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None]
             return SigmaUnitTable(
                 profile_name=normalized_profile,
-                mass_definition_label=MASS_DEFINITION_LABELS[float(mass_radius_kpc)],
+                mass_definition_label=mass_definition_label_for_convention(
+                    mass_radius_kpc,
+                    normalized_unit_convention,
+                ),
                 mass_radius_kpc=float(mass_radius_kpc),
                 gamma_axis=gamma_axis,
                 zd_axis=None,
                 log_re_kpc_axis=log_re_axis,
                 n_axis=n_axis,
-                values=values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None],
+                values=_convert_sigma_values_for_unit_convention(
+                    scaled_values,
+                    gamma_axis,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
+                ),
                 sigma_definition=normalized_sigma_definition,
                 bundle_group_name=WITHIN_RE_SIGMA_DEFINITION,
                 observation_flavor=None,
@@ -532,6 +656,8 @@ def build_sigma_unit_table(
                 aperture_height_arcsec=None,
                 aperture_radius_arcsec=None,
                 seeing_fwhm_arcsec=None,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
             )
 
         raise ValueError(f"Unsupported sigma-unit table profile: {profile_name}")
@@ -540,24 +666,43 @@ def build_sigma_unit_table(
 
     if normalized_profile == "devauc":
         log_re_axis = np.asarray(
-            SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS if log_re_kpc_axis is None else log_re_kpc_axis,
+            _default_log_re_axis_for_unit_convention(
+                SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
+            )
+            if log_re_kpc_axis is None
+            else log_re_kpc_axis,
             dtype=float,
         )
         values = _build_devauc_values(
             gamma_axis=gamma_axis,
             zd_axis=zd_axis,
-            log_re_axis=log_re_axis,
+            log_re_axis=_physical_log_re_axis_for_jeans(
+                log_re_axis,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
+            ),
             workers=workers,
             aperture_policy=resolved_aperture_policy,
         )
+        scaled_values = values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None]
         return SigmaUnitTable(
             profile_name=normalized_profile,
-            mass_definition_label=MASS_DEFINITION_LABELS[float(mass_radius_kpc)],
+            mass_definition_label=mass_definition_label_for_convention(
+                mass_radius_kpc,
+                normalized_unit_convention,
+            ),
             mass_radius_kpc=float(mass_radius_kpc),
             gamma_axis=gamma_axis,
             zd_axis=zd_axis,
             log_re_kpc_axis=log_re_axis,
-            values=values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None],
+            values=_convert_sigma_values_for_unit_convention(
+                scaled_values,
+                gamma_axis,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
+            ),
             sigma_definition=normalized_sigma_definition,
             bundle_group_name=normalized_observation_flavor,
             observation_flavor=normalized_observation_flavor,
@@ -566,31 +711,52 @@ def build_sigma_unit_table(
             aperture_height_arcsec=resolved_aperture_policy.height_arcsec,
             aperture_radius_arcsec=resolved_aperture_policy.radius_arcsec,
             seeing_fwhm_arcsec=resolved_aperture_policy.seeing_fwhm_arcsec,
+            unit_convention=normalized_unit_convention,
+            h_ref=h_ref,
         )
 
     if normalized_profile == "sersic":
         log_re_axis = np.asarray(
-            SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS if log_re_kpc_axis is None else log_re_kpc_axis,
+            _default_log_re_axis_for_unit_convention(
+                SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
+            )
+            if log_re_kpc_axis is None
+            else log_re_kpc_axis,
             dtype=float,
         )
         n_axis = np.asarray(SIGMA_UNIT_SERSIC_N_AXIS if n_axis is None else n_axis, dtype=float)
         values = _build_sersic_values(
             gamma_axis=gamma_axis,
             zd_axis=zd_axis,
-            log_re_axis=log_re_axis,
+            log_re_axis=_physical_log_re_axis_for_jeans(
+                log_re_axis,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
+            ),
             n_axis=n_axis,
             workers=workers,
             aperture_policy=resolved_aperture_policy,
         )
+        scaled_values = values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None, None]
         return SigmaUnitTable(
             profile_name=normalized_profile,
-            mass_definition_label=MASS_DEFINITION_LABELS[float(mass_radius_kpc)],
+            mass_definition_label=mass_definition_label_for_convention(
+                mass_radius_kpc,
+                normalized_unit_convention,
+            ),
             mass_radius_kpc=float(mass_radius_kpc),
             gamma_axis=gamma_axis,
             zd_axis=zd_axis,
             log_re_kpc_axis=log_re_axis,
             n_axis=n_axis,
-            values=values * np.power(5.0 / float(mass_radius_kpc), 3.0 - gamma_axis)[:, None, None, None],
+            values=_convert_sigma_values_for_unit_convention(
+                scaled_values,
+                gamma_axis,
+                unit_convention=normalized_unit_convention,
+                h_ref=h_ref,
+            ),
             sigma_definition=normalized_sigma_definition,
             bundle_group_name=normalized_observation_flavor,
             observation_flavor=normalized_observation_flavor,
@@ -599,6 +765,8 @@ def build_sigma_unit_table(
             aperture_height_arcsec=resolved_aperture_policy.height_arcsec,
             aperture_radius_arcsec=resolved_aperture_policy.radius_arcsec,
             seeing_fwhm_arcsec=resolved_aperture_policy.seeing_fwhm_arcsec,
+            unit_convention=normalized_unit_convention,
+            h_ref=h_ref,
         )
 
     raise ValueError(f"Unsupported sigma-unit table profile: {profile_name}")
@@ -622,9 +790,16 @@ def write_sigma_unit_table_hdf5(table: SigmaUnitTable, output_path: Path | str) 
         with h5py.File(working_path, "w") as handle:
             handle.attrs["schema_version"] = SIGMA_UNIT_SCHEMA_VERSION
             handle.attrs["quantity_name"] = SIGMA_UNIT_QUANTITY_NAME
+            handle.attrs["unit_version"] = UNIT_VERSION
+            handle.attrs["unit_convention"] = table.unit_convention
+            handle.attrs["h_ref"] = float(table.h_ref)
             handle.attrs["mass_definition_label"] = table.mass_definition_label
             handle.attrs["mass_radius_kpc"] = table.mass_radius_kpc
-            handle.attrs["units"] = sigma_unit_units_for_radius(table.mass_radius_kpc)
+            handle.attrs["units"] = sigma_unit_units_for_radius(table.mass_radius_kpc, table.unit_convention)
+            handle.attrs["stellar_mass_unit"] = "h^-2 Msun" if table.unit_convention == H_UNITS_V1 else "Msun"
+            handle.attrs["size_unit"] = "h^-1 kpc" if table.unit_convention == H_UNITS_V1 else "kpc"
+            handle.attrs["mass_unit"] = "h^-1 Msun" if table.unit_convention == H_UNITS_V1 else "Msun"
+            handle.attrs["mass_aperture_unit"] = "h^-1 kpc" if table.unit_convention == H_UNITS_V1 else "kpc"
             handle.attrs["sigma_definition"] = table.sigma_definition
             if table.observation_flavor is not None:
                 handle.attrs["observation_flavor"] = table.observation_flavor
@@ -661,9 +836,16 @@ def write_sigma_unit_table_hdf5(table: SigmaUnitTable, output_path: Path | str) 
 def _write_table_datasets(group_handle: h5py.Group, table: SigmaUnitTable) -> None:
     """Write one sigma-unit table payload into an existing HDF5 group."""
 
+    group_handle.attrs["unit_version"] = UNIT_VERSION
+    group_handle.attrs["unit_convention"] = table.unit_convention
+    group_handle.attrs["h_ref"] = float(table.h_ref)
     group_handle.attrs["mass_definition_label"] = table.mass_definition_label
     group_handle.attrs["mass_radius_kpc"] = table.mass_radius_kpc
-    group_handle.attrs["units"] = sigma_unit_units_for_radius(table.mass_radius_kpc)
+    group_handle.attrs["units"] = sigma_unit_units_for_radius(table.mass_radius_kpc, table.unit_convention)
+    group_handle.attrs["stellar_mass_unit"] = "h^-2 Msun" if table.unit_convention == H_UNITS_V1 else "Msun"
+    group_handle.attrs["size_unit"] = "h^-1 kpc" if table.unit_convention == H_UNITS_V1 else "kpc"
+    group_handle.attrs["mass_unit"] = "h^-1 Msun" if table.unit_convention == H_UNITS_V1 else "Msun"
+    group_handle.attrs["mass_aperture_unit"] = "h^-1 kpc" if table.unit_convention == H_UNITS_V1 else "kpc"
     group_handle.attrs["sigma_definition"] = table.sigma_definition
     if table.observation_flavor is not None:
         group_handle.attrs["observation_flavor"] = table.observation_flavor
@@ -717,14 +899,33 @@ def write_sigma_unit_bundle_hdf5(
             if len(profile_names) != 1:
                 raise ValueError("Sigma bundle writer expects all leaves to share the same profile name.")
             profile_name = next(iter(profile_names))
+            unit_conventions = {table.unit_convention for table in tables.values()}
+            if len(unit_conventions) != 1:
+                raise ValueError("Sigma bundle writer expects all leaves to share one unit convention.")
+            unit_convention = next(iter(unit_conventions))
+            h_refs = {float(table.h_ref) for table in tables.values()}
+            if len(h_refs) != 1:
+                raise ValueError("Sigma bundle writer expects all leaves to share one h_ref.")
+            h_ref = next(iter(h_refs))
 
             handle.attrs["schema_version"] = SIGMA_UNIT_BUNDLE_SCHEMA_VERSION
             handle.attrs["quantity_name"] = SIGMA_UNIT_QUANTITY_NAME
+            handle.attrs["unit_version"] = UNIT_VERSION
+            handle.attrs["unit_convention"] = unit_convention
+            handle.attrs["h_ref"] = h_ref
             if "profile_name" in handle:
                 del handle["profile_name"]
             handle.create_dataset("profile_name", data=np.bytes_(profile_name))
+            opposite_convention = H_UNITS_V1 if unit_convention == LEGACY_FIXED_KPC else LEGACY_FIXED_KPC
+            stale_labels = {
+                mass_definition_label_for_convention(radius, opposite_convention)
+                for radius in SUPPORTED_MASS_RADII_KPC
+            }
             for group_name in SIGMA_BUNDLE_GROUP_NAMES:
-                handle.require_group(group_name)
+                bundle_group = handle.require_group(group_name)
+                for stale_label in stale_labels:
+                    if stale_label in bundle_group:
+                        del bundle_group[stale_label]
 
             for (group_name, mass_definition_label), table in tables.items():
                 bundle_group = handle.require_group(group_name)
@@ -861,6 +1062,8 @@ def build_default_sigma_unit_hdf5_tables(
     sigma_definitions: tuple[str, ...] | list[str] | None = None,
     mass_radii_kpc: tuple[float, ...] | list[float] | None = None,
     workers: int | None = None,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> dict[str, Path]:
     """Build and write the canonical per-profile sigma bundle HDF5 files."""
 
@@ -870,6 +1073,8 @@ def build_default_sigma_unit_hdf5_tables(
     normalized_observation_flavors = _normalize_observation_flavors(observation_flavors)
     normalized_sigma_definitions = _normalize_sigma_definitions(sigma_definitions)
     normalized_mass_radii = _normalize_mass_radii(mass_radii_kpc)
+    normalized_unit_convention = _normalize_unit_convention(unit_convention)
+    h_ref = _validate_h_ref(h_ref)
     output_paths: dict[str, Path] = {}
 
     for normalized_profile in normalized_profiles:
@@ -886,6 +1091,8 @@ def build_default_sigma_unit_hdf5_tables(
                     n_axis=None if normalized_profile == "devauc" else sersic_n_axis,
                     workers=workers,
                     sigma_definition=WITHIN_RE_SIGMA_DEFINITION,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
                 )
                 for mass_radius_kpc in normalized_mass_radii:
                     table = (
@@ -913,6 +1120,8 @@ def build_default_sigma_unit_hdf5_tables(
                     observation_flavor=normalized_observation_flavor,
                     aperture_policy=_aperture_policy_for_observation_flavor(normalized_observation_flavor),
                     sigma_definition=OBSERVED_APERTURE_SIGMA_DEFINITION,
+                    unit_convention=normalized_unit_convention,
+                    h_ref=h_ref,
                 )
                 for mass_radius_kpc in normalized_mass_radii:
                     table = (

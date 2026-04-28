@@ -19,6 +19,7 @@ from interpolation_grids.config import (
     DEFAULT_PRODUCTION_APERTURE_POLICY,
     DERIVATIVE_DATASET_NAME,
     GAMMA_DATASET_NAME,
+    H_UNITS_V1,
     S2_DATASET_NAME,
 )
 from interpolation_grids.io.hdf5 import process_hdf5_file, resolve_group_aperture_policy
@@ -121,6 +122,53 @@ def test_process_hdf5_file_writes_updated_grids_without_mutating_input(tmp_path:
         assert "s2_grid" in handle["needs_s2"]["mass_definitions"]["m10"]
         assert "s2_grid" not in handle["no_sigma"]["mass_definitions"]["m5"]
         assert "s2_grid" not in handle["no_sigma"]["mass_definitions"]["m10"]
+
+
+def test_process_hdf5_file_can_write_h_unit_mass_definitions_and_metadata(tmp_path: Path) -> None:
+    """h-units rebuilds should write only h-unit mass groups and explicit metadata."""
+
+    input_path = tmp_path / "input_h_units.hdf5"
+    output_path = tmp_path / "output_h_units.hdf5"
+    _create_sample_input(input_path)
+    with h5py.File(input_path, "r+") as handle:
+        group = handle["no_sigma"]
+        group.attrs["logmchab"] = 11.4
+        group.attrs["logmchab_deV"] = 11.5
+        group.attrs["reff_deV"] = 0.8
+        stale_mass_root = group.require_group("mass_definitions")
+        stale_mass_root.create_group("m5")
+        stale_mass_root.create_group("m10")
+
+    summary = process_hdf5_file(
+        input_path=input_path,
+        output_path=output_path,
+        overwrite_in_place=False,
+        group_names=("no_sigma",),
+        unit_convention=H_UNITS_V1,
+        h_ref=0.7,
+    )
+
+    assert summary.total_groups == 1
+    assert summary.updated_m5 == 1
+    assert summary.updated_dm5 == 1
+    assert summary.updated_s2 == 0
+    assert not summary.failures
+
+    with h5py.File(output_path, "r") as handle:
+        assert handle.attrs["unit_convention"] == H_UNITS_V1
+        group = handle["no_sigma"]
+        assert group.attrs["unit_convention"] == H_UNITS_V1
+        np.testing.assert_allclose(group.attrs["logmchab_h2"], 11.4 + 2.0 * np.log10(0.7))
+        assert "log10_re_hinv_kpc" in group.attrs
+        assert "log10_reff_deV_hinv_kpc" in group.attrs
+        assert set(group["mass_definitions"].keys()) == {"m5_hinvkpc", "m10_hinvkpc"}
+        m5_group = group["mass_definitions"]["m5_hinvkpc"]
+        assert m5_group.attrs["unit_convention"] == H_UNITS_V1
+        assert m5_group.attrs["mass_h_power"] == -1
+        assert m5_group.attrs["aperture_h_power"] == -1
+        assert m5_group.attrs["units"] == "km2 s-2 per 10**m5_hinvkpc"
+        assert "mass_grid" in m5_group
+        assert "dmass_dthetaein_grid" in m5_group
 
 
 def test_process_hdf5_file_can_limit_work_to_selected_groups(tmp_path: Path) -> None:

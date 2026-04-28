@@ -15,6 +15,7 @@ from interpolation_grids.reference_formulas import (
     legacy_dm5_dthetaein_grid,
     legacy_m5_grid,
 )
+from interpolation_grids.unit_conventions import H_UNITS_V1, LEGACY_FIXED_KPC
 
 
 def convert_log_enclosed_mass(
@@ -36,6 +37,9 @@ def compute_mass_grid(
     sigma_crit: float,
     rein_kpc: float,
     mass_radius_kpc: float,
+    *,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> np.ndarray:
     """
     Compute the enclosed-mass grid for an arbitrary supported radius.
@@ -44,7 +48,33 @@ def compute_mass_grid(
     are derived from that exact reference grid using the analytic power-law
     conversion so we preserve historical behavior while avoiding duplicate
     numerical implementations.
+
+    Under `h_units_v1`, `mass_radius_kpc` is the coefficient in
+    `R h^-1 kpc`, not a physical kpc aperture. The direct formula uses
+    `Sigma_c/h_ref` and `r_ein*h_ref` so the stored mass grid is natively
+    `log10[M(<R h^-1 kpc)/(h^-1 Msun)]`.
     """
+
+    normalized_convention = str(unit_convention).strip()
+    if normalized_convention == H_UNITS_V1:
+        h_value = float(h_ref)
+        if not math.isfinite(h_value) or h_value <= 0.0:
+            raise ValueError(f"h_ref must be a positive finite value, got {h_ref!r}.")
+        gamma_array = np.asarray(gamma_grid, dtype=float)
+        return np.asarray(
+            np.log10(
+                math.pi
+                * (float(sigma_crit) / h_value)
+                * np.power(float(rein_kpc) * h_value, gamma_array - 1.0)
+                * np.power(float(mass_radius_kpc), 3.0 - gamma_array)
+            ),
+            dtype=float,
+        )
+    if normalized_convention != LEGACY_FIXED_KPC:
+        raise ValueError(
+            "Unsupported unit_convention for mass-grid generation: "
+            f"{unit_convention!r}. Expected '{LEGACY_FIXED_KPC}' or '{H_UNITS_V1}'."
+        )
 
     m5_grid = legacy_m5_grid(
         gamma_grid=gamma_grid,

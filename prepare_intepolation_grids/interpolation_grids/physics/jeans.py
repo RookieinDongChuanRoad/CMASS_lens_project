@@ -25,10 +25,13 @@ from spherical_jeans.mass_profiles import powerlaw
 from interpolation_grids.config import (
     DEFAULT_RADIAL_GRID_SIZE,
     DEFAULT_PRODUCTION_APERTURE_POLICY,
+    H_UNITS_V1,
+    LEGACY_FIXED_KPC,
     OBSERVED_APERTURE_SIGMA_DEFINITION,
     WITHIN_RE_SIGMA_DEFINITION,
 )
 from interpolation_grids.models import AperturePolicy, GalaxyInputs
+from interpolation_grids.unit_conventions import Sunit_hinv_from_fixed_kpc
 
 
 COSMOLOGY = FlatLambdaCDM(H0=70, Om0=0.3)
@@ -187,6 +190,8 @@ def compute_sigma_unit(
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
     sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> float:
     """Evaluate the unit-mass Jeans response for one physical lens coordinate.
 
@@ -221,7 +226,12 @@ def compute_sigma_unit(
         tracer_profile=tracer_profile,
         radial_grid=radial_grid,
     )
-    return float(values[0] * _sigma_unit_mass_scale_factor(np.asarray([gamma], dtype=float), mass_radius_kpc)[0])
+    legacy_value = values[0] * _sigma_unit_mass_scale_factor(np.asarray([gamma], dtype=float), mass_radius_kpc)[0]
+    if str(unit_convention).strip() == H_UNITS_V1:
+        return float(Sunit_hinv_from_fixed_kpc(legacy_value, gamma, h_ref=h_ref))
+    if str(unit_convention).strip() != LEGACY_FIXED_KPC:
+        raise ValueError(f"Unsupported unit_convention for sigma-unit calculation: {unit_convention}")
+    return float(legacy_value)
 
 
 def compute_sigma_unit_grid(
@@ -233,6 +243,8 @@ def compute_sigma_unit_grid(
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
     sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> np.ndarray:
     """Evaluate `S_unit` over one gamma axis for fixed non-gamma lens inputs."""
 
@@ -255,7 +267,13 @@ def compute_sigma_unit_grid(
         tracer_profile=tracer_profile,
         radial_grid=radial_grid,
     )
-    return base_values * _sigma_unit_mass_scale_factor(np.asarray(gamma_grid, dtype=float), mass_radius_kpc)
+    legacy_values = base_values * _sigma_unit_mass_scale_factor(np.asarray(gamma_grid, dtype=float), mass_radius_kpc)
+    normalized_convention = str(unit_convention).strip()
+    if normalized_convention == H_UNITS_V1:
+        return Sunit_hinv_from_fixed_kpc(legacy_values, np.asarray(gamma_grid, dtype=float), h_ref=h_ref)
+    if normalized_convention != LEGACY_FIXED_KPC:
+        raise ValueError(f"Unsupported unit_convention for sigma-unit grid calculation: {unit_convention}")
+    return legacy_values
 
 
 def compute_s2_grid(
@@ -263,6 +281,8 @@ def compute_s2_grid(
     gamma_grid: np.ndarray,
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> np.ndarray:
     """Compute the per-galaxy `s2_grid` for the requested mass definition.
 
@@ -294,6 +314,8 @@ def compute_s2_grid(
             re_kpc=galaxy.reff_dev_arcsec * physical_kpc_per_arcsec,
             mass_radius_kpc=mass_radius_kpc,
             aperture_policy=aperture_policy,
+            unit_convention=unit_convention,
+            h_ref=h_ref,
         )
     else:
         if galaxy.re_arcsec is None or galaxy.nser is None:
@@ -306,4 +328,6 @@ def compute_s2_grid(
             n_value=galaxy.nser,
             mass_radius_kpc=mass_radius_kpc,
             aperture_policy=aperture_policy,
+            unit_convention=unit_convention,
+            h_ref=h_ref,
         )

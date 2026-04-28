@@ -11,7 +11,13 @@ from pathlib import Path
 
 import yaml
 
-from .mass_definition import get_mass_definition
+from .mass_definition import (
+    H_UNITS_V1,
+    LEGACY_FIXED_KPC,
+    get_mass_definition,
+    validate_h_ref,
+    validate_unit_convention,
+)
 from .parameter_schema import GammaModelConfig, build_parameter_schema, default_public_box_prior
 from .types import (
     CosmologyConfig,
@@ -116,6 +122,55 @@ def _load_box_prior_section(
     return _require_section(raw_data, "box_prior")
 
 
+def _resolve_unit_convention(raw_data: dict, mass_definition_raw: dict) -> str:
+    """
+    Resolve the run's unit convention from top-level config and legacy shape.
+
+    New source configs should set `unit_convention` explicitly. The fallback is
+    intentionally conservative for existing project fixtures and historical
+    configs: if an old config only declares `enclosed_radius_kpc`, it is treated
+    as `legacy_fixed_kpc` instead of silently reinterpreting the same number as
+    an h-dependent aperture.
+    """
+
+    if "unit_convention" in raw_data:
+        return validate_unit_convention(raw_data["unit_convention"])
+    if "enclosed_radius_kpc" in mass_definition_raw:
+        return LEGACY_FIXED_KPC
+    return H_UNITS_V1
+
+
+def _load_mass_definition(mass_definition_raw: dict, unit_convention: str):
+    """
+    Load the convention-aware mass definition from the public YAML surface.
+
+    The key names are part of the data contract:
+    - h-units runs use `aperture_hinv_kpc` because `5` means `5 h^-1 kpc`
+    - legacy runs use `enclosed_radius_kpc` because `5` means fixed physical kpc
+    """
+
+    if unit_convention == H_UNITS_V1:
+        if "aperture_hinv_kpc" not in mass_definition_raw:
+            raise KeyError(
+                "h_units_v1 requires mass_definition.aperture_hinv_kpc "
+                "with value 5 or 10."
+            )
+        return get_mass_definition(
+            mass_definition_raw["aperture_hinv_kpc"],
+            unit_convention=H_UNITS_V1,
+        )
+
+    if "enclosed_radius_kpc" not in mass_definition_raw:
+        raise KeyError(
+            "legacy_fixed_kpc requires mass_definition.enclosed_radius_kpc "
+            "with value 5 or 10."
+        )
+    return get_mass_definition(
+        mass_definition_raw["enclosed_radius_kpc"],
+        unit_convention=LEGACY_FIXED_KPC,
+    )
+
+
 def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     """
     Load, validate, and normalize the project YAML configuration.
@@ -139,7 +194,11 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     cosmology_raw = _require_section(raw_data, "cosmology")
     runtime_raw = _require_section(raw_data, "runtime")
     output_raw = _require_section(raw_data, "output")
-    mass_definition = get_mass_definition(mass_definition_raw["enclosed_radius_kpc"])
+    unit_convention = _resolve_unit_convention(raw_data, mass_definition_raw)
+    mass_definition = _load_mass_definition(
+        mass_definition_raw=mass_definition_raw,
+        unit_convention=unit_convention,
+    )
     gamma_model = _load_gamma_model_section(path, raw_data)
     box_prior_raw = _load_box_prior_section(
         path,
@@ -173,7 +232,11 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
         label="Initial center",
     )
 
+    h_ref = validate_h_ref(float(cosmology_raw["h0"]) / 100.0)
+
     return RuntimeConfig(
+        unit_convention=unit_convention,
+        h_ref=h_ref,
         profile=ProfileConfig(name=str(profile_raw["name"])),
         mass_definition=mass_definition,
         gamma_model=gamma_model,

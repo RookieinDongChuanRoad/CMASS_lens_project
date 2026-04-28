@@ -20,6 +20,7 @@ from .io import (
     load_observations,
     load_sigma_unit_table,
 )
+from .mass_definition import H_UNITS_V1
 from .profiles import build_profile_spec
 from .types import CompiledModelContext, RandomBasis, RuntimeConfig
 
@@ -61,6 +62,7 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         runtime_config.data.observation_path,
         profile,
         runtime_config.mass_definition,
+        h_ref=runtime_config.h_ref,
     )
     cross_section_grid = load_cross_section_grid(runtime_config.data.cross_section_path)
     sigma_table = None
@@ -75,6 +77,7 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
             profile,
             runtime_config.mass_definition,
             bundle_group=WITHIN_RE_SIGMA_DEFINITION,
+            h_ref=runtime_config.h_ref,
         )
     cosmology = FlatLambdaCDM(
         h0=runtime_config.cosmology.h0,
@@ -148,10 +151,17 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
                 right=float(observation.s2_grid_17[-1]),
             )
 
-        re_logkpc[lens_index] = _effective_radius_log10_kpc(
-            observation.effective_radius_arcsec,
-            observation.z_d,
-            cosmology,
+        # h-units observation files store the size coordinate directly as
+        # `log10[Re/(h^-1 kpc)]`. Legacy files still store angular sizes, so
+        # they are converted with the active cosmology as before.
+        re_logkpc[lens_index] = (
+            _effective_radius_log10_kpc(
+                observation.effective_radius_arcsec,
+                observation.z_d,
+                cosmology,
+            )
+            if observation.log_effective_radius_obs is None
+            else float(observation.log_effective_radius_obs)
         )
         lo = observation.log_stellar_mass_obs - 5.0 * observation.log_stellar_mass_err
         hi = observation.log_stellar_mass_obs + 5.0 * observation.log_stellar_mass_err
@@ -160,6 +170,19 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
     sqrt2 = math.sqrt(2.0)
     sqrt2pi = math.sqrt(2.0 * math.pi)
     p_zd_fixed = np.exp(-0.5 * ((zd - 0.558) / 0.085) ** 2) / (0.085 * sqrt2pi)
+
+    log10_h_ref = math.log10(runtime_config.h_ref)
+    if runtime_config.unit_convention == H_UNITS_V1:
+        # Move all population constants into the same h-dependent coordinate
+        # system as the latent variables. Only offsets move; slopes and
+        # scatters remain invariant under a deterministic axis translation.
+        stellar_mass_pivot = 11.4 + 2.0 * log10_h_ref
+        mass_function_loc = profile.mass_function_loc + 2.0 * log10_h_ref
+        mu_r0 = profile.mu_r0 + log10_h_ref
+    else:
+        stellar_mass_pivot = 11.4
+        mass_function_loc = profile.mass_function_loc
+        mu_r0 = profile.mu_r0
 
     mstar_shift11p4 = np.zeros((n_lens, n_mstar), dtype=np.float64)
     sigma_star_shift9p0_grid = np.zeros((n_lens, n_mstar), dtype=np.float64)
@@ -174,15 +197,15 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         n_value = profile.fixed_n if profile.fixed_n is not None else max(observation.n_observed, 1.0e-8)
         for mstar_index in range(n_mstar):
             mstar = mstar_grid[lens_index, mstar_index]
-            shift = mstar - 11.4
-            mu_r_value = profile.mu_r0 + profile.beta_r * shift
+            shift = mstar - stellar_mass_pivot
+            mu_r_value = mu_r0 + profile.beta_r * shift
             if profile.nu_r is not None:
                 mu_r_value += profile.nu_r * (math.log10(max(n_value, 1.0e-12)) - math.log10(4.0))
             delta_r = re_logkpc[lens_index] - mu_r_value
 
             p_mobs = np.exp(-0.5 * ((observation.log_stellar_mass_obs - mstar) / observation.log_stellar_mass_err) ** 2)
             p_mobs /= observation.log_stellar_mass_err * sqrt2pi
-            t = (mstar - profile.mass_function_loc) / profile.mass_function_scale
+            t = (mstar - mass_function_loc) / profile.mass_function_scale
             p_s = 2.0 * np.exp(-0.5 * t * t) / sqrt2pi
             p_s *= 0.5 * (1.0 + math.erf(profile.mass_function_alpha * t / sqrt2))
             p_s /= profile.mass_function_scale
@@ -246,20 +269,22 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         p_zd_fixed=np.ascontiguousarray(p_zd_fixed, dtype=np.float64),
         mstar_grid=np.ascontiguousarray(mstar_grid, dtype=np.float64),
         mstar_shift11p4=np.ascontiguousarray(mstar_shift11p4, dtype=np.float64),
+        stellar_mass_pivot=float(stellar_mass_pivot),
         sigma_star_shift9p0_grid=np.ascontiguousarray(sigma_star_shift9p0_grid, dtype=np.float64),
         mstar_integrand_base=np.ascontiguousarray(mstar_integrand_base, dtype=np.float64),
         delta_r_grid=np.ascontiguousarray(delta_r_grid, dtype=np.float64),
         base_normals=random_basis.base_normals,
-        mass_radius_kpc=float(runtime_config.mass_definition.radius_kpc),
+        mass_radius_kpc=float(runtime_config.mass_definition.physical_radius_kpc(runtime_config.h_ref)),
+        mass_log_physical_offset=float(runtime_config.mass_definition.log_mass_physical_offset(runtime_config.h_ref)),
         use_sersic_index=1 if profile.uses_observed_n_in_likelihood else 0,
         n_fixed=profile.fixed_n if profile.fixed_n is not None else 4.0,
         mu_n0=profile.mu_n0 if profile.mu_n0 is not None else 0.0,
         beta_n=profile.beta_n if profile.beta_n is not None else 0.0,
         sigma_n=profile.sigma_n if profile.sigma_n is not None else 0.0,
-        mass_function_loc=profile.mass_function_loc,
+        mass_function_loc=mass_function_loc,
         mass_function_scale=profile.mass_function_scale,
         mass_function_alpha=profile.mass_function_alpha,
-        mu_r0=profile.mu_r0,
+        mu_r0=mu_r0,
         beta_r=profile.beta_r,
         sigma_r=profile.sigma_r,
         nu_r=profile.nu_r if profile.nu_r is not None else 0.0,

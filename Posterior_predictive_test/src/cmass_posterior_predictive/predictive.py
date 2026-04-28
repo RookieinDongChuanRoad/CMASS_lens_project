@@ -44,6 +44,8 @@ from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.cosmology import FlatLambdaCDM
 from cmass_lens_inference.profiles import build_profile_spec
 from cmass_lens_inference.mass_definition import (
+    H_UNITS_V1,
+    LEGACY_FIXED_KPC,
     MassDefinition,
     get_mass_definition,
     mass_definition_metadata,
@@ -225,6 +227,22 @@ def _trend_quantity_names(mass_definition: MassDefinition) -> tuple[str, str, st
     return (mass_definition.label, "gamma", "sigma_ap")
 
 
+def _stellar_mass_axis_label(mass_definition: MassDefinition) -> str:
+    """Return the plot label for the active stellar-mass coordinate."""
+
+    if mass_definition.unit_convention == H_UNITS_V1:
+        return r"log $M_*/(h^{-2} M_\odot)$"
+    return r"log $M_*/M_\odot$"
+
+
+def _effective_radius_axis_label(mass_definition: MassDefinition) -> str:
+    """Return the plot label for the active size coordinate."""
+
+    if mass_definition.unit_convention == H_UNITS_V1:
+        return r"log $r_e$ [$h^{-1}$ kpc]"
+    return r"log $r_e$ [kpc]"
+
+
 def _sigma_table_metadata_defaults() -> MassDefinition:
     """Return the legacy sigma-table definition used when metadata is absent."""
 
@@ -259,6 +277,8 @@ class SigmaUnitTable:
     aperture_radius_arcsec: float | None = None
     seeing_fwhm_arcsec: float | None = DEFAULT_SEEING_FWHM_ARCSEC
     bundle_leaf_path: str = "/"
+    unit_convention: str = LEGACY_FIXED_KPC
+    h_ref: float | None = None
 
     def __post_init__(self) -> None:
         """
@@ -328,12 +348,20 @@ class SigmaUnitTable:
                 if "units" in payload.files
                 else default_mass_definition.sigma_unit_units
             )
+            raw_unit_convention = (
+                payload["unit_convention"].item()
+                if "unit_convention" in payload.files
+                else default_mass_definition.unit_convention
+            )
+            raw_h_ref = payload["h_ref"].item() if "h_ref" in payload.files else None
             n_axis = payload["n_axis"] if "n_axis" in payload.files else None
             return cls(
                 profile_name=str(profile_name),
                 mass_definition_label=str(raw_mass_label),
                 mass_radius_kpc=float(raw_mass_radius),
                 units=str(raw_units),
+                unit_convention=str(raw_unit_convention),
+                h_ref=None if raw_h_ref is None else float(raw_h_ref),
                 gamma_axis=np.asarray(payload["gamma_axis"], dtype=float),
                 zd_axis=np.asarray(payload["zd_axis"], dtype=float),
                 log_re_kpc_axis=np.asarray(payload["log_re_kpc_axis"], dtype=float),
@@ -397,6 +425,8 @@ class SigmaUnitTable:
         raw_mass_label = handle.attrs.get("mass_definition_label", default_mass_definition.label)
         raw_mass_radius = handle.attrs.get("mass_radius_kpc", float(default_mass_definition.radius_kpc))
         raw_units = handle.attrs.get("units", default_mass_definition.sigma_unit_units)
+        raw_unit_convention = handle.attrs.get("unit_convention", default_mass_definition.unit_convention)
+        raw_h_ref = _optional_hdf5_float(handle.attrs.get("h_ref"))
         n_axis = np.asarray(handle["n_axis"], dtype=float) if "n_axis" in handle else None
         raw_observation_flavor = handle.attrs.get("observation_flavor", SLIT_OBSERVATION_FLAVOR)
         observation_flavor = _decode_hdf5_string(raw_observation_flavor).strip().lower()
@@ -421,6 +451,8 @@ class SigmaUnitTable:
             mass_definition_label=_decode_hdf5_string(raw_mass_label),
             mass_radius_kpc=float(raw_mass_radius),
             units=_decode_hdf5_string(raw_units),
+            unit_convention=_decode_hdf5_string(raw_unit_convention),
+            h_ref=raw_h_ref,
             gamma_axis=np.asarray(handle["gamma_axis"], dtype=float),
             zd_axis=np.asarray(handle["zd_axis"], dtype=float),
             log_re_kpc_axis=np.asarray(handle["log_re_kpc_axis"], dtype=float),
@@ -483,6 +515,11 @@ class SigmaUnitTable:
         raw_mass_label = leaf.attrs.get("mass_definition_label", mass_definition.label)
         raw_mass_radius = leaf.attrs.get("mass_radius_kpc", float(mass_definition.radius_kpc))
         raw_units = leaf.attrs.get("units", mass_definition.sigma_unit_units)
+        raw_unit_convention = leaf.attrs.get(
+            "unit_convention",
+            handle.attrs.get("unit_convention", mass_definition.unit_convention),
+        )
+        raw_h_ref = _optional_hdf5_float(leaf.attrs.get("h_ref", handle.attrs.get("h_ref")))
         n_axis = np.asarray(leaf["n_axis"], dtype=float) if "n_axis" in leaf else None
         sigma_definition = _decode_hdf5_string(
             leaf.attrs.get(
@@ -498,6 +535,8 @@ class SigmaUnitTable:
                 mass_definition_label=_decode_hdf5_string(raw_mass_label),
                 mass_radius_kpc=float(raw_mass_radius),
                 units=_decode_hdf5_string(raw_units),
+                unit_convention=_decode_hdf5_string(raw_unit_convention),
+                h_ref=raw_h_ref,
                 gamma_axis=np.asarray(leaf["gamma_axis"], dtype=float),
                 zd_axis=None,
                 log_re_kpc_axis=np.asarray(leaf["log_re_kpc_axis"], dtype=float),
@@ -520,6 +559,8 @@ class SigmaUnitTable:
             mass_definition_label=_decode_hdf5_string(raw_mass_label),
             mass_radius_kpc=float(raw_mass_radius),
             units=_decode_hdf5_string(raw_units),
+            unit_convention=_decode_hdf5_string(raw_unit_convention),
+            h_ref=raw_h_ref,
             gamma_axis=np.asarray(leaf["gamma_axis"], dtype=float),
             zd_axis=np.asarray(leaf["zd_axis"], dtype=float),
             log_re_kpc_axis=np.asarray(leaf["log_re_kpc_axis"], dtype=float),
@@ -596,6 +637,20 @@ def _assert_sigma_table_matches_run(
             f"Sigma table mass definition '{sigma_table.mass_definition_label}' ({sigma_table.mass_radius_kpc:g} kpc) "
             f"does not match run mass definition '{mass_definition.label}' ({mass_definition.radius_kpc:g} kpc)."
         )
+    if sigma_table.unit_convention != mass_definition.unit_convention:
+        raise ValueError(
+            f"Sigma table unit_convention '{sigma_table.unit_convention}' does not match "
+            f"run unit_convention '{mass_definition.unit_convention}'."
+        )
+    if mass_definition.unit_convention == H_UNITS_V1:
+        if sigma_table.h_ref is None:
+            raise ValueError("H-unit sigma table is missing h_ref metadata.")
+        # The runtime config currently derives h_ref from H0=70. The PPC layer
+        # validates table metadata against the active MassDefinition convention
+        # and leaves exact h_ref matching to the inference config/HDF5 loaders,
+        # but it still requires h_ref to be physically meaningful.
+        if (not np.isfinite(float(sigma_table.h_ref))) or float(sigma_table.h_ref) <= 0.0:
+            raise ValueError(f"H-unit sigma table has invalid h_ref={sigma_table.h_ref!r}.")
     normalized_observation_flavor = observation_flavor.strip().lower()
     if sigma_table.observation_flavor != normalized_observation_flavor:
         raise ValueError(
@@ -1271,10 +1326,18 @@ def _vectorized_truncnorm_sample(
     return np.clip(sampled, low, high)
 
 
-def _vectorized_mu_r(mstar: np.ndarray, n_value: np.ndarray, profile: ProfileSpec) -> np.ndarray:
+def _vectorized_mu_r(
+    mstar: np.ndarray,
+    n_value: np.ndarray,
+    profile: ProfileSpec,
+    *,
+    stellar_mass_pivot: float = 11.4,
+    mu_r0: float | None = None,
+) -> np.ndarray:
     """Vectorized mean-size relation shared by PPC candidate generation."""
 
-    out = profile.mu_r0 + profile.beta_r * (mstar - 11.4)
+    resolved_mu_r0 = profile.mu_r0 if mu_r0 is None else float(mu_r0)
+    out = resolved_mu_r0 + profile.beta_r * (mstar - float(stellar_mass_pivot))
     if profile.nu_r is not None:
         out += profile.nu_r * (np.log10(np.maximum(n_value, 1.0e-12)) - math.log10(4.0))
     return out
@@ -1286,6 +1349,8 @@ def _compute_observed_delta_r(
     log_re_kpc: np.ndarray,
     profile: ProfileSpec,
     theta: np.ndarray | None = None,
+    stellar_mass_pivot: float = 11.4,
+    mu_r0: float | None = None,
 ) -> np.ndarray:
     """
     Compute observed `delta_r = logre_kpc - mu_r` using the model's size relation.
@@ -1301,6 +1366,8 @@ def _compute_observed_delta_r(
         mstar=np.asarray(log_mstar, dtype=float),
         n_value=np.asarray(n_value, dtype=float),
         profile=profile,
+        stellar_mass_pivot=stellar_mass_pivot,
+        mu_r0=mu_r0,
     )
     return np.asarray(log_re_kpc, dtype=float) - mu_r
 
@@ -1313,6 +1380,7 @@ def _vectorized_theta_ein_arcsec(
     z_grid: np.ndarray,
     chi_kpc_grid: np.ndarray,
     mass_radius_kpc: float,
+    mass_log_physical_offset: float = 0.0,
 ) -> np.ndarray:
     """
     Vectorized Einstein-radius calculation copied from the scalar primitive.
@@ -1341,7 +1409,7 @@ def _vectorized_theta_ein_arcsec(
 
     inner_indices = np.flatnonzero(valid)[geometry_ok]
     sigma_crit = (c_km_s * c_km_s) / (4.0 * math.pi * g_kpc_kms2_msun) * (ds[geometry_ok] / (dl[geometry_ok] * dls[geometry_ok]))
-    base = (10.0 ** log_enclosed_mass[inner_indices]) / (
+    base = (10.0 ** (log_enclosed_mass[inner_indices] + mass_log_physical_offset)) / (
         math.pi * sigma_crit * (mass_radius_kpc ** (3.0 - gamma[inner_indices]))
     )
     physical_ok = base > 0.0
@@ -1520,28 +1588,44 @@ def _draw_candidate_population(
     sigma_zs = theta_components["sigma_zs"]
     theta0 = theta_components["theta0"]
     loga = theta_components["loga"]
+    stellar_mass_pivot = float(getattr(context, "stellar_mass_pivot", 11.4))
+    mass_function_loc = float(getattr(context, "mass_function_loc", profile.mass_function_loc))
+    mu_r0 = float(getattr(context, "mu_r0", profile.mu_r0))
+    mass_log_physical_offset = float(getattr(context, "mass_log_physical_offset", 0.0))
 
     mstar = _vectorized_skewnorm_sample(
         normals[:, 2],
         normals[:, 3],
-        profile.mass_function_loc,
+        mass_function_loc,
         profile.mass_function_scale,
         profile.mass_function_alpha,
     )
-    mstar_shift11p4 = mstar - 11.4
+    mstar_shift11p4 = mstar - stellar_mass_pivot
     zd = context.mu_d + context.sigma_d * normals[:, 0]
     zs = mu_zs + sigma_zs * normals[:, 1]
 
     if profile.fixed_n is None:
         logn = profile.mu_n0 + profile.beta_n * mstar_shift11p4 + profile.sigma_n * normals[:, 4]
         n_value = np.power(10.0, logn)
-        mu_r = _vectorized_mu_r(mstar, n_value, profile)
+        mu_r = _vectorized_mu_r(
+            mstar,
+            n_value,
+            profile,
+            stellar_mass_pivot=stellar_mass_pivot,
+            mu_r0=mu_r0,
+        )
         re_log_kpc = mu_r + profile.sigma_r * normals[:, 5]
         delta_r = re_log_kpc - mu_r
         log_enclosed_mass = mu5_0 + beta5 * mstar_shift11p4 + xi5 * delta_r + sigma5 * normals[:, 6]
     else:
         n_value = np.full(candidate_pool_size, profile.fixed_n, dtype=float)
-        mu_r = _vectorized_mu_r(mstar, n_value, profile)
+        mu_r = _vectorized_mu_r(
+            mstar,
+            n_value,
+            profile,
+            stellar_mass_pivot=stellar_mass_pivot,
+            mu_r0=mu_r0,
+        )
         re_log_kpc = mu_r + profile.sigma_r * normals[:, 4]
         delta_r = re_log_kpc - mu_r
         log_enclosed_mass = mu5_0 + beta5 * mstar_shift11p4 + xi5 * delta_r + sigma5 * normals[:, 5]
@@ -1576,6 +1660,7 @@ def _draw_candidate_population(
         z_grid=context.z_grid,
         chi_kpc_grid=context.chi_kpc_grid,
         mass_radius_kpc=float(context.mass_radius_kpc),
+        mass_log_physical_offset=mass_log_physical_offset,
     )
     cs_over_theta = np.interp(
         gamma,
@@ -2804,7 +2889,13 @@ def _build_annotated_fig8_title(
     """
 
     base_title = _format_fig8_like_title(mass_definition=mass_definition, gamma_mode=gamma_mode)
-    bic_value = _load_bic_value_from_run_dir(run_dir)
+    try:
+        bic_value = _load_bic_value_from_run_dir(run_dir)
+    except FileNotFoundError:
+        # Synthetic tests and older PPC-only run directories may not carry the
+        # optional BIC artifact. Annotation should still redraw observed
+        # overlays in that case; keep the existing Fig. 8 title contract.
+        return base_title
     return f"{profile_name} | {base_title} | BIC={bic_value:.2f}"
 
 
@@ -2925,6 +3016,27 @@ def _resolve_first_matching_attr(group: h5py.Group, aliases: tuple[str, ...]) ->
     raise KeyError(f"None of the requested aliases were found in group '{group.name}': {aliases}")
 
 
+def _stellar_mass_aliases_for_convention(
+    profile_spec: ProfileSpec,
+    mass_definition: MassDefinition,
+) -> tuple[str, ...]:
+    """Return observed stellar-mass attrs for the active unit convention."""
+
+    if mass_definition.unit_convention == H_UNITS_V1:
+        if profile_spec.name == "devauc":
+            return ("logmchab_deV_h2", "logmchab_h2")
+        return ("logmchab_h2",)
+    return profile_spec.observation_field_aliases["stellar_mass"]
+
+
+def _size_log_aliases_for_h_units(profile_spec: ProfileSpec) -> tuple[str, ...]:
+    """Return observed h-units size-log attrs for the active profile."""
+
+    if profile_spec.name == "devauc":
+        return ("log10_reff_deV_hinv_kpc", "log10_re_hinv_kpc")
+    return ("log10_re_hinv_kpc",)
+
+
 def _load_observed_trend_points(
     observation_path: Path,
     profile_name: str,
@@ -2962,7 +3074,10 @@ def _load_observed_trend_points(
             if num_sigma <= 0:
                 continue
 
-            stellar_mass = _resolve_first_matching_attr(group, profile_spec.observation_field_aliases["stellar_mass"])
+            stellar_mass = _resolve_first_matching_attr(
+                group,
+                _stellar_mass_aliases_for_convention(profile_spec, mass_definition),
+            )
 
             mass_mid = float(group.attrs[f"{mass_quantity}_mid"])
             mass_lower = float(group.attrs[f"{mass_quantity}_lower"])
@@ -3031,6 +3146,7 @@ def _load_observed_gamma_measurements(
     profile_name: str,
     observations: list[ObservationRecord],
     cosmology: FlatLambdaCDM,
+    mass_definition: MassDefinition,
 ) -> ObservedGammaMeasurements:
     """
     Load the observed gamma sample together with structural coordinates.
@@ -3073,12 +3189,20 @@ def _load_observed_gamma_measurements(
 
             lens_ids.append(group_name)
             log_mstar_values.append(
-                _resolve_first_matching_attr(group, profile_spec.observation_field_aliases["stellar_mass"])
+                _resolve_first_matching_attr(
+                    group,
+                    _stellar_mass_aliases_for_convention(profile_spec, mass_definition),
+                )
             )
-            radius_kpc = float(prepared_observation.effective_radius_arcsec) * float(
-                cosmology.kpc_per_arcsec(prepared_observation.z_d)
-            )
-            log_re_kpc_values.append(math.log10(max(radius_kpc, 1.0e-12)))
+            if mass_definition.unit_convention == H_UNITS_V1:
+                log_re_kpc_values.append(
+                    _resolve_first_matching_attr(group, _size_log_aliases_for_h_units(profile_spec))
+                )
+            else:
+                radius_kpc = float(prepared_observation.effective_radius_arcsec) * float(
+                    cosmology.kpc_per_arcsec(prepared_observation.z_d)
+                )
+                log_re_kpc_values.append(math.log10(max(radius_kpc, 1.0e-12)))
             n_values.append(float(profile_spec.fixed_n if profile_spec.fixed_n is not None else prepared_observation.n_observed))
             gamma_mid_values.append(gamma_mid)
             gamma_lower_errors.append(gamma_lower_error)
@@ -3370,7 +3494,7 @@ def _write_fig8_like_figure(
             "summary_payload": summary_payload["sigma_ap"],
             "x_grid": mass_grid,
             "y_label": "sigma_ap [km/s]",
-            "x_label": r"log $M_*/M_\odot$",
+            "x_label": _stellar_mass_axis_label(mass_definition),
             "observed_overlay": None if observed_points is None else observed_points.get("sigma_ap"),
             "observed_label": None,
         },
@@ -3734,6 +3858,7 @@ def run_posterior_trends(
         profile_name=runtime_config.profile.name,
         observations=observations,
         cosmology=cosmology,
+        mass_definition=mass_definition,
     )
     sigma_star_axis_spec = _build_trend_axis_spec(
         name="sigma_star",
@@ -3747,7 +3872,7 @@ def run_posterior_trends(
     )
     log_re_axis_spec = _build_trend_axis_spec(
         name="logre_kpc",
-        label=r"log $r_e$ [kpc]",
+        label=_effective_radius_axis_label(mass_definition),
         reference_values=observed_gamma_measurements.log_re_kpc,
         n_bins=n_mass_bins,
         padding_fraction=0.05,
@@ -3760,10 +3885,12 @@ def run_posterior_trends(
         log_re_kpc=observed_gamma_measurements.log_re_kpc,
         profile=profile_spec,
         theta=np.median(posterior_draws, axis=0),
+        stellar_mass_pivot=float(getattr(compiled_context, "stellar_mass_pivot", 11.4)),
+        mu_r0=float(getattr(compiled_context, "mu_r0", profile_spec.mu_r0)),
     )
     delta_r_axis_spec = _build_trend_axis_spec(
         name="delta_r",
-        label=r"log $r_e$ [kpc] - $\mu_r$",
+        label=f"{_effective_radius_axis_label(mass_definition)} - $\\mu_r$",
         reference_values=delta_r_reference,
         n_bins=n_mass_bins,
         padding_fraction=0.05,
@@ -4306,6 +4433,7 @@ def annotate_existing_fig8_like_figures_with_observations(
                 profile_name=profile_name,
                 observations=observations,
                 cosmology=cosmology,
+                mass_definition=mass_definition,
             )
             extra_gamma_panels = [
                 {
@@ -4322,7 +4450,7 @@ def annotate_existing_fig8_like_figures_with_observations(
                     "summary_payload": gamma_vs_logre_summary,
                     "x_grid": gamma_vs_logre_grid,
                     "y_label": "gamma",
-                    "x_label": r"log $r_e$ [kpc]",
+                    "x_label": _effective_radius_axis_label(mass_definition),
                     "observed_overlay": _build_observed_gamma_logre_overlay(observed_gamma_measurements),
                     "observed_label": None,
                 },

@@ -18,6 +18,7 @@ import pytest
 from interpolation_grids.config import (
     BOSS_CIRCULAR_APERTURE_POLICY,
     DEFAULT_PRODUCTION_APERTURE_POLICY,
+    H_UNITS_V1,
     SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS,
     SIGMA_UNIT_GAMMA_AXIS,
     SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS,
@@ -100,6 +101,48 @@ def test_build_sigma_unit_table_matches_direct_jeans_values_on_selected_grid_nod
                         continue
 
                     np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-12)
+
+
+def test_build_sigma_unit_table_can_emit_h_unit_metadata_and_scaling(tmp_path: Path) -> None:
+    """h-units sigma tables should shift size axes and scale S_unit analytically."""
+
+    h_ref = 0.7
+    gamma_axis = np.array([1.7, 2.0, 2.3])
+    physical_log_re_axis = np.array([0.5])
+    h_unit_log_re_axis = physical_log_re_axis + np.log10(h_ref)
+    legacy_table = build_sigma_unit_table(
+        profile_name="devauc",
+        gamma_axis=gamma_axis,
+        zd_axis=np.array([0.55]),
+        log_re_kpc_axis=physical_log_re_axis,
+        workers=1,
+    )
+    h_unit_table = build_sigma_unit_table(
+        profile_name="devauc",
+        gamma_axis=gamma_axis,
+        zd_axis=np.array([0.55]),
+        log_re_kpc_axis=h_unit_log_re_axis,
+        workers=1,
+        unit_convention=H_UNITS_V1,
+        h_ref=h_ref,
+    )
+
+    assert h_unit_table.unit_convention == H_UNITS_V1
+    assert h_unit_table.mass_definition_label == "m5_hinvkpc"
+    np.testing.assert_allclose(h_unit_table.log_re_kpc_axis, h_unit_log_re_axis)
+    np.testing.assert_allclose(
+        h_unit_table.values,
+        legacy_table.values * np.power(h_ref, 2.0 - gamma_axis)[:, None, None],
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+    output_path = write_sigma_unit_table_hdf5(h_unit_table, tmp_path / "h_unit_sigma.h5")
+    with h5py.File(output_path, "r") as handle:
+        assert handle.attrs["unit_convention"] == H_UNITS_V1
+        assert handle.attrs["h_ref"] == h_ref
+        assert handle.attrs["mass_definition_label"] == "m5_hinvkpc"
+        assert handle.attrs["units"] == "km2 s-2 per 10**m5_hinvkpc"
 
 
 def test_build_sigma_unit_table_records_boss_aperture_metadata_and_changes_values() -> None:

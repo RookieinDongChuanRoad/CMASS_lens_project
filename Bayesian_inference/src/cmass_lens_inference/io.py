@@ -14,11 +14,15 @@ import h5py
 import numpy as np
 
 from .mass_definition import (
+    H_UNITS_V1,
+    LEGACY_FIXED_KPC,
     MASS_DERIVATIVE_DATASET_NAME,
     MASS_GRID_DATASET_NAME,
     MASS_GROUP_ROOT_NAME,
     MASS_SIGMA_DATASET_NAME,
     MassDefinition,
+    validate_h_ref,
+    validate_unit_convention,
 )
 from .types import CrossSectionGrid, ObservationRecord, ProfileSpec, SigmaUnitTable
 
@@ -64,6 +68,78 @@ def _optional_hdf5_float(raw_value: object) -> float | None:
         return float(raw_value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_resolve_attribute(group: h5py.Group, aliases: tuple[str, ...]) -> float | None:
+    """Return the first matching attribute, or `None` when every alias is absent."""
+
+    for field_name in aliases:
+        if field_name in group.attrs:
+            return float(group.attrs[field_name])
+    return None
+
+
+def _validate_unit_metadata(
+    attrs: h5py.AttributeManager,
+    *,
+    expected_mass_definition: MassDefinition,
+    expected_h_ref: float | None,
+    context_label: str,
+    allow_missing_legacy: bool = True,
+) -> tuple[str, float | None]:
+    """
+    Validate unit metadata at one HDF5 boundary.
+
+    Legacy files that predate this migration are allowed to omit the metadata
+    only when the active run is explicitly legacy-compatible. H-unit files must
+    carry an explicit convention and, when the caller supplies `h_ref`, a
+    matching reference Hubble parameter.
+    """
+
+    raw_convention = attrs.get("unit_convention")
+    if raw_convention is None:
+        if allow_missing_legacy and expected_mass_definition.unit_convention == LEGACY_FIXED_KPC:
+            return LEGACY_FIXED_KPC, None
+        raise ValueError(
+            f"{context_label} is missing unit_convention metadata required by "
+            f"active convention '{expected_mass_definition.unit_convention}'."
+        )
+
+    actual_convention = validate_unit_convention(_decode_hdf5_scalar_string(raw_convention))
+    if actual_convention != expected_mass_definition.unit_convention:
+        raise ValueError(
+            f"{context_label} unit_convention='{actual_convention}' does not match "
+            f"active convention '{expected_mass_definition.unit_convention}'."
+        )
+
+    actual_h_ref = _optional_hdf5_float(attrs.get("h_ref"))
+    if expected_h_ref is not None:
+        expected_h_value = validate_h_ref(expected_h_ref)
+        if actual_h_ref is None:
+            raise ValueError(f"{context_label} is missing h_ref metadata required for convention validation.")
+        if not np.isclose(actual_h_ref, expected_h_value):
+            raise ValueError(
+                f"{context_label} h_ref={actual_h_ref:g} does not match active h_ref={expected_h_value:g}."
+            )
+    return actual_convention, actual_h_ref
+
+
+def _stellar_mass_aliases(profile_spec: ProfileSpec, mass_definition: MassDefinition) -> tuple[str, ...]:
+    """Return the stellar-mass attribute aliases for the active unit convention."""
+
+    if mass_definition.unit_convention == H_UNITS_V1:
+        if profile_spec.name == "devauc":
+            return ("logmchab_deV_h2", "logmchab_h2")
+        return ("logmchab_h2",)
+    return profile_spec.observation_field_aliases["stellar_mass"]
+
+
+def _effective_radius_log_aliases(profile_spec: ProfileSpec) -> tuple[str, ...]:
+    """Return h-units size-log aliases for the active profile."""
+
+    if profile_spec.name == "devauc":
+        return ("log10_reff_deV_hinv_kpc", "log10_re_hinv_kpc")
+    return ("log10_re_hinv_kpc",)
 
 
 def _load_observation_contract(file_path: str | Path) -> dict[str, float | str | None]:
@@ -160,6 +236,7 @@ def load_sigma_unit_table(
     mass_definition: MassDefinition,
     observation_flavor: str | None = None,
     bundle_group: str | None = None,
+    h_ref: float | None = None,
 ) -> SigmaUnitTable:
     """
     Load and validate the sigma-unit table used by the optional FP prior.
@@ -171,6 +248,12 @@ def load_sigma_unit_table(
     path = Path(file_path).expanduser().resolve()
     with h5py.File(path, "r") as handle:
         schema_version = _decode_hdf5_scalar_string(handle.attrs.get("schema_version", ""))
+        root_convention, root_h_ref = _validate_unit_metadata(
+            handle.attrs,
+            expected_mass_definition=mass_definition,
+            expected_h_ref=h_ref,
+            context_label=f"Sigma table '{path}'",
+        )
 
         if schema_version == SIGMA_UNIT_BUNDLE_SCHEMA_VERSION:
             selected_bundle_group = bundle_group.strip().lower() if bundle_group is not None else None
@@ -194,6 +277,12 @@ def load_sigma_unit_table(
                 )
 
             leaf = bundle_root_group[mass_definition.label]
+            leaf_convention, leaf_h_ref = _validate_unit_metadata(
+                leaf.attrs,
+                expected_mass_definition=mass_definition,
+                expected_h_ref=h_ref,
+                context_label=f"Sigma bundle leaf '{path}:{selected_bundle_group}/{mass_definition.label}'",
+            )
             required_dataset_names = {"gamma_axis", "log_re_kpc_axis", "s_unit_grid"}
             if selected_bundle_group != WITHIN_RE_SIGMA_DEFINITION:
                 required_dataset_names.add("zd_axis")
@@ -267,6 +356,8 @@ def load_sigma_unit_table(
                     profile_name=profile_name,
                     mass_definition_label=mass_definition_label,
                     mass_radius_kpc=mass_radius_kpc,
+                    unit_convention=leaf_convention,
+                    h_ref=leaf_h_ref if leaf_h_ref is not None else root_h_ref,
                     units=_decode_hdf5_scalar_string(leaf.attrs.get("units", mass_definition.sigma_unit_units)),
                     gamma_axis=np.asarray(leaf["gamma_axis"][()], dtype=float),
                     zd_axis=None,
@@ -318,6 +409,8 @@ def load_sigma_unit_table(
                 profile_name=profile_name,
                 mass_definition_label=mass_definition_label,
                 mass_radius_kpc=mass_radius_kpc,
+                unit_convention=leaf_convention,
+                h_ref=leaf_h_ref if leaf_h_ref is not None else root_h_ref,
                 units=_decode_hdf5_scalar_string(leaf.attrs.get("units", mass_definition.sigma_unit_units)),
                 gamma_axis=np.asarray(leaf["gamma_axis"][()], dtype=float),
                 zd_axis=np.asarray(leaf["zd_axis"][()], dtype=float),
@@ -395,6 +488,8 @@ def load_sigma_unit_table(
             profile_name=profile_name,
             mass_definition_label=mass_definition_label,
             mass_radius_kpc=mass_radius_kpc,
+            unit_convention=root_convention,
+            h_ref=root_h_ref,
             units=_decode_hdf5_scalar_string(
                 handle.attrs.get("units", mass_definition.sigma_unit_units)
             ),
@@ -426,6 +521,7 @@ def _load_mass_dependent_grids(
     group: h5py.Group,
     gamma_grid: np.ndarray,
     mass_definition: MassDefinition,
+    h_ref: float | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """
     Resolve the mass-dependent grids for the selected definition.
@@ -441,6 +537,15 @@ def _load_mass_dependent_grids(
         )
 
     selected_group = group[MASS_GROUP_ROOT_NAME][mass_definition.subgroup_name]
+    _validate_unit_metadata(
+        selected_group.attrs,
+        expected_mass_definition=mass_definition,
+        expected_h_ref=h_ref,
+        context_label=(
+            f"Observation mass-definition subgroup "
+            f"'{group.name}/{MASS_GROUP_ROOT_NAME}/{mass_definition.subgroup_name}'"
+        ),
+    )
     if MASS_GRID_DATASET_NAME not in selected_group:
         raise KeyError(
             "Observation mass-definition subgroup is missing required dataset "
@@ -466,6 +571,7 @@ def load_observations(
     file_path: str | Path,
     profile_spec: ProfileSpec,
     mass_definition: MassDefinition,
+    h_ref: float | None = None,
 ) -> list[ObservationRecord]:
     """
     Read the observation HDF5 file and normalize profile-specific aliases.
@@ -479,14 +585,39 @@ def load_observations(
     observations: list[ObservationRecord] = []
 
     with h5py.File(path, "r") as handle:
+        _validate_unit_metadata(
+            handle.attrs,
+            expected_mass_definition=mass_definition,
+            expected_h_ref=h_ref,
+            context_label=f"Observation file '{path}'",
+        )
         for lens_id in sorted(handle.keys()):
             group = handle[lens_id]
+            _validate_unit_metadata(
+                group.attrs,
+                expected_mass_definition=mass_definition,
+                expected_h_ref=h_ref,
+                context_label=f"Observation group '{path}:{lens_id}'",
+            )
             log_stellar_mass_obs = _resolve_attribute(
-                group, profile_spec.observation_field_aliases["stellar_mass"]
+                group, _stellar_mass_aliases(profile_spec, mass_definition)
             )
-            effective_radius_arcsec = _resolve_attribute(
-                group, profile_spec.observation_field_aliases["effective_radius_arcsec"]
-            )
+            log_effective_radius_obs: float | None = None
+            if mass_definition.unit_convention == H_UNITS_V1:
+                log_effective_radius_obs = _resolve_attribute(
+                    group,
+                    _effective_radius_log_aliases(profile_spec),
+                )
+                effective_radius_arcsec = _optional_resolve_attribute(
+                    group,
+                    profile_spec.observation_field_aliases["effective_radius_arcsec"],
+                )
+                if effective_radius_arcsec is None:
+                    effective_radius_arcsec = float("nan")
+            else:
+                effective_radius_arcsec = _resolve_attribute(
+                    group, profile_spec.observation_field_aliases["effective_radius_arcsec"]
+                )
             sigma_observed = np.array([], dtype=float)
             sigma_error = np.array([], dtype=float)
             num_sigma = int(group.attrs["num_sigma"])
@@ -506,6 +637,7 @@ def load_observations(
                 group=group,
                 gamma_grid=gamma_grid,
                 mass_definition=mass_definition,
+                h_ref=h_ref,
             )
 
             observations.append(
@@ -519,6 +651,7 @@ def load_observations(
                     ),
                     n_observed=n_observed,
                     effective_radius_arcsec=effective_radius_arcsec,
+                    log_effective_radius_obs=log_effective_radius_obs,
                     einstein_radius_arcsec=_resolve_attribute(
                         group, profile_spec.observation_field_aliases["einstein_radius_arcsec"]
                     ),

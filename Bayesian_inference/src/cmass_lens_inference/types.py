@@ -219,6 +219,8 @@ class OutputConfig:
 class RuntimeConfig:
     """The fully parsed project configuration."""
 
+    unit_convention: str
+    h_ref: float
     profile: ProfileConfig
     mass_definition: MassDefinition
     gamma_model: GammaModelConfig
@@ -268,6 +270,7 @@ class ObservationRecord:
     log_stellar_mass_err: float
     n_observed: float
     effective_radius_arcsec: float
+    log_effective_radius_obs: float | None
     einstein_radius_arcsec: float
     num_sigma: int
     sigma_observed: np.ndarray
@@ -299,6 +302,8 @@ class SigmaUnitTable:
     profile_name: str
     mass_definition_label: str
     mass_radius_kpc: float
+    unit_convention: str
+    h_ref: float | None
     units: str
     gamma_axis: np.ndarray
     zd_axis: np.ndarray | None
@@ -381,11 +386,13 @@ class CompiledModelContext:
     p_zd_fixed: np.ndarray
     mstar_grid: np.ndarray
     mstar_shift11p4: np.ndarray
+    stellar_mass_pivot: float
     sigma_star_shift9p0_grid: np.ndarray
     mstar_integrand_base: np.ndarray
     delta_r_grid: np.ndarray
     base_normals: np.ndarray
     mass_radius_kpc: float
+    mass_log_physical_offset: float
     use_sersic_index: int
     n_fixed: float
     mu_n0: float

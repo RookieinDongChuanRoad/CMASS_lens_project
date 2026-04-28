@@ -194,10 +194,16 @@ def _write_observation_file(path: Path, profile_name: str, observation_flavor: s
                 group.attrs["num_sigma"] = 0
 
             m5_grid = np.linspace(11.6, 10.8, 17) - 0.01 * lens_index
+            m10_grid = m5_grid + (3.0 - gamma_grid) * np.log10(2.0)
             dm5_dthetaein_grid = np.linspace(-1.9, -1.0, 17)
             group.create_dataset("gamma_grid", data=gamma_grid)
-            group.create_dataset("m5_grid", data=m5_grid)
-            group.create_dataset("dm5_dthetaein_grid", data=dm5_dthetaein_grid)
+            mass_root = group.create_group("mass_definitions")
+            m5_group = mass_root.create_group("m5")
+            m5_group.create_dataset("mass_grid", data=m5_grid)
+            m5_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+            m10_group = mass_root.create_group("m10")
+            m10_group.create_dataset("mass_grid", data=m10_grid)
+            m10_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
     return path
 
 

@@ -197,3 +197,5 @@ class SigmaUnitTable:
     aperture_height_arcsec: float | None = 0.9
     aperture_radius_arcsec: float | None = None
     seeing_fwhm_arcsec: float | None = 0.9
+    unit_convention: str = "legacy_fixed_kpc"
+    h_ref: float = 0.7
