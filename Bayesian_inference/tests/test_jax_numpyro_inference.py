@@ -19,6 +19,7 @@ import yaml
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.jax_model import build_jax_model, log_prob as jax_log_prob
 from cmass_lens_inference.model import build_compiled_model, log_prob as legacy_log_prob
+from cmass_lens_inference.numpyro_sampler import _build_jittered_initial_strategy
 from cmass_lens_inference.runner import run_inference
 
 
@@ -86,11 +87,46 @@ def test_config_loads_model_components_and_numpyro_sampling_aliases(
         "velocity_dispersion": "grid_sigma_unit",
         "fp_prior": "optional_ols_summary",
     }
-    assert runtime_config.sampling.num_chains == 1
+    assert runtime_config.sampling.num_chains == 2 * runtime_config.parameter_schema.n_dim
     assert runtime_config.sampling.num_samples == runtime_config.sampling.n_steps
     assert runtime_config.sampling.num_warmup == runtime_config.sampling.warmup
     assert runtime_config.sampling.thinning == 1
     assert runtime_config.sampling.chain_method == "sequential"
+
+
+def test_numpyro_jittered_initial_strategy_uses_independent_bounded_chain_values(
+    synthetic_config_path: Path,
+) -> None:
+    """
+    NumPyro chains should start from independently jittered, in-bounds values.
+
+    This replaces the old emcee walker cloud condition-number concern with the
+    NUTS-specific contract: each chain gets its own valid constrained initial
+    point, while box-prior bounds remain hard guards.
+    """
+
+    import jax
+
+    runtime_config = load_runtime_config(synthetic_config_path)
+    strategy = _build_jittered_initial_strategy(runtime_config)
+    parameter_name = runtime_config.parameter_schema.internal_parameter_names[0]
+    lower, upper = runtime_config.parameter_schema.prior_bounds[0]
+
+    site_template = {
+        "type": "sample",
+        "is_observed": False,
+        "name": parameter_name,
+        "kwargs": {},
+    }
+    first_site = {**site_template, "kwargs": {"rng_key": jax.random.PRNGKey(1)}}
+    second_site = {**site_template, "kwargs": {"rng_key": jax.random.PRNGKey(2)}}
+
+    first_value = float(strategy(first_site))
+    second_value = float(strategy(second_site))
+
+    assert lower < first_value < upper
+    assert lower < second_value < upper
+    assert first_value != pytest.approx(second_value)
 
 
 @pytest.mark.parametrize(
@@ -230,16 +266,18 @@ def test_run_inference_writes_numpyro_posterior_artifacts(
     payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
     payload["sampling"].update(
         {
-            "num_chains": 1,
+            "num_chains": 2,
             "num_samples": 2,
             "num_warmup": 1,
             "chain_method": "sequential",
             "thinning": 1,
+            "initial_jitter_scale": 1.0e-3,
         }
     )
     numpyro_config_path = synthetic_config_path.parent / "synthetic_numpyro.yaml"
     numpyro_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
+    runtime_config = load_runtime_config(numpyro_config_path)
     run_result = run_inference(str(numpyro_config_path))
 
     assert run_result.status == "completed"
@@ -249,3 +287,5 @@ def test_run_inference_writes_numpyro_posterior_artifacts(
     assert (run_result.run_dir / "samples.npz").exists()
     assert (run_result.run_dir / "posterior.nc").exists()
     assert not (run_result.run_dir / "chain.h5").exists()
+    with np.load(run_result.run_dir / "samples.npz") as payload:
+        assert payload["samples_by_chain"].shape == (2, 2, runtime_config.parameter_schema.n_dim)

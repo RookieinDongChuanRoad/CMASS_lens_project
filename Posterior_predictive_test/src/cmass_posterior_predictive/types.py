@@ -38,7 +38,6 @@ class PosteriorPredictiveResult:
                 payload[key] = str(value)
         return payload
 
-
 @dataclass
 class PosteriorPredictiveMonitorResult:
     """Structured summary of the external-table monitor workflow."""
@@ -97,14 +96,19 @@ class PosteriorTrendResult:
 
 
 @dataclass
-class Fig8ObservationAnnotationResult:
-    """Structured summary of the in-place Fig. 8 observation-overlay workflow."""
+class PosteriorDiagnosticsResult:
+    """Structured summary of one joint PPC + trend diagnostics execution."""
 
+    run_id: str
+    profile_name: str
+    input_run_dir: Path
+    result_dir: Path
     status: str
-    outputs_root: Path
-    processed_run_count: int
-    processed_runs: list[dict[str, Any]] = field(default_factory=list)
-    skipped_runs: list[dict[str, Any]] = field(default_factory=list)
+    burn_in_applied: int
+    n_posterior_draws: int
+    parent_sample_size: int
+    n_mass_bins: int
+    sigma_table_path: Path
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -118,17 +122,14 @@ class Fig8ObservationAnnotationResult:
 
 
 @dataclass
-class NotebookComparisonResult:
-    """Structured summary of the notebook-vs-pipeline comparison workflow."""
+class Fig8ObservationAnnotationResult:
+    """Structured summary of the in-place Fig. 8 observation-overlay workflow."""
 
-    result_dir: Path
     status: str
-    chain_path: Path
-    sigma_table_path: Path
-    population_model_path: Path
-    posterior_sample_count: int
-    discard: int
-    sample_sizes: dict[str, int]
+    outputs_root: Path
+    processed_run_count: int
+    processed_runs: list[dict[str, Any]] = field(default_factory=list)
+    skipped_runs: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

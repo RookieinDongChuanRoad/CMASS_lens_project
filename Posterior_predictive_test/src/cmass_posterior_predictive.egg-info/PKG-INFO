@@ -9,7 +9,6 @@ Requires-Dist: h5py>=3.10
 Requires-Dist: matplotlib>=3.8
 Requires-Dist: numpy>=1.26
 Requires-Dist: PyYAML>=6.0
-Requires-Dist: scipy>=1.11
 Requires-Dist: cmass-lens-inference
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
@@ -145,7 +144,6 @@ Requires-Dist: pytest>=8.0; extra == "dev"
   - `theta_E` sample size = `22`
   - `sigma` sample size = `7`
 - notebook 的 sigma 表严格按以下方式构造：
-  - `RegularGridInterpolator((z_grid, logRe_grid, logn_grid, gamma_grid), s2_grid, bounds_error=False, fill_value=None)`
 - notebook 链最后两列的实际语义与当前 pipeline 顺序不一致：
   - notebook: `(loga, theta0)`
   - pipeline: `(theta0, loga)`
@@ -161,16 +159,12 @@ Requires-Dist: pytest>=8.0; extra == "dev"
 
 ## 新增实现
 - 新增比较模块：
-  - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/notebook_comparison.py`
 - 新增一次性运行脚本：
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
 - 新增测试：
-  - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/tests/test_notebook_comparison.py`
 
 ## 对比模块合同
 - notebook baseline 与 pipeline-matched 两边都输出 `median/std/p10/p90`。
 - 两边都使用同一条 post-burn-in chain；测试/调试时可用 `max_samples` 截断前若干 posterior samples。
-- pipeline-matched 路径复用本地 `posterior_predictive` 的总体生成与 selection 实现，但 sigma 侧显式绕过 `SigmaUnitTable`，直接走 notebook-native `RegularGridInterpolator((z, logRe, logn, gamma), s2_grid)`。
 - sigma 在这次对比中明确不加观测噪声。
 
 ## `full_0103.h5` 全量对比结果
@@ -184,7 +178,6 @@ Requires-Dist: pytest>=8.0; extra == "dev"
 - 合同核对通过：
   - `posterior_sample_count = 96000`
   - `sample_sizes = {theta_ein: 22, sigma: 7}`
-  - `interpolator_contract = RegularGridInterpolator((z_grid, logRe_grid, logn_grid, gamma_grid), s2_grid, bounds_error=False, fill_value=None)`
 - `theta_E` 的中心统计量非常接近：
   - `median` 的两边分布中位数相差约 `+0.009`
   - `p10` 的两边分布中位数相差约 `+0.003`
@@ -202,7 +195,6 @@ Requires-Dist: pytest>=8.0; extra == "dev"
 ## 当前归因判断
 - 这次对比已经显式控制了三类常见混淆项：
   - 参数顺序：已把 notebook `(loga, theta0)` 映射到 pipeline `(theta0, loga)`
-  - sigma 插值器：pipeline-matched 已直接使用 notebook 原生 `RegularGridInterpolator((z, logRe, logn, gamma), s2_grid)`
   - sigma 后处理：已关闭额外观测噪声
 - 因此，当前仍然保留下来的 notebook vs pipeline 差异，主因更可能来自：
   - 总体候选样本生成实现不同

@@ -21,22 +21,24 @@ from __future__ import annotations
 import os
 import json
 import math
-import multiprocessing
 import shutil
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import emcee
 import h5py
+import jax
+
+jax.config.update("jax_enable_x64", True)
+
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
-from scipy.interpolate import RegularGridInterpolator
-from scipy.special import ndtr, ndtri
 from tqdm.auto import tqdm
 
 from cmass_lens_inference.compiled_context import build_compiled_context
@@ -67,6 +69,7 @@ from cmass_lens_inference.types import (
 )
 from .types import (
     Fig8ObservationAnnotationResult,
+    PosteriorDiagnosticsResult,
     PosteriorPredictiveMonitorResult,
     PosteriorPredictiveResult,
     PosteriorTrendResult,
@@ -104,7 +107,8 @@ WITHIN_RE_SIGMA_DEFINITION = "within_re"
 # continue to resolve the canonical 0.9" slit contract.
 DEFAULT_SEEING_FWHM_ARCSEC = DEFAULT_SLIT_SEEING_FWHM_ARCSEC
 DEFAULT_TREND_POSTERIOR_DRAWS: int | None = None
-DEFAULT_TREND_PARENT_SAMPLE_SIZE = 100000
+DEFAULT_TREND_PARENT_SAMPLE_SIZE = 10000
+DEFAULT_DIAGNOSTICS_PARENT_SAMPLE_SIZE = DEFAULT_TREND_PARENT_SAMPLE_SIZE
 DEFAULT_TREND_MASS_BIN_COUNT = 19
 DEFAULT_TREND_MASS_BIN_MIN = 10.15
 DEFAULT_TREND_MASS_BIN_MAX = 12.05
@@ -279,27 +283,6 @@ class SigmaUnitTable:
     bundle_leaf_path: str = "/"
     unit_convention: str = LEGACY_FIXED_KPC
     h_ref: float | None = None
-
-    def __post_init__(self) -> None:
-        """
-        Build the interpolator for either the historical or within-Re schema.
-
-        The PPC code needs one object that can represent both:
-        - historical observed-aperture tables with explicit `(gamma, zd, logRe[, n])`
-        - new within-Re tables where `zd` is not a physical axis
-        """
-
-        base_axes: tuple[np.ndarray, ...]
-        if self.zd_axis is None:
-            base_axes = (self.gamma_axis, self.log_re_kpc_axis)
-        else:
-            base_axes = (self.gamma_axis, self.zd_axis, self.log_re_kpc_axis)
-
-        if self.n_axis is None:
-            interpolator = RegularGridInterpolator(base_axes, self.values, bounds_error=False, fill_value=None)
-        else:
-            interpolator = RegularGridInterpolator(base_axes + (self.n_axis,), self.values, bounds_error=False, fill_value=None)
-        object.__setattr__(self, "_interpolator", interpolator)
 
     @classmethod
     def from_path(
@@ -576,45 +559,6 @@ class SigmaUnitTable:
             seeing_fwhm_arcsec=float(_optional_hdf5_float(leaf.attrs.get("seeing_fwhm_arcsec")) or np.nan),
             bundle_leaf_path=f"/{normalized_observation_flavor}/{mass_definition.label}",
         )
-
-    def evaluate(
-        self,
-        gamma: np.ndarray,
-        zd: np.ndarray,
-        log_re_kpc: np.ndarray,
-        n_values: np.ndarray | None = None,
-    ) -> np.ndarray:
-        """
-        Interpolate `S_unit` at the requested lens coordinates with clipping.
-
-        Clipping is intentional and mirrors the rest of the codebase's
-        interpolation policy: the PPC pipeline should stay numerically stable
-        even when replicated draws land just outside the tabulated range.
-        """
-
-        gamma_clipped = np.clip(gamma, self.gamma_axis[0], self.gamma_axis[-1])
-        log_re_clipped = np.clip(log_re_kpc, self.log_re_kpc_axis[0], self.log_re_kpc_axis[-1])
-
-        if self.zd_axis is None:
-            if self.n_axis is None:
-                query_points = np.column_stack((gamma_clipped, log_re_clipped))
-            else:
-                if n_values is None:
-                    raise ValueError("Sersic sigma interpolation requires `n_values`.")
-                n_clipped = np.clip(n_values, self.n_axis[0], self.n_axis[-1])
-                query_points = np.column_stack((gamma_clipped, log_re_clipped, n_clipped))
-        else:
-            zd_clipped = np.clip(zd, self.zd_axis[0], self.zd_axis[-1])
-            if self.n_axis is None:
-                query_points = np.column_stack((gamma_clipped, zd_clipped, log_re_clipped))
-            else:
-                if n_values is None:
-                    raise ValueError("Sersic sigma interpolation requires `n_values`.")
-                n_clipped = np.clip(n_values, self.n_axis[0], self.n_axis[-1])
-                query_points = np.column_stack((gamma_clipped, zd_clipped, log_re_clipped, n_clipped))
-
-        return np.asarray(self._interpolator(query_points), dtype=float)
-
 
 def _assert_sigma_table_matches_run(
     sigma_table: SigmaUnitTable,
@@ -976,14 +920,22 @@ def wait_for_external_sigma_tables_and_run(
     if aligned_n_replicates is None:
         devauc_burn_in = _resolve_burn_in(burn_in, devauc_runtime_config.sampling.warmup)
         sersic_burn_in = _resolve_burn_in(burn_in, sersic_runtime_config.sampling.warmup)
-        devauc_available = _load_flattened_posterior_chain(
-            Path(devauc_run_dir).expanduser().resolve() / "chain.h5",
+        devauc_available = _load_posterior_draws(
+            chain_path=Path(devauc_run_dir).expanduser().resolve() / "chain.h5",
             burn_in=devauc_burn_in,
-        ).shape[0]
-        sersic_available = _load_flattened_posterior_chain(
-            Path(sersic_run_dir).expanduser().resolve() / "chain.h5",
+            rng=np.random.default_rng(random_seed),
+            n_replicates=None,
+            tail_cap=DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP,
+            parameter_names=devauc_runtime_config.parameter_schema.internal_parameter_names,
+        )[0].shape[0]
+        sersic_available = _load_posterior_draws(
+            chain_path=Path(sersic_run_dir).expanduser().resolve() / "chain.h5",
             burn_in=sersic_burn_in,
-        ).shape[0]
+            rng=np.random.default_rng(random_seed),
+            n_replicates=None,
+            tail_cap=DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP,
+            parameter_names=sersic_runtime_config.parameter_schema.internal_parameter_names,
+        )[0].shape[0]
         aligned_n_replicates = min(
             DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP,
             int(devauc_available),
@@ -1045,137 +997,6 @@ def _resolve_burn_in(requested_burn_in: str | int, warmup: int) -> int:
     return int(requested_burn_in)
 
 
-def _safe_weighted_average(values: np.ndarray, weights: np.ndarray) -> float:
-    """
-    Return a weighted mean or `nan` if the weight support is empty.
-
-    Weighted trend curves are only meaningful when at least one candidate
-    contributes non-zero probability mass. Returning `nan` in empty regions is
-    safer than silently substituting a different statistic, because it makes
-    numerical pathologies visible in both the saved arrays and the plots.
-    """
-
-    finite_mask = np.isfinite(values) & np.isfinite(weights) & (weights > 0.0)
-    if not np.any(finite_mask):
-        return float("nan")
-    return float(np.average(values[finite_mask], weights=weights[finite_mask]))
-
-
-def _reduce_population_to_bins(
-    x_values: np.ndarray,
-    values: np.ndarray,
-    bin_edges: np.ndarray,
-    detectable_weights: np.ndarray,
-    selected_weights: np.ndarray,
-) -> dict[str, np.ndarray]:
-    """
-    Compress one parent-population realization into arbitrary x-axis bins.
-
-    The trend workflow now produces multiple figures that differ only in the
-    x-axis definition. Centralizing the reducer ensures:
-    - the parent/detectable/selected categories are defined identically for
-      stellar mass, `logre_kpc`, and `delta_r`
-    - the right-edge-inclusive final-bin behavior is shared everywhere
-    - any future x-axis addition inherits the same empty-bin diagnostics
-    """
-
-    x_values = np.asarray(x_values, dtype=float)
-    values = np.asarray(values, dtype=float)
-    bin_edges = np.asarray(bin_edges, dtype=float)
-    detectable_weights = np.asarray(detectable_weights, dtype=float)
-    selected_weights = np.asarray(selected_weights, dtype=float)
-
-    n_bins = bin_edges.size - 1
-    parent = np.full(n_bins, np.nan, dtype=float)
-    detectable = np.full(n_bins, np.nan, dtype=float)
-    selected = np.full(n_bins, np.nan, dtype=float)
-    parent_bin_counts = np.zeros(n_bins, dtype=int)
-    detectable_weight_sums = np.zeros(n_bins, dtype=float)
-    selected_weight_sums = np.zeros(n_bins, dtype=float)
-
-    finite_parent_support = np.isfinite(x_values) & np.isfinite(values)
-    finite_detectable_support = finite_parent_support & np.isfinite(detectable_weights) & (detectable_weights > 0.0)
-    finite_selected_support = finite_parent_support & np.isfinite(selected_weights) & (selected_weights > 0.0)
-
-    for bin_index in range(n_bins):
-        lower_edge = bin_edges[bin_index]
-        upper_edge = bin_edges[bin_index + 1]
-        in_bin = x_values >= lower_edge
-        if bin_index == n_bins - 1:
-            in_bin &= x_values <= upper_edge
-        else:
-            in_bin &= x_values < upper_edge
-
-        parent_mask = finite_parent_support & in_bin
-        parent_bin_counts[bin_index] = int(np.count_nonzero(parent_mask))
-        if np.any(parent_mask):
-            parent[bin_index] = float(np.mean(values[parent_mask]))
-
-        detectable_mask = finite_detectable_support & in_bin
-        detectable_weight_sums[bin_index] = float(np.sum(detectable_weights[detectable_mask]))
-        detectable[bin_index] = _safe_weighted_average(values[detectable_mask], detectable_weights[detectable_mask])
-
-        selected_mask = finite_selected_support & in_bin
-        selected_weight_sums[bin_index] = float(np.sum(selected_weights[selected_mask]))
-        selected[bin_index] = _safe_weighted_average(values[selected_mask], selected_weights[selected_mask])
-
-    return {
-        "parent": parent,
-        "detectable": detectable,
-        "selected": selected,
-        "parent_bin_counts": parent_bin_counts,
-        "detectable_weight_sums": detectable_weight_sums,
-        "selected_weight_sums": selected_weight_sums,
-    }
-
-
-def _reduce_population_to_mass_bins(
-    log_mstar: np.ndarray,
-    values: np.ndarray,
-    mass_bin_edges: np.ndarray,
-    detectable_weights: np.ndarray,
-    selected_weights: np.ndarray,
-) -> dict[str, np.ndarray]:
-    """
-    Compress one parent-population realization into external-style mass-bin trends.
-
-    Why this reducer exists:
-    - the earlier implementation evaluated conditional means at fixed stellar
-      mass and representative size, which does not match the external workflow
-      the user wants to mirror
-    - the external workflow first draws a full parent population and only then
-      aggregates within stellar-mass bins
-    - the three figure categories are therefore defined by three different
-      within-bin averages over the same parent-population realization
-
-    Parameters
-    ----------
-    log_mstar:
-        Sampled stellar masses for one posterior draw.
-    values:
-        The quantity being reduced (`m5`, `gamma`, or `sigma_ap`).
-    mass_bin_edges:
-        Closed-open bin edges. The final bin includes its upper edge so the
-        right-most boundary does not silently discard exact-edge samples.
-    detectable_weights / selected_weights:
-        Per-galaxy lensing weights used for the two selected populations.
-
-    Returns
-    -------
-    dict[str, np.ndarray]
-        Arrays for the three trend categories plus diagnostic counts / weight
-        sums that make sparse or numerically degenerate bins inspectable.
-    """
-
-    return _reduce_population_to_bins(
-        x_values=log_mstar,
-        values=values,
-        bin_edges=mass_bin_edges,
-        detectable_weights=detectable_weights,
-        selected_weights=selected_weights,
-    )
-
-
 def _build_padded_bin_edges(
     values: np.ndarray,
     n_bins: int,
@@ -1228,6 +1049,93 @@ def _load_flattened_posterior_chain(chain_path: Path, burn_in: int) -> np.ndarra
     return chain[burn_in:].reshape(-1, chain.shape[-1])
 
 
+def _reorder_numpyro_parameter_axis(
+    samples_by_chain: np.ndarray,
+    stored_parameter_names: np.ndarray,
+    requested_parameter_names: tuple[str, ...] | None,
+    *,
+    artifact_path: Path,
+) -> np.ndarray:
+    """
+    Return NumPyro samples in the run config's parameter order.
+
+    NumPyro artifacts are self-describing, while PPC/trend code expects plain
+    theta matrices in `RuntimeConfig.parameter_schema.internal_parameter_names`
+    order. Reordering at the loader boundary keeps all downstream predictive
+    code unchanged and prevents silent parameter swaps.
+    """
+
+    samples = np.asarray(samples_by_chain, dtype=float)
+    if samples.ndim != 3:
+        raise ValueError(f"Posterior artifact '{artifact_path}' must store samples with shape (chain, draw, parameter).")
+    if requested_parameter_names is None:
+        return samples
+
+    stored_names = [str(name) for name in np.asarray(stored_parameter_names).tolist()]
+    missing = [name for name in requested_parameter_names if name not in stored_names]
+    if missing:
+        raise ValueError(
+            f"Posterior artifact '{artifact_path}' is missing parameters required by the run config: {missing}."
+        )
+    order = [stored_names.index(name) for name in requested_parameter_names]
+    return samples[:, :, order]
+
+
+def _load_flattened_numpyro_samples_npz(
+    samples_path: Path,
+    *,
+    parameter_names: tuple[str, ...] | None,
+) -> np.ndarray:
+    """Load flattened posterior draws from the compact NumPyro `samples.npz` artifact."""
+
+    with np.load(samples_path) as payload:
+        if "samples_by_chain" in payload:
+            samples_by_chain = np.asarray(payload["samples_by_chain"], dtype=float)
+        elif "flat_samples" in payload:
+            flat_samples = np.asarray(payload["flat_samples"], dtype=float)
+            if flat_samples.ndim != 2:
+                raise ValueError(f"Posterior artifact '{samples_path}' has invalid `flat_samples` shape.")
+            samples_by_chain = flat_samples[None, :, :]
+        else:
+            raise ValueError(f"Posterior artifact '{samples_path}' is missing `samples_by_chain` or `flat_samples`.")
+        stored_parameter_names = payload.get("parameter_names", np.asarray([], dtype="U"))
+
+    ordered = _reorder_numpyro_parameter_axis(
+        samples_by_chain,
+        stored_parameter_names,
+        parameter_names,
+        artifact_path=samples_path,
+    )
+    return ordered.reshape(-1, ordered.shape[-1])
+
+
+def _load_flattened_numpyro_posterior_nc(
+    posterior_path: Path,
+    *,
+    parameter_names: tuple[str, ...] | None,
+) -> np.ndarray:
+    """Load flattened posterior draws from the ArviZ `posterior.nc` artifact."""
+
+    import arviz as az
+
+    inference_data = az.from_netcdf(posterior_path)
+    posterior = inference_data.posterior
+    stored_parameter_names = tuple(str(name) for name in posterior.data_vars)
+    ordered_parameter_names = parameter_names or stored_parameter_names
+    missing = [name for name in ordered_parameter_names if name not in posterior.data_vars]
+    if missing:
+        raise ValueError(
+            f"Posterior artifact '{posterior_path}' is missing parameters required by the run config: {missing}."
+        )
+    samples_by_chain = np.stack(
+        [np.asarray(posterior[name].values, dtype=float) for name in ordered_parameter_names],
+        axis=-1,
+    )
+    if samples_by_chain.ndim != 3:
+        raise ValueError(f"Posterior artifact '{posterior_path}' must store scalar parameter sites by chain and draw.")
+    return samples_by_chain.reshape(-1, samples_by_chain.shape[-1])
+
+
 def _select_posterior_draws(
     flattened_chain: np.ndarray,
     n_replicates: int | None,
@@ -1257,22 +1165,46 @@ def _load_posterior_draws(
     rng: np.random.Generator,
     n_replicates: int | None,
     tail_cap: int = DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP,
-) -> tuple[np.ndarray, str]:
+    parameter_names: tuple[str, ...] | None = None,
+) -> tuple[np.ndarray, str, str]:
     """
-    Load the flattened posterior chain and apply the agreed PPC draw policy.
+    Load posterior draws from NumPyro artifacts or legacy emcee chains.
 
-    The caller receives both the selected draws and the mode string so summary
-    files can explain whether a run used the canonical tail-capped chain or an
-    explicitly requested posterior subset.
+    New inference runs write `samples.npz` and `posterior.nc` after warmup, so
+    burn-in is only applied to legacy `chain.h5` inputs. The caller receives
+    the selected draws, the selection mode, and the artifact name for metadata.
     """
 
-    flattened_chain = _load_flattened_posterior_chain(chain_path=chain_path, burn_in=burn_in)
-    return _select_posterior_draws(
-        flattened_chain=flattened_chain,
+    run_dir = chain_path.parent
+    samples_path = run_dir / "samples.npz"
+    posterior_path = run_dir / "posterior.nc"
+    if samples_path.exists():
+        flattened_draws = _load_flattened_numpyro_samples_npz(
+            samples_path,
+            parameter_names=parameter_names,
+        )
+        artifact_name = "samples.npz"
+    elif posterior_path.exists():
+        flattened_draws = _load_flattened_numpyro_posterior_nc(
+            posterior_path,
+            parameter_names=parameter_names,
+        )
+        artifact_name = "posterior.nc"
+    elif chain_path.exists():
+        flattened_draws = _load_flattened_posterior_chain(chain_path=chain_path, burn_in=burn_in)
+        artifact_name = "chain.h5"
+    else:
+        raise FileNotFoundError(
+            f"Run directory '{run_dir}' does not contain samples.npz, posterior.nc, or legacy chain.h5."
+        )
+
+    selected, mode = _select_posterior_draws(
+        flattened_chain=flattened_draws,
         n_replicates=n_replicates,
         rng=rng,
         tail_cap=tail_cap,
     )
+    return selected, mode, artifact_name
 
 
 def _resolve_candidate_pool_size(candidate_pool_size: int | None, base_normals_count: int) -> int:
@@ -1295,54 +1227,6 @@ def _resolve_candidate_pool_size(candidate_pool_size: int | None, base_normals_c
     return max(resolved, THETA_SAMPLE_SIZE, SIGMA_SAMPLE_SIZE)
 
 
-def _vectorized_skewnorm_sample(z0: np.ndarray, z1: np.ndarray, loc: float, scale: float, alpha: float) -> np.ndarray:
-    """Vectorized skew-normal sampling using the same construction as the kernel."""
-
-    delta = alpha / math.sqrt(1.0 + alpha * alpha)
-    return loc + scale * (delta * np.abs(z0) + math.sqrt(1.0 - delta * delta) * z1)
-
-
-def _vectorized_truncnorm_sample(
-    z_u: np.ndarray,
-    loc: np.ndarray,
-    scale: float,
-    low: float,
-    high: float,
-) -> np.ndarray:
-    """
-    Vectorized truncated-normal sampling that mirrors the kernel approximation.
-
-    The `z_u` inputs are first mapped through the standard-normal CDF so that
-    the reused basis values become uniform draws in `[0, 1]`.
-    """
-
-    a = (low - loc) / scale
-    b = (high - loc) / scale
-    pa = ndtr(a)
-    pb = ndtr(b)
-    u = np.clip(ndtr(z_u), 1.0e-12, 1.0 - 1.0e-12)
-    q = pa + (pb - pa) * u
-    sampled = loc + scale * ndtri(np.clip(q, 1.0e-12, 1.0 - 1.0e-12))
-    return np.clip(sampled, low, high)
-
-
-def _vectorized_mu_r(
-    mstar: np.ndarray,
-    n_value: np.ndarray,
-    profile: ProfileSpec,
-    *,
-    stellar_mass_pivot: float = 11.4,
-    mu_r0: float | None = None,
-) -> np.ndarray:
-    """Vectorized mean-size relation shared by PPC candidate generation."""
-
-    resolved_mu_r0 = profile.mu_r0 if mu_r0 is None else float(mu_r0)
-    out = resolved_mu_r0 + profile.beta_r * (mstar - float(stellar_mass_pivot))
-    if profile.nu_r is not None:
-        out += profile.nu_r * (np.log10(np.maximum(n_value, 1.0e-12)) - math.log10(4.0))
-    return out
-
-
 def _compute_observed_delta_r(
     log_mstar: np.ndarray,
     n_value: np.ndarray,
@@ -1352,358 +1236,731 @@ def _compute_observed_delta_r(
     stellar_mass_pivot: float = 11.4,
     mu_r0: float | None = None,
 ) -> np.ndarray:
-    """
-    Compute observed `delta_r = logre_kpc - mu_r` using the model's size relation.
-
-    `theta` is accepted intentionally even though the current size relation is
-    fixed by `ProfileSpec`, not sampled as part of the posterior state. This
-    keeps the call sites explicit about whether they are doing per-draw or
-    reference evaluation and preserves the API if `mu_r` becomes sampled later.
-    """
+    """Compute observed ``delta_r`` with the same size relation used by the JAX kernel."""
 
     del theta
-    mu_r = _vectorized_mu_r(
-        mstar=np.asarray(log_mstar, dtype=float),
-        n_value=np.asarray(n_value, dtype=float),
-        profile=profile,
-        stellar_mass_pivot=stellar_mass_pivot,
-        mu_r0=mu_r0,
-    )
+    resolved_mu_r0 = profile.mu_r0 if mu_r0 is None else float(mu_r0)
+    log_mstar_array = np.asarray(log_mstar, dtype=float)
+    n_value_array = np.asarray(n_value, dtype=float)
+    mu_r = resolved_mu_r0 + profile.beta_r * (log_mstar_array - float(stellar_mass_pivot))
+    if profile.nu_r is not None:
+        mu_r = mu_r + profile.nu_r * (np.log10(np.maximum(n_value_array, 1.0e-12)) - math.log10(4.0))
     return np.asarray(log_re_kpc, dtype=float) - mu_r
 
 
-def _vectorized_theta_ein_arcsec(
-    zd: np.ndarray,
-    zs: np.ndarray,
-    log_enclosed_mass: np.ndarray,
-    gamma: np.ndarray,
-    z_grid: np.ndarray,
-    chi_kpc_grid: np.ndarray,
-    mass_radius_kpc: float,
-    mass_log_physical_offset: float = 0.0,
-) -> np.ndarray:
-    """
-    Vectorized Einstein-radius calculation copied from the scalar primitive.
+def _jax_standard_normal_cdf(value: jnp.ndarray) -> jnp.ndarray:
+    """Evaluate the standard-normal CDF inside JAX without leaving x64 mode."""
 
-    This helper intentionally mirrors the inference code's geometry formula so
-    the PPC pipeline remains statistically aligned with the fitted model.
+    return 0.5 * (1.0 + jax.lax.erf(value / math.sqrt(2.0)))
+
+
+def _jax_skewnorm_sample(z0: jnp.ndarray, z1: jnp.ndarray, loc: float, scale: float, alpha: float) -> jnp.ndarray:
     """
+    JAX version of the foreground stellar-mass skew-normal sampler.
+
+    The formula intentionally matches the historical sampler while keeping the
+    diagnostics hot path inside JAX.
+    """
+
+    delta = alpha / jnp.sqrt(1.0 + alpha * alpha)
+    return loc + scale * (delta * jnp.abs(z0) + jnp.sqrt(1.0 - delta * delta) * z1)
+
+
+def _jax_truncnorm_sample(
+    z_u: jnp.ndarray,
+    loc: jnp.ndarray,
+    scale: jnp.ndarray,
+    low: float,
+    high: float,
+) -> jnp.ndarray:
+    """JAX truncated-normal sampler matching the PPC NumPy construction."""
+
+    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+    a = (low - loc) / safe_scale
+    b = (high - loc) / safe_scale
+    pa = _jax_standard_normal_cdf(a)
+    pb = _jax_standard_normal_cdf(b)
+    u = jnp.clip(_jax_standard_normal_cdf(z_u), 1.0e-12, 1.0 - 1.0e-12)
+    q = pa + (pb - pa) * u
+    clipped_q = jnp.clip(q, 1.0e-12, 1.0 - 1.0e-12)
+    sampled = loc + safe_scale * math.sqrt(2.0) * jax.lax.erf_inv(2.0 * clipped_q - 1.0)
+    return jnp.where((scale > 0.0) & (high > low) & (pb > pa), jnp.clip(sampled, low, high), low)
+
+
+def _jax_unpack_population_theta(theta: jnp.ndarray, gamma_mode_code: int) -> tuple[jnp.ndarray, ...]:
+    """
+    Decode one posterior draw for the JAX diagnostics kernel.
+
+    The return order mirrors `_unpack_population_theta` but stays as a tuple of
+    JAX scalars so it can be used inside `jit`/`vmap`.
+    """
+
+    mu5_0 = theta[0]
+    beta5 = theta[1]
+    xi5 = theta[2]
+    sigma5 = theta[3]
+    mu_gamma_0 = theta[4]
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        beta_gamma = theta[5]
+        xi_gamma = theta[6]
+        beta_sigma_star_gamma = jnp.asarray(0.0, dtype=theta.dtype)
+        sigma_gamma = theta[7]
+        mu_zs = theta[8]
+        sigma_zs = theta[9]
+        theta0 = theta[10]
+        loga = theta[11]
+    elif gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
+        beta_gamma = jnp.asarray(0.0, dtype=theta.dtype)
+        xi_gamma = jnp.asarray(0.0, dtype=theta.dtype)
+        beta_sigma_star_gamma = jnp.asarray(0.0, dtype=theta.dtype)
+        sigma_gamma = theta[5]
+        mu_zs = theta[6]
+        sigma_zs = theta[7]
+        theta0 = theta[8]
+        loga = theta[9]
+    else:
+        beta_gamma = jnp.asarray(0.0, dtype=theta.dtype)
+        xi_gamma = jnp.asarray(0.0, dtype=theta.dtype)
+        beta_sigma_star_gamma = theta[5]
+        sigma_gamma = theta[6]
+        mu_zs = theta[7]
+        sigma_zs = theta[8]
+        theta0 = theta[9]
+        loga = theta[10]
+    return (
+        mu5_0,
+        beta5,
+        xi5,
+        sigma5,
+        mu_gamma_0,
+        beta_gamma,
+        xi_gamma,
+        beta_sigma_star_gamma,
+        sigma_gamma,
+        mu_zs,
+        sigma_zs,
+        theta0,
+        loga,
+    )
+
+
+def _jax_gamma_population_mean(
+    mu_gamma_0: jnp.ndarray,
+    beta_gamma: jnp.ndarray,
+    xi_gamma: jnp.ndarray,
+    beta_sigma_star_gamma: jnp.ndarray,
+    mstar_shift: jnp.ndarray,
+    delta_r: jnp.ndarray,
+    sigma_star_shift9p0: jnp.ndarray,
+    gamma_mode_code: int,
+) -> jnp.ndarray:
+    """Mode-aware gamma population mean for the shared-parent JAX kernel."""
+
+    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        return mu_gamma_0 + beta_gamma * mstar_shift + xi_gamma * delta_r
+    if gamma_mode_code == GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE:
+        return mu_gamma_0 + beta_sigma_star_gamma * sigma_star_shift9p0
+    return mu_gamma_0 + jnp.zeros_like(mstar_shift)
+
+
+def _jax_theta_ein_arcsec(
+    zd: jnp.ndarray,
+    zs: jnp.ndarray,
+    log_enclosed_mass: jnp.ndarray,
+    gamma: jnp.ndarray,
+    z_grid: jnp.ndarray,
+    chi_kpc_grid: jnp.ndarray,
+    mass_radius_kpc: float,
+    mass_log_physical_offset: float,
+) -> jnp.ndarray:
+    """Vectorized Einstein-radius calculation for shared-parent diagnostics."""
 
     c_km_s = 299792.458
     g_kpc_kms2_msun = 4.30091e-6
-
-    theta_ein = np.zeros_like(gamma, dtype=float)
-    valid = (zd > 0.0) & (zs > zd) & (gamma > 1.0)
-    if not np.any(valid):
-        return theta_ein
-
-    chi_l = np.interp(zd[valid], z_grid, chi_kpc_grid, left=float(chi_kpc_grid[0]), right=float(chi_kpc_grid[-1]))
-    chi_s = np.interp(zs[valid], z_grid, chi_kpc_grid, left=float(chi_kpc_grid[0]), right=float(chi_kpc_grid[-1]))
-
-    dl = chi_l / (1.0 + zd[valid])
-    ds = chi_s / (1.0 + zs[valid])
-    dls = (chi_s - chi_l) / (1.0 + zs[valid])
-    geometry_ok = (chi_s > chi_l) & (dl > 0.0) & (ds > 0.0) & (dls > 0.0)
-    if not np.any(geometry_ok):
-        return theta_ein
-
-    inner_indices = np.flatnonzero(valid)[geometry_ok]
-    sigma_crit = (c_km_s * c_km_s) / (4.0 * math.pi * g_kpc_kms2_msun) * (ds[geometry_ok] / (dl[geometry_ok] * dls[geometry_ok]))
-    base = (10.0 ** (log_enclosed_mass[inner_indices] + mass_log_physical_offset)) / (
-        math.pi * sigma_crit * (mass_radius_kpc ** (3.0 - gamma[inner_indices]))
+    chi_l = jnp.interp(zd, z_grid, chi_kpc_grid)
+    chi_s = jnp.interp(zs, z_grid, chi_kpc_grid)
+    dl = chi_l / (1.0 + zd)
+    ds = chi_s / (1.0 + zs)
+    dls = (chi_s - chi_l) / (1.0 + zs)
+    sigma_crit = (c_km_s * c_km_s) / (4.0 * math.pi * g_kpc_kms2_msun) * (ds / (dl * dls))
+    base = (10.0 ** (log_enclosed_mass + mass_log_physical_offset)) / (
+        math.pi * sigma_crit * (mass_radius_kpc ** (3.0 - gamma))
     )
-    physical_ok = base > 0.0
-    if np.any(physical_ok):
-        chosen = inner_indices[physical_ok]
-        r_ein = base[physical_ok] ** (1.0 / (gamma[chosen] - 1.0))
-        theta_ein[chosen] = r_ein / dl[geometry_ok][physical_ok] * 206265.0
-    return theta_ein
+    r_ein = base ** (1.0 / (gamma - 1.0))
+    theta = r_ein / dl * 206265.0
+    valid = (
+        (zd > 0.0)
+        & (zs > zd)
+        & (gamma > 1.0)
+        & (chi_s > chi_l)
+        & (dl > 0.0)
+        & (ds > 0.0)
+        & (dls > 0.0)
+        & (base > 0.0)
+    )
+    return jnp.where(valid, theta, 0.0)
 
 
-def _discovery_probability(theta_ein: np.ndarray, theta0: float, loga: float) -> np.ndarray:
-    """Vectorized version of the strong-lens discovery sigmoid."""
+def _jax_axis_indices(axis: jnp.ndarray, value: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Return lower/upper interpolation indices and the fractional coordinate."""
 
-    a = 10.0 ** loga
-    x = -a * (theta_ein - theta0)
-    x = np.clip(x, -60.0, 60.0)
-    return 1.0 / (1.0 + np.exp(x))
+    clipped = jnp.clip(value, axis[0], axis[-1])
+    upper = jnp.searchsorted(axis, clipped, side="right")
+    upper = jnp.clip(upper, 1, axis.shape[0] - 1)
+    lower = upper - 1
+    denominator = jnp.where(axis[upper] > axis[lower], axis[upper] - axis[lower], 1.0)
+    weight = jnp.where(axis[upper] > axis[lower], (clipped - axis[lower]) / denominator, 0.0)
+    return lower, upper, weight
 
 
-def _expected_theta_dimension_for_gamma_mode(gamma_mode_code: int) -> int:
+def _jax_interp_sigma_unit_scalar(
+    gamma: jnp.ndarray,
+    zd: jnp.ndarray,
+    log_re_kpc: jnp.ndarray,
+    n_value: jnp.ndarray,
+    gamma_axis: jnp.ndarray,
+    zd_axis: jnp.ndarray,
+    log_re_axis: jnp.ndarray,
+    n_axis: jnp.ndarray,
+    sigma_grid: jnp.ndarray,
+    *,
+    has_zd_axis: int,
+    has_n_axis: int,
+) -> jnp.ndarray:
     """
-    Return the sampled theta dimension expected by the active gamma mode.
+    Clipped multilinear interpolation for the sigma-unit table.
 
-    PPC consumes posterior draws after inference has finished, so it cannot
-    rely on the sampler to catch a mismatched chain shape. The helper keeps
-    that validation close to the chain consumer and makes the mode-specific
-    dimensional contract explicit.
+    `has_zd_axis` and `has_n_axis` are static flags because JAX needs one
+    concrete indexing pattern per compiled table schema.
     """
 
-    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
-        return 12
-    if gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
-        return 10
-    if gamma_mode_code == GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE:
-        return 11
-    raise ValueError(f"Unsupported gamma mode code '{gamma_mode_code}' in posterior predictive workflow.")
+    gamma_lo, gamma_hi, gamma_weight = _jax_axis_indices(gamma_axis, gamma)
+    re_lo, re_hi, re_weight = _jax_axis_indices(log_re_axis, log_re_kpc)
+
+    if has_zd_axis == 1:
+        zd_lo, zd_hi, zd_weight = _jax_axis_indices(zd_axis, zd)
+    else:
+        zd_lo = zd_hi = jnp.asarray(0, dtype=jnp.int32)
+        zd_weight = jnp.asarray(0.0, dtype=jnp.float64)
+
+    if has_n_axis == 1:
+        n_lo, n_hi, n_weight = _jax_axis_indices(n_axis, n_value)
+    else:
+        n_lo = n_hi = jnp.asarray(0, dtype=jnp.int32)
+        n_weight = jnp.asarray(0.0, dtype=jnp.float64)
+
+    result = jnp.asarray(0.0, dtype=jnp.float64)
+    for gamma_corner in range(2):
+        gamma_index = jnp.where(gamma_corner == 0, gamma_lo, gamma_hi)
+        gamma_factor = jnp.where(gamma_corner == 0, 1.0 - gamma_weight, gamma_weight)
+        for zd_corner in range(2 if has_zd_axis == 1 else 1):
+            zd_index = jnp.where(zd_corner == 0, zd_lo, zd_hi)
+            zd_factor = jnp.where(zd_corner == 0, 1.0 - zd_weight, zd_weight)
+            for re_corner in range(2):
+                re_index = jnp.where(re_corner == 0, re_lo, re_hi)
+                re_factor = jnp.where(re_corner == 0, 1.0 - re_weight, re_weight)
+                for n_corner in range(2 if has_n_axis == 1 else 1):
+                    n_index = jnp.where(n_corner == 0, n_lo, n_hi)
+                    n_factor = jnp.where(n_corner == 0, 1.0 - n_weight, n_weight)
+                    if has_zd_axis == 1 and has_n_axis == 1:
+                        grid_value = sigma_grid[gamma_index, zd_index, re_index, n_index]
+                    elif has_zd_axis == 1:
+                        grid_value = sigma_grid[gamma_index, zd_index, re_index]
+                    elif has_n_axis == 1:
+                        grid_value = sigma_grid[gamma_index, re_index, n_index]
+                    else:
+                        grid_value = sigma_grid[gamma_index, re_index]
+                    result = result + gamma_factor * zd_factor * re_factor * n_factor * grid_value
+    return result
 
 
-def _unpack_population_theta(theta: np.ndarray, gamma_mode_code: int) -> dict[str, float]:
+def _jax_reduce_population_to_bins(
+    x_values: jnp.ndarray,
+    values: jnp.ndarray,
+    bin_edges: jnp.ndarray,
+    detectable_weights: jnp.ndarray,
+    selected_weights: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """JAX reduction for parent/detectable/selected trend bins."""
+
+    n_bins = bin_edges.shape[0] - 1
+    finite_parent = jnp.isfinite(x_values) & jnp.isfinite(values)
+    finite_detectable = finite_parent & jnp.isfinite(detectable_weights) & (detectable_weights > 0.0)
+    finite_selected = finite_parent & jnp.isfinite(selected_weights) & (selected_weights > 0.0)
+
+    def one_bin(bin_index: jnp.ndarray) -> tuple[jnp.ndarray, ...]:
+        lower = bin_edges[bin_index]
+        upper = bin_edges[bin_index + 1]
+        upper_inclusive = bin_index == (n_bins - 1)
+        in_bin = (x_values >= lower) & jnp.where(upper_inclusive, x_values <= upper, x_values < upper)
+
+        parent_mask = finite_parent & in_bin
+        parent_count = jnp.sum(parent_mask.astype(jnp.int32))
+        parent_sum = jnp.sum(jnp.where(parent_mask, values, 0.0))
+        parent_mean = jnp.where(parent_count > 0, parent_sum / parent_count, jnp.nan)
+
+        detectable_mask = finite_detectable & in_bin
+        detectable_weight_sum = jnp.sum(jnp.where(detectable_mask, detectable_weights, 0.0))
+        detectable_value_sum = jnp.sum(jnp.where(detectable_mask, values * detectable_weights, 0.0))
+        detectable_mean = jnp.where(detectable_weight_sum > 0.0, detectable_value_sum / detectable_weight_sum, jnp.nan)
+
+        selected_mask = finite_selected & in_bin
+        selected_weight_sum = jnp.sum(jnp.where(selected_mask, selected_weights, 0.0))
+        selected_value_sum = jnp.sum(jnp.where(selected_mask, values * selected_weights, 0.0))
+        selected_mean = jnp.where(selected_weight_sum > 0.0, selected_value_sum / selected_weight_sum, jnp.nan)
+
+        return parent_mean, detectable_mean, selected_mean, parent_count, detectable_weight_sum, selected_weight_sum
+
+    return jax.vmap(one_bin)(jnp.arange(n_bins))
+
+
+def _jax_summary_statistics(values: jnp.ndarray) -> jnp.ndarray:
+    """Return median, sample std, p10, and p90 for one replicated sample."""
+
+    return jnp.asarray(
+        [
+            jnp.median(values),
+            jnp.std(values, ddof=1),
+            jnp.percentile(values, 10.0),
+            jnp.percentile(values, 90.0),
+        ],
+        dtype=jnp.float64,
+    )
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "use_sersic_index",
+        "gamma_mode_code",
+        "has_zd_axis",
+        "has_n_axis",
+        "parent_sample_size",
+    ),
+)
+def _shared_parent_diagnostics_jit(
+    theta_chunk: jnp.ndarray,
+    draw_keys: jnp.ndarray,
+    scalar_context: jnp.ndarray,
+    z_grid: jnp.ndarray,
+    chi_kpc_grid: jnp.ndarray,
+    cs_gamma_grid: jnp.ndarray,
+    cs_over_theta_grid: jnp.ndarray,
+    sigma_gamma_axis: jnp.ndarray,
+    sigma_zd_axis: jnp.ndarray,
+    sigma_log_re_axis: jnp.ndarray,
+    sigma_n_axis: jnp.ndarray,
+    sigma_unit_grid: jnp.ndarray,
+    mass_bin_edges: jnp.ndarray,
+    sigma_star_bin_edges: jnp.ndarray,
+    log_re_bin_edges: jnp.ndarray,
+    delta_r_bin_edges: jnp.ndarray,
+    *,
+    use_sersic_index: int,
+    gamma_mode_code: int,
+    has_zd_axis: int,
+    has_n_axis: int,
+    parent_sample_size: int,
+) -> dict[str, jnp.ndarray]:
     """
-    Decode one posterior draw into named scalar parameters for PPC generation.
+    Generate shared parent populations and reduce them to PPC/trend products.
 
-    The gamma mode now changes the actual sampled vector length. Converting the
-    raw `theta` row into a named mapping up front prevents later code from
-    scattering fragile index arithmetic across the population generator.
+    The kernel intentionally returns only small replicated catalogs and binned
+    summaries. Full parent populations remain device-local temporaries so large
+    production chains do not spill massive intermediate arrays to disk.
     """
 
-    theta_array = np.asarray(theta, dtype=float)
-    expected_dimension = _expected_theta_dimension_for_gamma_mode(gamma_mode_code)
-    if theta_array.shape != (expected_dimension,):
-        raise ValueError(
-            "Posterior draw has the wrong dimension for posterior predictive "
-            f"generation: expected {expected_dimension}, got {theta_array.shape}."
+    mass_radius_kpc = scalar_context[0]
+    n_fixed = scalar_context[1]
+    mu_n0 = scalar_context[2]
+    beta_n = scalar_context[3]
+    sigma_n = scalar_context[4]
+    mass_function_loc = scalar_context[5]
+    mass_function_scale = scalar_context[6]
+    mass_function_alpha = scalar_context[7]
+    mu_r0 = scalar_context[8]
+    beta_r = scalar_context[9]
+    sigma_r = scalar_context[10]
+    nu_r = scalar_context[11]
+    mu_d = scalar_context[12]
+    sigma_d = scalar_context[13]
+    gamma_trunc_low = scalar_context[14]
+    gamma_trunc_high = scalar_context[15]
+    stellar_mass_pivot = scalar_context[16]
+    mass_log_physical_offset = scalar_context[17]
+
+    def one_draw(theta: jnp.ndarray, key: jnp.ndarray) -> dict[str, jnp.ndarray]:
+        theta_parts = _jax_unpack_population_theta(theta, gamma_mode_code)
+        (
+            mu5_0,
+            beta5,
+            xi5,
+            sigma5,
+            mu_gamma_0,
+            beta_gamma,
+            xi_gamma,
+            beta_sigma_star_gamma,
+            sigma_gamma,
+            mu_zs,
+            sigma_zs,
+            theta0,
+            loga,
+        ) = theta_parts
+
+        parent_key, theta_key, sigma_key, noise_key = jax.random.split(key, 4)
+        normals = jax.random.normal(parent_key, shape=(parent_sample_size, 8), dtype=jnp.float64)
+
+        log_mstar = _jax_skewnorm_sample(
+            normals[:, 2],
+            normals[:, 3],
+            mass_function_loc,
+            mass_function_scale,
+            mass_function_alpha,
+        )
+        mstar_shift = log_mstar - stellar_mass_pivot
+        zd = mu_d + sigma_d * normals[:, 0]
+        zs = mu_zs + sigma_zs * normals[:, 1]
+
+        logn = mu_n0 + beta_n * mstar_shift + sigma_n * normals[:, 4]
+        n_draw = 10.0**logn
+        n_value = jnp.where(use_sersic_index == 1, n_draw, n_fixed)
+        sersic_term = nu_r * (jnp.log10(jnp.maximum(n_value, 1.0e-12)) - math.log10(4.0))
+        mu_r = mu_r0 + beta_r * mstar_shift + jnp.where(use_sersic_index == 1, sersic_term, 0.0)
+        re_noise = jnp.where(use_sersic_index == 1, normals[:, 5], normals[:, 4])
+        mass_noise = jnp.where(use_sersic_index == 1, normals[:, 6], normals[:, 5])
+        log_re_kpc = mu_r + sigma_r * re_noise
+        delta_r = log_re_kpc - mu_r
+        log_enclosed_mass = mu5_0 + beta5 * mstar_shift + xi5 * delta_r + sigma5 * mass_noise
+
+        log_sigma_star = log_mstar - LOG10_2PI - 2.0 * log_re_kpc
+        mu_gamma = _jax_gamma_population_mean(
+            mu_gamma_0,
+            beta_gamma,
+            xi_gamma,
+            beta_sigma_star_gamma,
+            mstar_shift,
+            delta_r,
+            log_sigma_star - 9.0,
+            gamma_mode_code,
+        )
+        gamma = _jax_truncnorm_sample(
+            normals[:, 7],
+            loc=mu_gamma,
+            scale=sigma_gamma,
+            low=gamma_trunc_low,
+            high=gamma_trunc_high,
+        )
+        re_kpc = 10.0**log_re_kpc
+        theta_ein = _jax_theta_ein_arcsec(
+            zd=zd,
+            zs=zs,
+            log_enclosed_mass=log_enclosed_mass,
+            gamma=gamma,
+            z_grid=z_grid,
+            chi_kpc_grid=chi_kpc_grid,
+            mass_radius_kpc=mass_radius_kpc,
+            mass_log_physical_offset=mass_log_physical_offset,
+        )
+        cs_over_theta = jnp.interp(gamma, cs_gamma_grid, cs_over_theta_grid)
+        discovery_probability = 1.0 / (1.0 + jnp.exp(jnp.clip(-(10.0**loga) * (theta_ein - theta0), -60.0, 60.0)))
+        area = math.pi * jnp.square(cs_over_theta * theta_ein)
+        valid_geometry = (
+            jnp.isfinite(gamma)
+            & jnp.isfinite(log_enclosed_mass)
+            & jnp.isfinite(re_kpc)
+            & (theta_ein > 0.0)
+            & (zs > zd)
+            & (zd > 0.0)
+            & (zs > 0.0)
+            & (area > 0.0)
+        )
+        detectable_weights = jnp.where(valid_geometry, area, 0.0)
+        selected_weights = detectable_weights * jnp.where(
+            valid_geometry & jnp.isfinite(discovery_probability) & (discovery_probability > 0.0),
+            discovery_probability,
+            0.0,
         )
 
-    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
+        sigma_unit = jax.vmap(
+            lambda gamma_value, zd_value, log_re_value, n_scalar: _jax_interp_sigma_unit_scalar(
+                gamma_value,
+                zd_value,
+                log_re_value,
+                n_scalar,
+                sigma_gamma_axis,
+                sigma_zd_axis,
+                sigma_log_re_axis,
+                sigma_n_axis,
+                sigma_unit_grid,
+                has_zd_axis=has_zd_axis,
+                has_n_axis=has_n_axis,
+            )
+        )(gamma, zd, log_re_kpc, n_value)
+        sigma_model = jnp.sqrt(jnp.maximum(sigma_unit * (10.0**log_enclosed_mass), 1.0e-30))
+        sigma_ap = sigma_model
+
+        total_weight = jnp.sum(selected_weights)
+        probabilities = jnp.where(
+            total_weight > 0.0,
+            selected_weights / total_weight,
+            jnp.full(parent_sample_size, 1.0 / parent_sample_size, dtype=jnp.float64),
+        )
+        theta_indices = jax.random.choice(theta_key, parent_sample_size, shape=(THETA_SAMPLE_SIZE,), replace=True, p=probabilities)
+        sigma_indices = jax.random.choice(sigma_key, parent_sample_size, shape=(SIGMA_SAMPLE_SIZE,), replace=True, p=probabilities)
+        sigma_noise = jax.random.normal(noise_key, shape=(SIGMA_SAMPLE_SIZE,), dtype=jnp.float64)
+        sigma_rep = sigma_model[sigma_indices] + SIGMA_RELATIVE_NOISE * sigma_model[sigma_indices] * sigma_noise
+
+        theta_stats = _jax_summary_statistics(theta_ein[theta_indices])
+        sigma_stats = _jax_summary_statistics(sigma_rep)
+
+        mass_reduced = _jax_reduce_population_to_bins(
+            log_mstar,
+            log_enclosed_mass,
+            mass_bin_edges,
+            detectable_weights,
+            selected_weights,
+        )
+        gamma_reduced = _jax_reduce_population_to_bins(
+            log_mstar,
+            gamma,
+            mass_bin_edges,
+            detectable_weights,
+            selected_weights,
+        )
+        sigma_reduced = _jax_reduce_population_to_bins(
+            log_mstar,
+            sigma_ap,
+            mass_bin_edges,
+            detectable_weights,
+            selected_weights,
+        )
+        gamma_logre_reduced = _jax_reduce_population_to_bins(
+            log_re_kpc,
+            gamma,
+            log_re_bin_edges,
+            detectable_weights,
+            selected_weights,
+        )
+        gamma_sigma_star_reduced = _jax_reduce_population_to_bins(
+            log_sigma_star,
+            gamma,
+            sigma_star_bin_edges,
+            detectable_weights,
+            selected_weights,
+        )
+        gamma_delta_r_reduced = _jax_reduce_population_to_bins(
+            delta_r,
+            gamma,
+            delta_r_bin_edges,
+            detectable_weights,
+            selected_weights,
+        )
+
         return {
-            "mu5_0": float(theta_array[0]),
-            "beta5": float(theta_array[1]),
-            "xi5": float(theta_array[2]),
-            "sigma5": float(theta_array[3]),
-            "mu_gamma_0": float(theta_array[4]),
-            "beta_gamma": float(theta_array[5]),
-            "xi_gamma": float(theta_array[6]),
-            "beta_sigma_star_gamma": 0.0,
-            "sigma_gamma": float(theta_array[7]),
-            "mu_zs": float(theta_array[8]),
-            "sigma_zs": float(theta_array[9]),
-            "theta0": float(theta_array[10]),
-            "loga": float(theta_array[11]),
+            "theta_theta_ein": theta_ein[theta_indices],
+            "theta_gamma": gamma[theta_indices],
+            "theta_zd": zd[theta_indices],
+            "theta_zs": zs[theta_indices],
+            "theta_mass": log_enclosed_mass[theta_indices],
+            "theta_re_kpc": re_kpc[theta_indices],
+            "theta_n": n_value[theta_indices],
+            "sigma_sigma": sigma_rep,
+            "sigma_theta_ein": theta_ein[sigma_indices],
+            "sigma_gamma": gamma[sigma_indices],
+            "sigma_zd": zd[sigma_indices],
+            "sigma_zs": zs[sigma_indices],
+            "sigma_mass": log_enclosed_mass[sigma_indices],
+            "sigma_re_kpc": re_kpc[sigma_indices],
+            "sigma_n": n_value[sigma_indices],
+            "theta_stats": theta_stats,
+            "sigma_stats": sigma_stats,
+            "mass_trend": jnp.stack(mass_reduced[:3]),
+            "gamma_trend": jnp.stack(gamma_reduced[:3]),
+            "sigma_trend": jnp.stack(sigma_reduced[:3]),
+            "parent_bin_counts": mass_reduced[3],
+            "detectable_weight_sums": mass_reduced[4],
+            "selected_weight_sums": mass_reduced[5],
+            "gamma_logre_trend": jnp.stack(gamma_logre_reduced[:3]),
+            "gamma_logre_parent_bin_counts": gamma_logre_reduced[3],
+            "gamma_logre_detectable_weight_sums": gamma_logre_reduced[4],
+            "gamma_logre_selected_weight_sums": gamma_logre_reduced[5],
+            "gamma_sigma_star_trend": jnp.stack(gamma_sigma_star_reduced[:3]),
+            "gamma_sigma_star_parent_bin_counts": gamma_sigma_star_reduced[3],
+            "gamma_sigma_star_detectable_weight_sums": gamma_sigma_star_reduced[4],
+            "gamma_sigma_star_selected_weight_sums": gamma_sigma_star_reduced[5],
+            "gamma_delta_r_trend": jnp.stack(gamma_delta_r_reduced[:3]),
+            "gamma_delta_r_parent_bin_counts": gamma_delta_r_reduced[3],
+            "gamma_delta_r_detectable_weight_sums": gamma_delta_r_reduced[4],
+            "gamma_delta_r_selected_weight_sums": gamma_delta_r_reduced[5],
         }
-    if gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
-        return {
-            "mu5_0": float(theta_array[0]),
-            "beta5": float(theta_array[1]),
-            "xi5": float(theta_array[2]),
-            "sigma5": float(theta_array[3]),
-            "mu_gamma_0": float(theta_array[4]),
-            # In the independent mode the gamma slopes are removed from the sampled
-            # vector entirely, so PPC reconstructs the scientific contract
-            # explicitly instead of assuming hidden placeholder slots still exist.
-            "beta_gamma": 0.0,
-            "xi_gamma": 0.0,
-            "beta_sigma_star_gamma": 0.0,
-            "sigma_gamma": float(theta_array[5]),
-            "mu_zs": float(theta_array[6]),
-            "sigma_zs": float(theta_array[7]),
-            "theta0": float(theta_array[8]),
-            "loga": float(theta_array[9]),
-        }
+
+    return jax.vmap(one_draw)(theta_chunk, draw_keys)
+
+
+def _diagnostics_scalar_context(context) -> np.ndarray:
+    """Pack scalar context values consumed by the JAX diagnostics kernel."""
+
+    return np.asarray(
+        [
+            context.mass_radius_kpc,
+            context.n_fixed,
+            context.mu_n0,
+            context.beta_n,
+            context.sigma_n,
+            context.mass_function_loc,
+            context.mass_function_scale,
+            context.mass_function_alpha,
+            context.mu_r0,
+            context.beta_r,
+            context.sigma_r,
+            context.nu_r,
+            context.mu_d,
+            context.sigma_d,
+            context.gamma_trunc_low,
+            context.gamma_trunc_high,
+            context.stellar_mass_pivot,
+            context.mass_log_physical_offset,
+        ],
+        dtype=float,
+    )
+
+
+def _sigma_table_jax_arrays(sigma_table: SigmaUnitTable) -> dict[str, np.ndarray | int]:
+    """Convert a loaded sigma table into dense arrays and static schema flags."""
+
+    if sigma_table.zd_axis is None:
+        zd_axis = np.asarray([0.0], dtype=float)
+        has_zd_axis = 0
+    else:
+        zd_axis = np.asarray(sigma_table.zd_axis, dtype=float)
+        has_zd_axis = 1
+    if sigma_table.n_axis is None:
+        n_axis = np.asarray([0.0], dtype=float)
+        has_n_axis = 0
+    else:
+        n_axis = np.asarray(sigma_table.n_axis, dtype=float)
+        has_n_axis = 1
     return {
-        "mu5_0": float(theta_array[0]),
-        "beta5": float(theta_array[1]),
-        "xi5": float(theta_array[2]),
-        "sigma5": float(theta_array[3]),
-        "mu_gamma_0": float(theta_array[4]),
-        "beta_gamma": 0.0,
-        "xi_gamma": 0.0,
-        "beta_sigma_star_gamma": float(theta_array[5]),
-        "sigma_gamma": float(theta_array[6]),
-        "mu_zs": float(theta_array[7]),
-        "sigma_zs": float(theta_array[8]),
-        "theta0": float(theta_array[9]),
-        "loga": float(theta_array[10]),
+        "gamma_axis": np.asarray(sigma_table.gamma_axis, dtype=float),
+        "zd_axis": zd_axis,
+        "log_re_axis": np.asarray(sigma_table.log_re_kpc_axis, dtype=float),
+        "n_axis": n_axis,
+        "values": np.asarray(sigma_table.values, dtype=float),
+        "has_zd_axis": has_zd_axis,
+        "has_n_axis": has_n_axis,
     }
 
 
-def _gamma_population_mean(
-    mu_gamma_0: float,
-    beta_gamma: float,
-    xi_gamma: float,
-    beta_sigma_star_gamma: float,
-    mstar_shift11p4: np.ndarray,
-    delta_r: np.ndarray,
-    sigma_star_shift9p0: np.ndarray,
-    gamma_mode_code: int,
-) -> np.ndarray:
-    """
-    Evaluate the mode-aware population mean of `gamma` for one PPC draw.
-
-    This helper is shared by histogram PPC and trend generation so both
-    workflows follow exactly the same rule for the new independent mode.
-    """
-
-    if gamma_mode_code == GAMMA_MODE_DEPENDENT_CODE:
-        return mu_gamma_0 + beta_gamma * mstar_shift11p4 + xi_gamma * delta_r
-    if gamma_mode_code == GAMMA_MODE_INDEPENDENT_CODE:
-        return np.full_like(mstar_shift11p4, mu_gamma_0, dtype=float)
-    if gamma_mode_code == GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE:
-        return mu_gamma_0 + beta_sigma_star_gamma * sigma_star_shift9p0
-    raise ValueError(f"Unsupported gamma mode code '{gamma_mode_code}' in posterior predictive workflow.")
-
-
-def _draw_candidate_population(
-    theta: np.ndarray,
+def _run_shared_parent_diagnostics_jax(
+    posterior_draws: np.ndarray,
     profile: ProfileSpec,
     context,
-    rng: np.random.Generator,
-    candidate_pool_size: int,
-) -> dict[str, np.ndarray]:
+    mass_definition: MassDefinition,
+    sigma_table: SigmaUnitTable,
+    mass_bin_edges: np.ndarray,
+    sigma_star_bin_edges: np.ndarray,
+    log_re_bin_edges: np.ndarray,
+    delta_r_bin_edges: np.ndarray,
+    parent_sample_size: int,
+    random_seed: int,
+) -> dict[str, Any]:
     """
-    Generate one sampled parent population for a single posterior draw.
+    Execute the shared-parent JAX diagnostics kernel and adapt outputs to Python.
 
-    This helper now serves two downstream workflows:
-    - histogram PPC, which resamples explicit replicated lenses from the
-      selected population
-    - Fig. 8-like trend evaluation, which aggregates the parent population into
-      stellar-mass bins without first drawing explicit lens catalogs
-
-    The candidate pool is built from the same fixed random-basis bank used by
-    normalization so the latent sampling law stays aligned with the fitted
-    model. The requested `candidate_pool_size` therefore controls how many
-    parent-population galaxies we materialize for the downstream workflow, not
-    the original normalization Monte Carlo sample count itself.
+    The returned structure mirrors the old PPC/trend chunk contracts so the
+    artifact-writing code can stay mostly unchanged while the hot numerical
+    path moves to JAX.
     """
 
-    basis = context.base_normals
-    if candidate_pool_size == basis.shape[0]:
-        normals = basis
-    else:
-        replace = basis.shape[0] < candidate_pool_size
-        sampled_indices = rng.choice(basis.shape[0], size=candidate_pool_size, replace=replace)
-        normals = basis[sampled_indices]
-
-    theta_components = _unpack_population_theta(theta=theta, gamma_mode_code=context.gamma_mode_code)
-    mu5_0 = theta_components["mu5_0"]
-    beta5 = theta_components["beta5"]
-    xi5 = theta_components["xi5"]
-    sigma5 = theta_components["sigma5"]
-    mu_gamma_0 = theta_components["mu_gamma_0"]
-    beta_gamma = theta_components["beta_gamma"]
-    xi_gamma = theta_components["xi_gamma"]
-    beta_sigma_star_gamma = theta_components["beta_sigma_star_gamma"]
-    sigma_gamma = theta_components["sigma_gamma"]
-    mu_zs = theta_components["mu_zs"]
-    sigma_zs = theta_components["sigma_zs"]
-    theta0 = theta_components["theta0"]
-    loga = theta_components["loga"]
-    stellar_mass_pivot = float(getattr(context, "stellar_mass_pivot", 11.4))
-    mass_function_loc = float(getattr(context, "mass_function_loc", profile.mass_function_loc))
-    mu_r0 = float(getattr(context, "mu_r0", profile.mu_r0))
-    mass_log_physical_offset = float(getattr(context, "mass_log_physical_offset", 0.0))
-
-    mstar = _vectorized_skewnorm_sample(
-        normals[:, 2],
-        normals[:, 3],
-        mass_function_loc,
-        profile.mass_function_scale,
-        profile.mass_function_alpha,
+    n_draws = int(posterior_draws.shape[0])
+    base_key = jax.random.PRNGKey(int(random_seed))
+    draw_keys = jax.vmap(lambda index: jax.random.fold_in(base_key, index))(jnp.arange(n_draws))
+    sigma_arrays = _sigma_table_jax_arrays(sigma_table)
+    raw = _shared_parent_diagnostics_jit(
+        jnp.asarray(posterior_draws, dtype=jnp.float64),
+        draw_keys,
+        jnp.asarray(_diagnostics_scalar_context(context), dtype=jnp.float64),
+        jnp.asarray(context.z_grid, dtype=jnp.float64),
+        jnp.asarray(context.chi_kpc_grid, dtype=jnp.float64),
+        jnp.asarray(context.cs_gamma_grid, dtype=jnp.float64),
+        jnp.asarray(context.cs_over_theta_grid, dtype=jnp.float64),
+        jnp.asarray(sigma_arrays["gamma_axis"], dtype=jnp.float64),
+        jnp.asarray(sigma_arrays["zd_axis"], dtype=jnp.float64),
+        jnp.asarray(sigma_arrays["log_re_axis"], dtype=jnp.float64),
+        jnp.asarray(sigma_arrays["n_axis"], dtype=jnp.float64),
+        jnp.asarray(sigma_arrays["values"], dtype=jnp.float64),
+        jnp.asarray(mass_bin_edges, dtype=jnp.float64),
+        jnp.asarray(sigma_star_bin_edges, dtype=jnp.float64),
+        jnp.asarray(log_re_bin_edges, dtype=jnp.float64),
+        jnp.asarray(delta_r_bin_edges, dtype=jnp.float64),
+        use_sersic_index=int(context.use_sersic_index),
+        gamma_mode_code=int(context.gamma_mode_code),
+        has_zd_axis=int(sigma_arrays["has_zd_axis"]),
+        has_n_axis=int(sigma_arrays["has_n_axis"]),
+        parent_sample_size=int(parent_sample_size),
     )
-    mstar_shift11p4 = mstar - stellar_mass_pivot
-    zd = context.mu_d + context.sigma_d * normals[:, 0]
-    zs = mu_zs + sigma_zs * normals[:, 1]
+    arrays = {key: np.asarray(value) for key, value in raw.items()}
+    mass_label = mass_definition.label
+    theta_latent = {
+        "theta_ein": arrays["theta_theta_ein"],
+        "gamma": arrays["theta_gamma"],
+        "zd": arrays["theta_zd"],
+        "zs": arrays["theta_zs"],
+        mass_label: arrays["theta_mass"],
+        "re_kpc": arrays["theta_re_kpc"],
+        "n": arrays["theta_n"],
+    }
+    sigma_latent = {
+        "sigma": arrays["sigma_sigma"],
+        "theta_ein": arrays["sigma_theta_ein"],
+        "gamma": arrays["sigma_gamma"],
+        "zd": arrays["sigma_zd"],
+        "zs": arrays["sigma_zs"],
+        mass_label: arrays["sigma_mass"],
+        "re_kpc": arrays["sigma_re_kpc"],
+        "n": arrays["sigma_n"],
+    }
+    theta_replicated_stats = {
+        name: arrays["theta_stats"][:, index]
+        for index, name in enumerate(SUMMARY_STAT_NAMES)
+    }
+    sigma_replicated_stats = {
+        name: arrays["sigma_stats"][:, index]
+        for index, name in enumerate(SUMMARY_STAT_NAMES)
+    }
 
-    if profile.fixed_n is None:
-        logn = profile.mu_n0 + profile.beta_n * mstar_shift11p4 + profile.sigma_n * normals[:, 4]
-        n_value = np.power(10.0, logn)
-        mu_r = _vectorized_mu_r(
-            mstar,
-            n_value,
-            profile,
-            stellar_mass_pivot=stellar_mass_pivot,
-            mu_r0=mu_r0,
-        )
-        re_log_kpc = mu_r + profile.sigma_r * normals[:, 5]
-        delta_r = re_log_kpc - mu_r
-        log_enclosed_mass = mu5_0 + beta5 * mstar_shift11p4 + xi5 * delta_r + sigma5 * normals[:, 6]
-    else:
-        n_value = np.full(candidate_pool_size, profile.fixed_n, dtype=float)
-        mu_r = _vectorized_mu_r(
-            mstar,
-            n_value,
-            profile,
-            stellar_mass_pivot=stellar_mass_pivot,
-            mu_r0=mu_r0,
-        )
-        re_log_kpc = mu_r + profile.sigma_r * normals[:, 4]
-        delta_r = re_log_kpc - mu_r
-        log_enclosed_mass = mu5_0 + beta5 * mstar_shift11p4 + xi5 * delta_r + sigma5 * normals[:, 5]
+    def trend_payload(array_name: str) -> dict[str, np.ndarray]:
+        return {
+            category_name: arrays[array_name][:, category_index, :]
+            for category_index, category_name in enumerate(TREND_CATEGORY_NAMES)
+        }
 
-    log_sigma_star = _compute_log_sigma_star(mstar, re_log_kpc)
-    sigma_star_shift9p0 = log_sigma_star - 9.0
-    mu_gamma = _gamma_population_mean(
-        mu_gamma_0=mu_gamma_0,
-        beta_gamma=beta_gamma,
-        xi_gamma=xi_gamma,
-        beta_sigma_star_gamma=beta_sigma_star_gamma,
-        mstar_shift11p4=mstar_shift11p4,
-        delta_r=delta_r,
-        sigma_star_shift9p0=sigma_star_shift9p0,
-        gamma_mode_code=context.gamma_mode_code,
-    )
-
-    gamma = _vectorized_truncnorm_sample(
-        normals[:, 7],
-        loc=mu_gamma,
-        scale=sigma_gamma,
-        low=context.gamma_trunc_low,
-        high=context.gamma_trunc_high,
-    )
-    re_kpc = np.power(10.0, re_log_kpc)
-
-    theta_ein = _vectorized_theta_ein_arcsec(
-        zd=zd,
-        zs=zs,
-        log_enclosed_mass=log_enclosed_mass,
-        gamma=gamma,
-        z_grid=context.z_grid,
-        chi_kpc_grid=context.chi_kpc_grid,
-        mass_radius_kpc=float(context.mass_radius_kpc),
-        mass_log_physical_offset=mass_log_physical_offset,
-    )
-    cs_over_theta = np.interp(
-        gamma,
-        context.cs_gamma_grid,
-        context.cs_over_theta_grid,
-        left=float(context.cs_over_theta_grid[0]),
-        right=float(context.cs_over_theta_grid[-1]),
-    )
-    discovery_probability = _discovery_probability(theta_ein, theta0=theta0, loga=loga)
-    area = math.pi * np.square(cs_over_theta * theta_ein)
-
-    valid_geometry = (
-        np.isfinite(gamma)
-        & np.isfinite(log_enclosed_mass)
-        & np.isfinite(re_kpc)
-        & (theta_ein > 0.0)
-        & (zs > zd)
-        & (zd > 0.0)
-        & (zs > 0.0)
-        & (area > 0.0)
-    )
-    detectable_weights = np.where(valid_geometry, area, 0.0)
-    selected_weights = detectable_weights * np.where(
-        valid_geometry & np.isfinite(discovery_probability) & (discovery_probability > 0.0),
-        discovery_probability,
-        0.0,
-    )
+    trend_draws = {
+        mass_label: trend_payload("mass_trend"),
+        "gamma": trend_payload("gamma_trend"),
+        "sigma_ap": trend_payload("sigma_trend"),
+    }
     return {
-        "log_mstar": mstar,
-        "theta_ein": theta_ein,
-        "gamma": gamma,
-        "zd": zd,
-        "zs": zs,
-        "mass": log_enclosed_mass,
-        "log_re_kpc": re_log_kpc,
-        "log_sigma_star": log_sigma_star,
-        "re_kpc": re_kpc,
-        "delta_r": delta_r,
-        "n": n_value,
-        "detectable_weights": detectable_weights,
-        "selected_weights": selected_weights,
-        # Keep the legacy key so the histogram PPC code path remains unchanged.
-        "weights": selected_weights,
+        "theta_latent": theta_latent,
+        "sigma_latent": sigma_latent,
+        "theta_replicated_stats": theta_replicated_stats,
+        "sigma_replicated_stats": sigma_replicated_stats,
+        "trend_draws": trend_draws,
+        "parent_bin_counts_draws": arrays["parent_bin_counts"],
+        "detectable_weight_sums_draws": arrays["detectable_weight_sums"],
+        "selected_weight_sums_draws": arrays["selected_weight_sums"],
+        "gamma_vs_logre_draws": trend_payload("gamma_logre_trend"),
+        "gamma_vs_logre_parent_bin_counts_draws": arrays["gamma_logre_parent_bin_counts"],
+        "gamma_vs_logre_detectable_weight_sums_draws": arrays["gamma_logre_detectable_weight_sums"],
+        "gamma_vs_logre_selected_weight_sums_draws": arrays["gamma_logre_selected_weight_sums"],
+        "gamma_vs_sigma_star_draws": trend_payload("gamma_sigma_star_trend"),
+        "gamma_vs_sigma_star_parent_bin_counts_draws": arrays["gamma_sigma_star_parent_bin_counts"],
+        "gamma_vs_sigma_star_detectable_weight_sums_draws": arrays["gamma_sigma_star_detectable_weight_sums"],
+        "gamma_vs_sigma_star_selected_weight_sums_draws": arrays["gamma_sigma_star_selected_weight_sums"],
+        "gamma_vs_delta_r_draws": trend_payload("gamma_delta_r_trend"),
+        "gamma_vs_delta_r_parent_bin_counts_draws": arrays["gamma_delta_r_parent_bin_counts"],
+        "gamma_vs_delta_r_detectable_weight_sums_draws": arrays["gamma_delta_r_detectable_weight_sums"],
+        "gamma_vs_delta_r_selected_weight_sums_draws": arrays["gamma_delta_r_selected_weight_sums"],
     }
 
 
@@ -1719,806 +1976,6 @@ def _compute_log_sigma_star(log_mstar: np.ndarray, log_re_kpc: np.ndarray) -> np
     """
 
     return np.asarray(log_mstar, dtype=float) - LOG10_2PI - 2.0 * np.asarray(log_re_kpc, dtype=float)
-
-
-def _draw_trend_parent_population(
-    theta: np.ndarray,
-    profile: ProfileSpec,
-    context,
-    sigma_table: SigmaUnitTable,
-    rng: np.random.Generator,
-    n_parent_sample: int,
-) -> dict[str, np.ndarray]:
-    """
-    Materialize one full parent-population realization for Fig. 8-like trends.
-
-    Why this helper is separate from the histogram PPC path:
-    - histogram PPC needs only the selected-lens weights plus latent values
-    - the trend figure needs the full parent population, its stellar masses,
-      its structural scatter, and the physical aperture-dispersion prediction
-      for every sampled galaxy before any mass-bin averaging is performed
-
-    The returned payload is intentionally verbose. The trend reducer is a pure
-    binning step, so exposing all latent arrays here makes the scientific data
-    flow transparent and easy to test.
-    """
-
-    population = _draw_candidate_population(
-        theta=theta,
-        profile=profile,
-        context=context,
-        rng=rng,
-        candidate_pool_size=n_parent_sample,
-    )
-    sigma_unit = sigma_table.evaluate(
-        gamma=population["gamma"],
-        zd=population["zd"],
-        log_re_kpc=population["log_re_kpc"],
-        n_values=None if profile.fixed_n is not None else population["n"],
-    )
-    sigma_ap = np.sqrt(np.maximum(sigma_unit * np.power(10.0, population["mass"]), 1.0e-30))
-
-    return {
-        "log_mstar": population["log_mstar"],
-        "log_sigma_star": population["log_sigma_star"],
-        "zd": population["zd"],
-        "zs": population["zs"],
-        "n": population["n"],
-        "log_re_kpc": population["log_re_kpc"],
-        "re_kpc": population["re_kpc"],
-        "delta_r": population["delta_r"],
-        "mass": population["mass"],
-        "gamma": population["gamma"],
-        "theta_ein": population["theta_ein"],
-        "sigma_ap": sigma_ap,
-        "detectable_weights": population["detectable_weights"],
-        "selected_weights": population["selected_weights"],
-    }
-
-
-def _allocate_trend_arrays(
-    n_draws: int,
-    n_mass_bins: int,
-    mass_definition: MassDefinition,
-) -> tuple[dict[str, dict[str, np.ndarray]], np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Allocate the full set of trend buffers for one run or one worker chunk.
-
-    Why this helper exists:
-    - the trend workflow now supports both serial and process-pool execution
-    - both execution modes must populate the exact same array contract
-    - centralizing allocation prevents the two paths from silently diverging in
-      shape or dtype as the trend result payload evolves
-    """
-
-    quantity_names = _trend_quantity_names(mass_definition)
-    trend_draws = {
-        quantity_name: {
-            category_name: np.full((n_draws, n_mass_bins), np.nan, dtype=float)
-            for category_name in TREND_CATEGORY_NAMES
-        }
-        for quantity_name in quantity_names
-    }
-    parent_bin_counts_draws = np.zeros((n_draws, n_mass_bins), dtype=int)
-    detectable_weight_sums_draws = np.zeros((n_draws, n_mass_bins), dtype=float)
-    selected_weight_sums_draws = np.zeros((n_draws, n_mass_bins), dtype=float)
-    return trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws
-
-
-def _allocate_single_quantity_trend_arrays(
-    n_draws: int,
-    n_bins: int,
-) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Allocate buffers for one gamma-only trend figure.
-
-    The new structural trend figures only summarize one quantity (`gamma`), but
-    they still need the same three population categories and diagnostic arrays
-    as the Fig. 8 mass-binned workflow.
-    """
-
-    trend_draws = {
-        category_name: np.full((n_draws, n_bins), np.nan, dtype=float)
-        for category_name in TREND_CATEGORY_NAMES
-    }
-    parent_bin_counts_draws = np.zeros((n_draws, n_bins), dtype=int)
-    detectable_weight_sums_draws = np.zeros((n_draws, n_bins), dtype=float)
-    selected_weight_sums_draws = np.zeros((n_draws, n_bins), dtype=float)
-    return trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws
-
-
-def _simulate_trend_chunk(
-    posterior_draws: np.ndarray,
-    start_index: int,
-    profile: ProfileSpec,
-    context,
-    mass_definition: MassDefinition,
-    sigma_table_path: str,
-    observation_flavor: str,
-    mass_bin_edges: np.ndarray,
-    sigma_star_bin_edges: np.ndarray,
-    log_re_bin_edges: np.ndarray,
-    delta_r_bin_edges: np.ndarray,
-    n_parent_sample: int,
-    random_seed: int,
-) -> dict[str, Any]:
-    """
-    Simulate one contiguous chunk of posterior draws for the trend workflow.
-
-    This mirrors the PPC chunk worker contract:
-    - the worker is fully self-contained and can run inline or in a spawned
-      subprocess without depending on mutable shared state
-    - per-draw randomness is keyed to the global posterior draw index so serial
-      and parallel execution produce byte-identical scientific outputs
-    """
-
-    apply_thread_limits(1)
-    sigma_table = SigmaUnitTable.from_path(
-        sigma_table_path,
-        mass_definition=mass_definition,
-        observation_flavor=observation_flavor,
-    )
-    chunk_draw_count = int(posterior_draws.shape[0])
-    n_mass_bins = int(mass_bin_edges.size - 1)
-    n_sigma_star_bins = int(sigma_star_bin_edges.size - 1)
-    n_log_re_bins = int(log_re_bin_edges.size - 1)
-    n_delta_r_bins = int(delta_r_bin_edges.size - 1)
-    quantity_names = _trend_quantity_names(mass_definition)
-    trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws = (
-        _allocate_trend_arrays(chunk_draw_count, n_mass_bins, mass_definition)
-    )
-    gamma_vs_logre_draws, gamma_vs_logre_parent_bin_counts_draws, gamma_vs_logre_detectable_weight_sums_draws, (
-        gamma_vs_logre_selected_weight_sums_draws
-    ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_log_re_bins)
-    gamma_vs_sigma_star_draws, gamma_vs_sigma_star_parent_bin_counts_draws, gamma_vs_sigma_star_detectable_weight_sums_draws, (
-        gamma_vs_sigma_star_selected_weight_sums_draws
-    ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_sigma_star_bins)
-    gamma_vs_delta_r_draws, gamma_vs_delta_r_parent_bin_counts_draws, gamma_vs_delta_r_detectable_weight_sums_draws, (
-        gamma_vs_delta_r_selected_weight_sums_draws
-    ) = _allocate_single_quantity_trend_arrays(chunk_draw_count, n_delta_r_bins)
-
-    for local_index, theta in enumerate(posterior_draws):
-        global_index = start_index + local_index
-        rng = np.random.default_rng(_build_seed_sequence(random_seed, global_index))
-        parent_population = _draw_trend_parent_population(
-            theta=theta,
-            profile=profile,
-            context=context,
-            sigma_table=sigma_table,
-            rng=rng,
-            n_parent_sample=n_parent_sample,
-        )
-
-        for quantity_name in quantity_names:
-            if quantity_name == mass_definition.label:
-                values = parent_population["mass"]
-            else:
-                values = parent_population[quantity_name]
-            reduced = _reduce_population_to_mass_bins(
-                log_mstar=parent_population["log_mstar"],
-                values=values,
-                mass_bin_edges=mass_bin_edges,
-                detectable_weights=parent_population["detectable_weights"],
-                selected_weights=parent_population["selected_weights"],
-            )
-            for category_name in TREND_CATEGORY_NAMES:
-                trend_draws[quantity_name][category_name][local_index] = reduced[category_name]
-
-            if quantity_name == quantity_names[0]:
-                parent_bin_counts_draws[local_index] = reduced["parent_bin_counts"]
-                detectable_weight_sums_draws[local_index] = reduced["detectable_weight_sums"]
-                selected_weight_sums_draws[local_index] = reduced["selected_weight_sums"]
-
-        gamma_vs_logre_reduced = _reduce_population_to_bins(
-            x_values=parent_population["log_re_kpc"],
-            values=parent_population["gamma"],
-            bin_edges=log_re_bin_edges,
-            detectable_weights=parent_population["detectable_weights"],
-            selected_weights=parent_population["selected_weights"],
-        )
-        for category_name in TREND_CATEGORY_NAMES:
-            gamma_vs_logre_draws[category_name][local_index] = gamma_vs_logre_reduced[category_name]
-        gamma_vs_logre_parent_bin_counts_draws[local_index] = gamma_vs_logre_reduced["parent_bin_counts"]
-        gamma_vs_logre_detectable_weight_sums_draws[local_index] = gamma_vs_logre_reduced["detectable_weight_sums"]
-        gamma_vs_logre_selected_weight_sums_draws[local_index] = gamma_vs_logre_reduced["selected_weight_sums"]
-
-        gamma_vs_sigma_star_reduced = _reduce_population_to_bins(
-            x_values=parent_population["log_sigma_star"],
-            values=parent_population["gamma"],
-            bin_edges=sigma_star_bin_edges,
-            detectable_weights=parent_population["detectable_weights"],
-            selected_weights=parent_population["selected_weights"],
-        )
-        for category_name in TREND_CATEGORY_NAMES:
-            gamma_vs_sigma_star_draws[category_name][local_index] = gamma_vs_sigma_star_reduced[category_name]
-        gamma_vs_sigma_star_parent_bin_counts_draws[local_index] = gamma_vs_sigma_star_reduced["parent_bin_counts"]
-        gamma_vs_sigma_star_detectable_weight_sums_draws[local_index] = gamma_vs_sigma_star_reduced[
-            "detectable_weight_sums"
-        ]
-        gamma_vs_sigma_star_selected_weight_sums_draws[local_index] = gamma_vs_sigma_star_reduced["selected_weight_sums"]
-
-        gamma_vs_delta_r_reduced = _reduce_population_to_bins(
-            x_values=parent_population["delta_r"],
-            values=parent_population["gamma"],
-            bin_edges=delta_r_bin_edges,
-            detectable_weights=parent_population["detectable_weights"],
-            selected_weights=parent_population["selected_weights"],
-        )
-        for category_name in TREND_CATEGORY_NAMES:
-            gamma_vs_delta_r_draws[category_name][local_index] = gamma_vs_delta_r_reduced[category_name]
-        gamma_vs_delta_r_parent_bin_counts_draws[local_index] = gamma_vs_delta_r_reduced["parent_bin_counts"]
-        gamma_vs_delta_r_detectable_weight_sums_draws[local_index] = gamma_vs_delta_r_reduced[
-            "detectable_weight_sums"
-        ]
-        gamma_vs_delta_r_selected_weight_sums_draws[local_index] = gamma_vs_delta_r_reduced["selected_weight_sums"]
-
-    return {
-        "start_index": int(start_index),
-        "draw_count": chunk_draw_count,
-        "trend_draws": trend_draws,
-        "parent_bin_counts_draws": parent_bin_counts_draws,
-        "detectable_weight_sums_draws": detectable_weight_sums_draws,
-        "selected_weight_sums_draws": selected_weight_sums_draws,
-        "gamma_vs_logre_draws": gamma_vs_logre_draws,
-        "gamma_vs_logre_parent_bin_counts_draws": gamma_vs_logre_parent_bin_counts_draws,
-        "gamma_vs_logre_detectable_weight_sums_draws": gamma_vs_logre_detectable_weight_sums_draws,
-        "gamma_vs_logre_selected_weight_sums_draws": gamma_vs_logre_selected_weight_sums_draws,
-        "gamma_vs_sigma_star_draws": gamma_vs_sigma_star_draws,
-        "gamma_vs_sigma_star_parent_bin_counts_draws": gamma_vs_sigma_star_parent_bin_counts_draws,
-        "gamma_vs_sigma_star_detectable_weight_sums_draws": gamma_vs_sigma_star_detectable_weight_sums_draws,
-        "gamma_vs_sigma_star_selected_weight_sums_draws": gamma_vs_sigma_star_selected_weight_sums_draws,
-        "gamma_vs_delta_r_draws": gamma_vs_delta_r_draws,
-        "gamma_vs_delta_r_parent_bin_counts_draws": gamma_vs_delta_r_parent_bin_counts_draws,
-        "gamma_vs_delta_r_detectable_weight_sums_draws": gamma_vs_delta_r_detectable_weight_sums_draws,
-        "gamma_vs_delta_r_selected_weight_sums_draws": gamma_vs_delta_r_selected_weight_sums_draws,
-    }
-
-
-def _merge_trend_chunk_results(
-    chunk_results: list[dict[str, Any]],
-    n_draws: int,
-    n_mass_bins: int,
-    n_sigma_star_bins: int,
-    n_log_re_bins: int,
-    n_delta_r_bins: int,
-    mass_definition: MassDefinition,
-) -> tuple[
-    dict[str, dict[str, np.ndarray]],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict[str, np.ndarray],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict[str, np.ndarray],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict[str, np.ndarray],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-]:
-    """Merge chunk-level trend arrays back into full-run buffers in draw order."""
-
-    quantity_names = _trend_quantity_names(mass_definition)
-    trend_draws, parent_bin_counts_draws, detectable_weight_sums_draws, selected_weight_sums_draws = (
-        _allocate_trend_arrays(n_draws, n_mass_bins, mass_definition)
-    )
-    gamma_vs_logre_draws, gamma_vs_logre_parent_bin_counts_draws, gamma_vs_logre_detectable_weight_sums_draws, (
-        gamma_vs_logre_selected_weight_sums_draws
-    ) = _allocate_single_quantity_trend_arrays(n_draws, n_log_re_bins)
-    gamma_vs_sigma_star_draws, gamma_vs_sigma_star_parent_bin_counts_draws, gamma_vs_sigma_star_detectable_weight_sums_draws, (
-        gamma_vs_sigma_star_selected_weight_sums_draws
-    ) = _allocate_single_quantity_trend_arrays(n_draws, n_sigma_star_bins)
-    gamma_vs_delta_r_draws, gamma_vs_delta_r_parent_bin_counts_draws, gamma_vs_delta_r_detectable_weight_sums_draws, (
-        gamma_vs_delta_r_selected_weight_sums_draws
-    ) = _allocate_single_quantity_trend_arrays(n_draws, n_delta_r_bins)
-    for chunk_result in chunk_results:
-        start = int(chunk_result["start_index"])
-        stop = start + int(chunk_result["draw_count"])
-        for quantity_name in quantity_names:
-            for category_name in TREND_CATEGORY_NAMES:
-                trend_draws[quantity_name][category_name][start:stop] = chunk_result["trend_draws"][quantity_name][
-                    category_name
-                ]
-        parent_bin_counts_draws[start:stop] = chunk_result["parent_bin_counts_draws"]
-        detectable_weight_sums_draws[start:stop] = chunk_result["detectable_weight_sums_draws"]
-        selected_weight_sums_draws[start:stop] = chunk_result["selected_weight_sums_draws"]
-        for category_name in TREND_CATEGORY_NAMES:
-            gamma_vs_logre_draws[category_name][start:stop] = chunk_result["gamma_vs_logre_draws"][category_name]
-            gamma_vs_sigma_star_draws[category_name][start:stop] = chunk_result["gamma_vs_sigma_star_draws"][
-                category_name
-            ]
-            gamma_vs_delta_r_draws[category_name][start:stop] = chunk_result["gamma_vs_delta_r_draws"][category_name]
-        gamma_vs_logre_parent_bin_counts_draws[start:stop] = chunk_result["gamma_vs_logre_parent_bin_counts_draws"]
-        gamma_vs_logre_detectable_weight_sums_draws[start:stop] = chunk_result[
-            "gamma_vs_logre_detectable_weight_sums_draws"
-        ]
-        gamma_vs_logre_selected_weight_sums_draws[start:stop] = chunk_result[
-            "gamma_vs_logre_selected_weight_sums_draws"
-        ]
-        gamma_vs_sigma_star_parent_bin_counts_draws[start:stop] = chunk_result[
-            "gamma_vs_sigma_star_parent_bin_counts_draws"
-        ]
-        gamma_vs_sigma_star_detectable_weight_sums_draws[start:stop] = chunk_result[
-            "gamma_vs_sigma_star_detectable_weight_sums_draws"
-        ]
-        gamma_vs_sigma_star_selected_weight_sums_draws[start:stop] = chunk_result[
-            "gamma_vs_sigma_star_selected_weight_sums_draws"
-        ]
-        gamma_vs_delta_r_parent_bin_counts_draws[start:stop] = chunk_result["gamma_vs_delta_r_parent_bin_counts_draws"]
-        gamma_vs_delta_r_detectable_weight_sums_draws[start:stop] = chunk_result[
-            "gamma_vs_delta_r_detectable_weight_sums_draws"
-        ]
-        gamma_vs_delta_r_selected_weight_sums_draws[start:stop] = chunk_result[
-            "gamma_vs_delta_r_selected_weight_sums_draws"
-        ]
-    return (
-        trend_draws,
-        parent_bin_counts_draws,
-        detectable_weight_sums_draws,
-        selected_weight_sums_draws,
-        gamma_vs_logre_draws,
-        gamma_vs_logre_parent_bin_counts_draws,
-        gamma_vs_logre_detectable_weight_sums_draws,
-        gamma_vs_logre_selected_weight_sums_draws,
-        gamma_vs_sigma_star_draws,
-        gamma_vs_sigma_star_parent_bin_counts_draws,
-        gamma_vs_sigma_star_detectable_weight_sums_draws,
-        gamma_vs_sigma_star_selected_weight_sums_draws,
-        gamma_vs_delta_r_draws,
-        gamma_vs_delta_r_parent_bin_counts_draws,
-        gamma_vs_delta_r_detectable_weight_sums_draws,
-        gamma_vs_delta_r_selected_weight_sums_draws,
-    )
-
-
-def _run_trend_draws(
-    posterior_draws: np.ndarray,
-    profile: ProfileSpec,
-    context,
-    mass_definition: MassDefinition,
-    sigma_table_path: str,
-    observation_flavor: str,
-    mass_bin_edges: np.ndarray,
-    sigma_star_bin_edges: np.ndarray,
-    log_re_bin_edges: np.ndarray,
-    delta_r_bin_edges: np.ndarray,
-    n_parent_sample: int,
-    random_seed: int,
-    parallelism: ResolvedParallelism,
-) -> tuple[
-    dict[str, dict[str, np.ndarray]],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict[str, np.ndarray],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict[str, np.ndarray],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict[str, np.ndarray],
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-]:
-    """
-    Execute trend draws either serially or with a process pool.
-
-    The unit of work is a contiguous posterior-draw chunk so that the trend
-    workflow inherits the same scaling and deterministic chunk semantics as the
-    canonical PPC path. This is necessary once trend defaults switch from 256
-    sampled draws to the tail-capped full chain.
-    """
-
-    n_draws = int(posterior_draws.shape[0])
-    n_mass_bins = int(mass_bin_edges.size - 1)
-    n_sigma_star_bins = int(sigma_star_bin_edges.size - 1)
-    n_log_re_bins = int(log_re_bin_edges.size - 1)
-    n_delta_r_bins = int(delta_r_bin_edges.size - 1)
-    chunk_count = max(1, parallelism.worker_processes) if parallelism.strategy == "process_pool" else 1
-    slices = _chunk_slices(n_draws, chunk_count)
-    progress_description = f"{profile.name} trend draws"
-
-    if parallelism.strategy != "process_pool":
-        chunk_results: list[dict[str, Any]] = []
-        with tqdm(
-            total=n_draws,
-            desc=progress_description,
-            unit="draw",
-            dynamic_ncols=True,
-        ) as progress_bar:
-            for work_slice in slices:
-                chunk_results.append(
-                    _simulate_trend_chunk(
-                        posterior_draws=posterior_draws[work_slice],
-                        start_index=work_slice.start,
-                        profile=profile,
-                        context=context,
-                        mass_definition=mass_definition,
-                        sigma_table_path=sigma_table_path,
-                        observation_flavor=observation_flavor,
-                        mass_bin_edges=mass_bin_edges,
-                        sigma_star_bin_edges=sigma_star_bin_edges,
-                        log_re_bin_edges=log_re_bin_edges,
-                        delta_r_bin_edges=delta_r_bin_edges,
-                        n_parent_sample=n_parent_sample,
-                        random_seed=random_seed,
-                    )
-                )
-                progress_bar.update(int(work_slice.stop - work_slice.start))
-        return _merge_trend_chunk_results(
-            chunk_results,
-            n_draws=n_draws,
-            n_mass_bins=n_mass_bins,
-            n_sigma_star_bins=n_sigma_star_bins,
-            n_log_re_bins=n_log_re_bins,
-            n_delta_r_bins=n_delta_r_bins,
-            mass_definition=mass_definition,
-        )
-
-    spawn_context = multiprocessing.get_context("spawn")
-    chunk_results: list[dict[str, Any]] = []
-    with ProcessPoolExecutor(
-        max_workers=parallelism.worker_processes,
-        mp_context=spawn_context,
-    ) as executor:
-        futures = {
-            executor.submit(
-                _simulate_trend_chunk,
-                posterior_draws[work_slice],
-                work_slice.start,
-                profile,
-                context,
-                mass_definition,
-                sigma_table_path,
-                observation_flavor,
-                mass_bin_edges,
-                sigma_star_bin_edges,
-                log_re_bin_edges,
-                delta_r_bin_edges,
-                n_parent_sample,
-                random_seed,
-            ): work_slice
-            for work_slice in slices
-        }
-        with tqdm(
-            total=n_draws,
-            desc=progress_description,
-            unit="draw",
-            dynamic_ncols=True,
-        ) as progress_bar:
-            for future in as_completed(futures):
-                work_slice = futures[future]
-                chunk_results.append(future.result())
-                progress_bar.update(int(work_slice.stop - work_slice.start))
-
-    return _merge_trend_chunk_results(
-        chunk_results,
-        n_draws=n_draws,
-        n_mass_bins=n_mass_bins,
-        n_sigma_star_bins=n_sigma_star_bins,
-        n_log_re_bins=n_log_re_bins,
-        n_delta_r_bins=n_delta_r_bins,
-        mass_definition=mass_definition,
-    )
-
-
-def _draw_replicated_lenses(
-    candidates: dict[str, np.ndarray],
-    sample_size: int,
-    rng: np.random.Generator,
-) -> dict[str, np.ndarray]:
-    """Draw one replicated lens set from the weighted candidate population."""
-
-    positive_indices = np.flatnonzero(candidates["weights"] > 0.0)
-    if positive_indices.size == 0:
-        raise ValueError("Candidate population contains no positive selection weights.")
-
-    weights = candidates["weights"][positive_indices]
-    probabilities = weights / weights.sum()
-    replace = positive_indices.size < sample_size
-    chosen = rng.choice(positive_indices, size=sample_size, replace=replace, p=probabilities)
-    return {
-        "theta_ein": candidates["theta_ein"][chosen],
-        "gamma": candidates["gamma"][chosen],
-        "zd": candidates["zd"][chosen],
-        "zs": candidates["zs"][chosen],
-        "mass": candidates["mass"][chosen],
-        "re_kpc": candidates["re_kpc"][chosen],
-        "n": candidates["n"][chosen],
-    }
-
-
-def _resolve_ppc_parallelism(runtime_config, requested_worker_processes: int | None, n_draws: int) -> ResolvedParallelism:
-    """
-    Resolve the PPC worker count independently from the sampler's walker logic.
-
-    PPC parallelism is posterior-draw based, not walker-based, so reusing the
-    sampler's resolver directly would encode the wrong unit of work. This
-    helper mirrors the same CPU-budget policy while explicitly targeting
-    process-based chunk execution.
-    """
-
-    cpu_count = max(1, int(os.cpu_count() or 1))
-    reserve_cores = max(0, int(runtime_config.runtime.reserve_cores))
-    auto_budget = max(1, cpu_count - reserve_cores)
-    if requested_worker_processes is None:
-        requested = auto_budget if int(runtime_config.runtime.num_threads) <= 0 else min(
-            int(runtime_config.runtime.num_threads),
-            auto_budget,
-        )
-    else:
-        requested = max(1, min(int(requested_worker_processes), auto_budget))
-
-    worker_processes = min(max(1, int(requested)), max(1, int(n_draws)))
-    strategy = "process_pool" if worker_processes > 1 else "off"
-    return ResolvedParallelism(
-        strategy=strategy,
-        cpu_count=cpu_count,
-        reserve_cores=reserve_cores,
-        compute_budget=auto_budget,
-        worker_processes=worker_processes if strategy == "process_pool" else 0,
-        kernel_threads_per_process=1,
-    )
-
-
-def _build_seed_sequence(base_seed: int, draw_index: int) -> np.random.SeedSequence:
-    """Derive a deterministic per-draw seed that is independent of chunking."""
-
-    return np.random.SeedSequence([int(base_seed), int(draw_index)])
-
-
-def _allocate_replicated_arrays(
-    n_draws: int,
-    mass_definition: MassDefinition,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """
-    Allocate the PPC latent arrays and replicate-level statistic vectors.
-
-    Keeping allocation in one helper makes the shape contract explicit and
-    avoids diverging serial vs parallel buffer layouts.
-    """
-
-    mass_label = mass_definition.label
-    theta_latent = {
-        "theta_ein": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-        "gamma": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-        "zd": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-        "zs": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-        mass_label: np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-        "re_kpc": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-        "n": np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float),
-    }
-    sigma_latent = {
-        "sigma": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        "gamma": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        "zd": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        "zs": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        mass_label: np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        "re_kpc": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        "n": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-        "theta_ein": np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float),
-    }
-    theta_replicated_stats = {name: np.zeros(n_draws, dtype=float) for name in SUMMARY_STAT_NAMES}
-    sigma_replicated_stats = {name: np.zeros(n_draws, dtype=float) for name in SUMMARY_STAT_NAMES}
-    return theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats
-
-
-def _simulate_ppc_chunk(
-    posterior_draws: np.ndarray,
-    start_index: int,
-    profile: ProfileSpec,
-    context,
-    mass_definition: MassDefinition,
-    sigma_table_path: str,
-    observation_flavor: str,
-    candidate_pool_size: int,
-    random_seed: int,
-) -> dict[str, Any]:
-    """
-    Simulate one contiguous chunk of posterior draws for PPC.
-
-    The worker contract is intentionally self-contained so the same function can
-    run inline in the parent process or inside a spawned worker process. This
-    keeps the serial and parallel code paths scientifically identical.
-    """
-
-    apply_thread_limits(1)
-    sigma_table = SigmaUnitTable.from_path(
-        sigma_table_path,
-        mass_definition=mass_definition,
-        observation_flavor=observation_flavor,
-    )
-    chunk_draw_count = int(posterior_draws.shape[0])
-    theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats = _allocate_replicated_arrays(
-        chunk_draw_count,
-        mass_definition,
-    )
-    mass_label = mass_definition.label
-
-    for local_index, theta in enumerate(posterior_draws):
-        global_index = start_index + local_index
-        rng = np.random.default_rng(_build_seed_sequence(random_seed, global_index))
-        candidates = _draw_candidate_population(
-            theta=theta,
-            profile=profile,
-            context=context,
-            rng=rng,
-            candidate_pool_size=candidate_pool_size,
-        )
-        theta_sample = _draw_replicated_lenses(candidates, sample_size=THETA_SAMPLE_SIZE, rng=rng)
-        sigma_sample = _draw_replicated_lenses(candidates, sample_size=SIGMA_SAMPLE_SIZE, rng=rng)
-
-        theta_latent["theta_ein"][local_index] = theta_sample["theta_ein"]
-        theta_latent["gamma"][local_index] = theta_sample["gamma"]
-        theta_latent["zd"][local_index] = theta_sample["zd"]
-        theta_latent["zs"][local_index] = theta_sample["zs"]
-        theta_latent[mass_label][local_index] = theta_sample["mass"]
-        theta_latent["re_kpc"][local_index] = theta_sample["re_kpc"]
-        theta_latent["n"][local_index] = theta_sample["n"]
-
-        theta_stats = _summary_statistics(theta_sample["theta_ein"])
-        for stat_name, stat_value in theta_stats.items():
-            theta_replicated_stats[stat_name][local_index] = stat_value
-
-        sigma_unit = sigma_table.evaluate(
-            gamma=sigma_sample["gamma"],
-            zd=sigma_sample["zd"],
-            log_re_kpc=np.log10(np.maximum(sigma_sample["re_kpc"], 1.0e-12)),
-            n_values=None if profile.fixed_n is not None else sigma_sample["n"],
-        )
-        sigma_model = np.sqrt(np.maximum(sigma_unit * (10.0 ** sigma_sample["mass"]), 1.0e-30))
-        sigma_rep = rng.normal(loc=sigma_model, scale=SIGMA_RELATIVE_NOISE * sigma_model)
-
-        sigma_latent["sigma"][local_index] = sigma_rep
-        sigma_latent["gamma"][local_index] = sigma_sample["gamma"]
-        sigma_latent["zd"][local_index] = sigma_sample["zd"]
-        sigma_latent["zs"][local_index] = sigma_sample["zs"]
-        sigma_latent[mass_label][local_index] = sigma_sample["mass"]
-        sigma_latent["re_kpc"][local_index] = sigma_sample["re_kpc"]
-        sigma_latent["n"][local_index] = sigma_sample["n"]
-        sigma_latent["theta_ein"][local_index] = sigma_sample["theta_ein"]
-
-        sigma_stats = _summary_statistics(sigma_rep)
-        for stat_name, stat_value in sigma_stats.items():
-            sigma_replicated_stats[stat_name][local_index] = stat_value
-
-    return {
-        "start_index": int(start_index),
-        "draw_count": chunk_draw_count,
-        "theta_latent": theta_latent,
-        "sigma_latent": sigma_latent,
-        "theta_replicated_stats": theta_replicated_stats,
-        "sigma_replicated_stats": sigma_replicated_stats,
-    }
-
-
-def _chunk_slices(n_items: int, n_chunks: int) -> list[slice]:
-    """Split a 1D workload into contiguous slices with near-equal lengths."""
-
-    if n_items < 1:
-        return []
-    boundaries = np.linspace(0, n_items, num=n_chunks + 1, dtype=int)
-    return [slice(int(boundaries[i]), int(boundaries[i + 1])) for i in range(n_chunks) if boundaries[i] < boundaries[i + 1]]
-
-
-def _merge_ppc_chunk_results(
-    chunk_results: list[dict[str, Any]],
-    n_draws: int,
-    mass_definition: MassDefinition,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Merge chunk-level PPC arrays back into full-run buffers in draw order."""
-
-    theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats = _allocate_replicated_arrays(
-        n_draws,
-        mass_definition,
-    )
-    for chunk_result in chunk_results:
-        start = int(chunk_result["start_index"])
-        stop = start + int(chunk_result["draw_count"])
-        for key, values in chunk_result["theta_latent"].items():
-            theta_latent[key][start:stop] = values
-        for key, values in chunk_result["sigma_latent"].items():
-            sigma_latent[key][start:stop] = values
-        for key, values in chunk_result["theta_replicated_stats"].items():
-            theta_replicated_stats[key][start:stop] = values
-        for key, values in chunk_result["sigma_replicated_stats"].items():
-            sigma_replicated_stats[key][start:stop] = values
-    return theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats
-
-
-def _run_ppc_replicates(
-    posterior_draws: np.ndarray,
-    profile: ProfileSpec,
-    context,
-    mass_definition: MassDefinition,
-    sigma_table_path: str,
-    observation_flavor: str,
-    candidate_pool_size: int,
-    random_seed: int,
-    parallelism: ResolvedParallelism,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """
-    Execute the PPC replicate simulation either serially or with a process pool.
-
-    The unit of parallel work is a contiguous block of posterior draws. This
-    keeps IPC overhead bounded while still giving each worker enough work to
-    amortize startup costs on the large canonical runs.
-    """
-
-    n_draws = int(posterior_draws.shape[0])
-    chunk_count = max(1, parallelism.worker_processes) if parallelism.strategy == "process_pool" else 1
-    slices = _chunk_slices(n_draws, chunk_count)
-    progress_description = f"{profile.name} ppc draws"
-
-    if parallelism.strategy != "process_pool":
-        chunk_results: list[dict[str, Any]] = []
-        with tqdm(
-            total=n_draws,
-            desc=progress_description,
-            unit="draw",
-            dynamic_ncols=True,
-        ) as progress_bar:
-            for work_slice in slices:
-                chunk_results.append(
-                    _simulate_ppc_chunk(
-                        posterior_draws=posterior_draws[work_slice],
-                        start_index=work_slice.start,
-                        profile=profile,
-                        context=context,
-                        mass_definition=mass_definition,
-                        sigma_table_path=sigma_table_path,
-                        observation_flavor=observation_flavor,
-                        candidate_pool_size=candidate_pool_size,
-                        random_seed=random_seed,
-                    )
-                )
-                progress_bar.update(int(work_slice.stop - work_slice.start))
-        return _merge_ppc_chunk_results(
-            chunk_results,
-            n_draws=n_draws,
-            mass_definition=mass_definition,
-        )
-
-    spawn_context = multiprocessing.get_context("spawn")
-    chunk_results: list[dict[str, Any]] = []
-    with ProcessPoolExecutor(
-        max_workers=parallelism.worker_processes,
-        mp_context=spawn_context,
-    ) as executor:
-        futures = {
-            executor.submit(
-                _simulate_ppc_chunk,
-                posterior_draws[work_slice],
-                work_slice.start,
-                profile,
-                context,
-                mass_definition,
-                sigma_table_path,
-                observation_flavor,
-                candidate_pool_size,
-                random_seed,
-            ): work_slice
-            for work_slice in slices
-        }
-        with tqdm(
-            total=n_draws,
-            desc=progress_description,
-            unit="draw",
-            dynamic_ncols=True,
-        ) as progress_bar:
-            for future in as_completed(futures):
-                work_slice = futures[future]
-                chunk_results.append(future.result())
-                progress_bar.update(int(work_slice.stop - work_slice.start))
-
-    return _merge_ppc_chunk_results(chunk_results, n_draws=n_draws, mass_definition=mass_definition)
 
 
 def _observed_theta_ein_values(observations: list[ObservationRecord]) -> np.ndarray:
@@ -3779,58 +3236,57 @@ def _write_standalone_gamma_trend_artifacts(
     )
 
 
-def run_posterior_trends(
+def run_posterior_diagnostics(
     run_dir: str,
     sigma_table_path: str,
     output_root_dir: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
     n_posterior_draws: int | None = DEFAULT_TREND_POSTERIOR_DRAWS,
     burn_in: str | int = "auto",
-    random_seed: int = DEFAULT_RANDOM_SEED + 1,
-    n_parent_sample: int = DEFAULT_TREND_PARENT_SAMPLE_SIZE,
+    random_seed: int = DEFAULT_RANDOM_SEED,
+    parent_sample_size: int = DEFAULT_DIAGNOSTICS_PARENT_SAMPLE_SIZE,
     n_mass_bins: int = DEFAULT_TREND_MASS_BIN_COUNT,
     mass_bin_min: float = DEFAULT_TREND_MASS_BIN_MIN,
     mass_bin_max: float = DEFAULT_TREND_MASS_BIN_MAX,
     worker_processes: int | None = None,
     posterior_draw_tail_cap: int = DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP,
-) -> PosteriorTrendResult:
+) -> PosteriorDiagnosticsResult:
     """
-    Generate the Fig. 8-like posterior trend figure for one completed run.
+    Run PPC histograms and Fig. 8-like trends from one shared JAX parent sample.
 
-    This workflow intentionally mirrors the external binning pattern the user
-    asked to reproduce:
-    - draw a full parent-population realization for each posterior sample
-    - reduce that realization into stellar-mass bins
-    - summarize the posterior distribution of those binned curves
-
-    The selection kernel itself remains the current local one. The canonical
-    upgrade implemented here is about posterior usage and execution policy:
-    - by default the trend figure now consumes the tail-capped full posterior
-      chain rather than an arbitrary sampled subset of 256 draws
-    - the large canonical workload shares the same process-pool strategy and
-      deterministic per-draw seeding used by histogram PPC
+    This is the JAX-accelerated production diagnostics path.  The old standalone
+    PPC and trend functions remain available for compatibility, but this joint
+    workflow is the only path that guarantees one parent-population realization
+    per posterior draw is reused by both downstream diagnostics.
     """
 
-    if n_parent_sample < 1:
-        raise ValueError("Trend evaluation requires at least one parent-population sample per posterior draw.")
+    del worker_processes
+    if parent_sample_size < max(THETA_SAMPLE_SIZE, SIGMA_SAMPLE_SIZE):
+        raise ValueError(
+            "Shared-parent diagnostics require `parent_sample_size` to be at least "
+            f"{max(THETA_SAMPLE_SIZE, SIGMA_SAMPLE_SIZE)}."
+        )
     if n_mass_bins < 1:
-        raise ValueError("Trend evaluation requires at least one stellar-mass bin.")
+        raise ValueError("Shared-parent diagnostics require at least one stellar-mass bin.")
     if mass_bin_max <= mass_bin_min:
-        raise ValueError("Trend evaluation requires `mass_bin_max` to be greater than `mass_bin_min`.")
+        raise ValueError("Shared-parent diagnostics require `mass_bin_max` to exceed `mass_bin_min`.")
 
     resolved_run_dir = Path(run_dir).expanduser().resolve()
     config_snapshot_path = resolved_run_dir / "config_snapshot.yaml"
     chain_path = resolved_run_dir / "chain.h5"
     runtime_config = load_runtime_config(config_snapshot_path)
     mass_definition = runtime_config.mass_definition
+    mass_label = mass_definition.label
     trend_quantity_names = _trend_quantity_names(mass_definition)
+
     burn_in_steps = _resolve_burn_in(burn_in, runtime_config.sampling.warmup)
     selection_rng = np.random.default_rng(random_seed)
-    posterior_draws, posterior_draw_mode = _load_posterior_draws(
+    posterior_draws, posterior_draw_mode, posterior_artifact = _load_posterior_draws(
         chain_path=chain_path,
         burn_in=burn_in_steps,
         rng=selection_rng,
         n_replicates=n_posterior_draws,
         tail_cap=posterior_draw_tail_cap,
+        parameter_names=runtime_config.parameter_schema.internal_parameter_names,
     )
     n_posterior_draws_used = int(posterior_draws.shape[0])
 
@@ -3839,7 +3295,7 @@ def run_posterior_trends(
     observation_flavor = observation_contract.observation_flavor
     resolved_sigma_table_path = Path(sigma_table_path).expanduser().resolve()
     sigma_table = SigmaUnitTable.from_path(
-        sigma_table_path,
+        resolved_sigma_table_path,
         mass_definition=mass_definition,
         observation_flavor=observation_flavor,
     )
@@ -3898,43 +3354,36 @@ def run_posterior_trends(
         observed_overlay_mode="points",
     )
 
-    parallelism = _resolve_ppc_parallelism(
-        runtime_config=runtime_config,
-        requested_worker_processes=worker_processes,
-        n_draws=n_posterior_draws_used,
-    )
-    (
-        trend_draws,
-        parent_bin_counts_draws,
-        detectable_weight_sums_draws,
-        selected_weight_sums_draws,
-        gamma_vs_logre_draws,
-        gamma_vs_logre_parent_bin_counts_draws,
-        gamma_vs_logre_detectable_weight_sums_draws,
-        gamma_vs_logre_selected_weight_sums_draws,
-        gamma_vs_sigma_star_draws,
-        gamma_vs_sigma_star_parent_bin_counts_draws,
-        gamma_vs_sigma_star_detectable_weight_sums_draws,
-        gamma_vs_sigma_star_selected_weight_sums_draws,
-        gamma_vs_delta_r_draws,
-        gamma_vs_delta_r_parent_bin_counts_draws,
-        gamma_vs_delta_r_detectable_weight_sums_draws,
-        gamma_vs_delta_r_selected_weight_sums_draws,
-    ) = _run_trend_draws(
+    diagnostics = _run_shared_parent_diagnostics_jax(
         posterior_draws=posterior_draws,
         profile=profile_spec,
         context=compiled_context,
         mass_definition=mass_definition,
-        sigma_table_path=str(resolved_sigma_table_path),
-        observation_flavor=observation_flavor,
+        sigma_table=sigma_table,
         mass_bin_edges=mass_bin_edges,
         sigma_star_bin_edges=sigma_star_axis_spec.bin_edges,
         log_re_bin_edges=log_re_axis_spec.bin_edges,
         delta_r_bin_edges=delta_r_axis_spec.bin_edges,
-        n_parent_sample=n_parent_sample,
-        random_seed=random_seed,
-        parallelism=parallelism,
+        parent_sample_size=int(parent_sample_size),
+        random_seed=int(random_seed),
     )
+
+    theta_latent = diagnostics["theta_latent"]
+    sigma_latent = diagnostics["sigma_latent"]
+    theta_replicated_stats = diagnostics["theta_replicated_stats"]
+    sigma_replicated_stats = diagnostics["sigma_replicated_stats"]
+    theta_observed = _summary_statistics(_observed_theta_ein_values(observations))
+    sigma_observed = _summary_statistics(_observed_sigma_values(observations))
+    theta_summary = _summarize_observed_against_replicates(theta_observed, theta_replicated_stats)
+    sigma_summary = _summarize_observed_against_replicates(sigma_observed, sigma_replicated_stats)
+
+    trend_draws = diagnostics["trend_draws"]
+    parent_bin_counts_draws = diagnostics["parent_bin_counts_draws"]
+    detectable_weight_sums_draws = diagnostics["detectable_weight_sums_draws"]
+    selected_weight_sums_draws = diagnostics["selected_weight_sums_draws"]
+    gamma_vs_logre_draws = diagnostics["gamma_vs_logre_draws"]
+    gamma_vs_sigma_star_draws = diagnostics["gamma_vs_sigma_star_draws"]
+    gamma_vs_delta_r_draws = diagnostics["gamma_vs_delta_r_draws"]
 
     trend_summary = {
         quantity_name: {
@@ -3955,15 +3404,104 @@ def run_posterior_trends(
         category_name: _summarize_trend_draws(gamma_vs_delta_r_draws[category_name])
         for category_name in TREND_CATEGORY_NAMES
     }
-    figure_title = _format_fig8_like_title(
-        mass_definition=mass_definition,
-        gamma_mode=runtime_config.gamma_model.mode,
-    )
-    gamma_vs_sigma_star_title = f"{figure_title} | gamma vs log $\\Sigma_*$"
-    gamma_vs_logre_title = f"{figure_title} | gamma vs log $r_e$"
-    gamma_vs_delta_r_title = f"{figure_title} | gamma vs $\\Delta_R$"
 
     result_dir = _materialize_result_dir(Path(output_root_dir), runtime_config.profile.name, resolved_run_dir.name)
+    backend_name = "jax_shared_parent"
+    parallelism_payload = {
+        "strategy": backend_name,
+        "cpu_count": max(1, int(os.cpu_count() or 1)),
+        "reserve_cores": int(runtime_config.runtime.reserve_cores),
+        "compute_budget": max(1, int(os.cpu_count() or 1) - int(runtime_config.runtime.reserve_cores)),
+        "worker_processes": 0,
+        "kernel_threads_per_process": 0,
+    }
+
+    ppc_summary_payload = {
+        "run_id": resolved_run_dir.name,
+        "profile_name": runtime_config.profile.name,
+        "gamma_mode": runtime_config.gamma_model.mode,
+        "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
+        "input_run_dir": str(resolved_run_dir),
+        "observation_path": str(runtime_config.data.observation_path),
+        "observation_flavor": observation_flavor,
+        "result_dir": str(result_dir),
+        "burn_in_applied": burn_in_steps,
+        "requested_n_replicates": None if n_posterior_draws is None else int(n_posterior_draws),
+        "n_posterior_draws_used": n_posterior_draws_used,
+        "posterior_draw_mode": posterior_draw_mode,
+        "posterior_artifact": posterior_artifact,
+        "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
+        "backend": backend_name,
+        "parent_sample_size": int(parent_sample_size),
+        "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
+        "mass_definition": mass_definition_metadata(mass_definition),
+        "sample_sizes": {"theta_ein": THETA_SAMPLE_SIZE, "sigma": SIGMA_SAMPLE_SIZE},
+        "statistics": {"theta_ein": theta_summary, "sigma": sigma_summary},
+        "parallelism": parallelism_payload,
+    }
+    (result_dir / "ppc_summary.json").write_text(json.dumps(ppc_summary_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    manifest_payload = {
+        **{key: ppc_summary_payload[key] for key in (
+            "run_id",
+            "profile_name",
+            "gamma_mode",
+            "parameter_order",
+            "observation_path",
+            "observation_flavor",
+            "burn_in_applied",
+            "posterior_draw_mode",
+            "posterior_artifact",
+            "posterior_draw_tail_cap",
+            "backend",
+            "parent_sample_size",
+            "sigma_table_leaf_path",
+            "mass_definition",
+            "parallelism",
+        )},
+        "config_snapshot_path": str(config_snapshot_path),
+        "chain_path": str(chain_path),
+        "sigma_table_path": str(resolved_sigma_table_path),
+        "random_seed": int(random_seed),
+        "n_posterior_draws_used": n_posterior_draws_used,
+    }
+    (result_dir / "run_manifest.json").write_text(json.dumps(manifest_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    np.savez(
+        result_dir / "replicated_statistics.npz",
+        theta_sample_theta_ein=theta_latent["theta_ein"],
+        theta_sample_gamma=theta_latent["gamma"],
+        theta_sample_zd=theta_latent["zd"],
+        theta_sample_zs=theta_latent["zs"],
+        **{f"theta_sample_{mass_label}": theta_latent[mass_label]},
+        theta_sample_re_kpc=theta_latent["re_kpc"],
+        theta_sample_n=theta_latent["n"],
+        sigma_sample_sigma=sigma_latent["sigma"],
+        sigma_sample_theta_ein=sigma_latent["theta_ein"],
+        sigma_sample_gamma=sigma_latent["gamma"],
+        sigma_sample_zd=sigma_latent["zd"],
+        sigma_sample_zs=sigma_latent["zs"],
+        **{f"sigma_sample_{mass_label}": sigma_latent[mass_label]},
+        sigma_sample_re_kpc=sigma_latent["re_kpc"],
+        sigma_sample_n=sigma_latent["n"],
+        theta_stat_median=theta_replicated_stats["median"],
+        theta_stat_std=theta_replicated_stats["std"],
+        theta_stat_p10=theta_replicated_stats["p10"],
+        theta_stat_p90=theta_replicated_stats["p90"],
+        sigma_stat_median=sigma_replicated_stats["median"],
+        sigma_stat_std=sigma_replicated_stats["std"],
+        sigma_stat_p10=sigma_replicated_stats["p10"],
+        sigma_stat_p90=sigma_replicated_stats["p90"],
+    )
+    _write_overview_figure(
+        result_dir / "ppc_overview.png",
+        profile_name=runtime_config.profile.name,
+        theta_replicated_stats=theta_replicated_stats,
+        theta_summary=theta_summary,
+        sigma_replicated_stats=sigma_replicated_stats,
+        sigma_summary=sigma_summary,
+    )
+
     serializable_summary = {
         quantity_name: {
             category_name: {
@@ -3974,7 +3512,11 @@ def run_posterior_trends(
         }
         for quantity_name in trend_quantity_names
     }
-    summary_payload = {
+    figure_title = _format_fig8_like_title(
+        mass_definition=mass_definition,
+        gamma_mode=runtime_config.gamma_model.mode,
+    )
+    trend_summary_payload = {
         "run_id": resolved_run_dir.name,
         "profile_name": runtime_config.profile.name,
         "gamma_mode": runtime_config.gamma_model.mode,
@@ -3988,19 +3530,22 @@ def run_posterior_trends(
         "n_posterior_draws": n_posterior_draws_used,
         "n_posterior_draws_used": n_posterior_draws_used,
         "posterior_draw_mode": posterior_draw_mode,
+        "posterior_artifact": posterior_artifact,
         "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
+        "backend": backend_name,
+        "parent_sample_size": int(parent_sample_size),
         "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
-        "n_parent_sample": int(n_parent_sample),
+        "n_parent_sample": int(parent_sample_size),
         "n_mass_bins": int(n_mass_bins),
         "mass_bin_min": float(mass_bin_min),
         "mass_bin_max": float(mass_bin_max),
         "mass_bin_edges": mass_bin_edges.tolist(),
         "mass_bin_centers": mass_bin_centers.tolist(),
-        "generator_mode": "sampled_population_binned",
+        "generator_mode": "jax_shared_parent_binned",
         "mass_definition": mass_definition_metadata(mass_definition),
-        "parallel_strategy": parallelism.strategy,
-        "worker_processes": int(parallelism.worker_processes),
-        "parallelism": parallelism.to_dict(),
+        "parallel_strategy": backend_name,
+        "worker_processes": 0,
+        "parallelism": parallelism_payload,
         "layout": "5x1",
         "panel_order": [mass_definition.label, "gamma", "sigma_ap", "gamma_vs_sigma_star", "gamma_vs_logre_kpc"],
         "figure_title": figure_title,
@@ -4013,7 +3558,7 @@ def run_posterior_trends(
         "bands": serializable_summary,
     }
     (result_dir / "fig8_like_summary.json").write_text(
-        json.dumps(summary_payload, indent=2, sort_keys=True),
+        json.dumps(trend_summary_payload, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
@@ -4064,12 +3609,6 @@ def run_posterior_trends(
         figure_title=figure_title,
     )
 
-    observed_gamma_logre_overlay = composite_extra_panels[1]["observed_overlay"]
-    observed_gamma_delta_r_overlay = _build_observed_gamma_delta_r_overlay(
-        measurements=observed_gamma_measurements,
-        profile=profile_spec,
-        axis_spec=delta_r_axis_spec,
-    )
     standalone_base_metadata = {
         "run_id": resolved_run_dir.name,
         "profile_name": runtime_config.profile.name,
@@ -4084,21 +3623,20 @@ def run_posterior_trends(
         "n_posterior_draws": n_posterior_draws_used,
         "n_posterior_draws_used": n_posterior_draws_used,
         "posterior_draw_mode": posterior_draw_mode,
+        "posterior_artifact": posterior_artifact,
         "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
+        "backend": backend_name,
+        "parent_sample_size": int(parent_sample_size),
         "sigma_table_path": str(resolved_sigma_table_path),
         "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
-        "n_parent_sample": int(n_parent_sample),
+        "n_parent_sample": int(parent_sample_size),
         "n_bins": int(n_mass_bins),
-        "generator_mode": "sampled_population_binned",
+        "generator_mode": "jax_shared_parent_binned",
         "mass_definition": mass_definition_metadata(mass_definition),
-        "parallel_strategy": parallelism.strategy,
-        "worker_processes": int(parallelism.worker_processes),
-        "parallelism": parallelism.to_dict(),
-        "categories": {
-            "parent": {"label": "Parent population"},
-            "detectable": {"label": "Detectable lenses"},
-            "selected": {"label": "full_selection"},
-        },
+        "parallel_strategy": backend_name,
+        "worker_processes": 0,
+        "parallelism": parallelism_payload,
+        "categories": trend_summary_payload["categories"],
     }
     _write_standalone_gamma_trend_artifacts(
         result_dir=result_dir,
@@ -4106,13 +3644,13 @@ def run_posterior_trends(
         axis_spec=sigma_star_axis_spec,
         gamma_summary=gamma_vs_sigma_star_summary,
         gamma_draws=gamma_vs_sigma_star_draws,
-        parent_bin_counts_draws=gamma_vs_sigma_star_parent_bin_counts_draws,
-        detectable_weight_sums_draws=gamma_vs_sigma_star_detectable_weight_sums_draws,
-        selected_weight_sums_draws=gamma_vs_sigma_star_selected_weight_sums_draws,
+        parent_bin_counts_draws=diagnostics["gamma_vs_sigma_star_parent_bin_counts_draws"],
+        detectable_weight_sums_draws=diagnostics["gamma_vs_sigma_star_detectable_weight_sums_draws"],
+        selected_weight_sums_draws=diagnostics["gamma_vs_sigma_star_selected_weight_sums_draws"],
         observed_overlay=observed_gamma_sigma_star_overlay,
         observed_overlay_draws=None,
         base_metadata=standalone_base_metadata,
-        figure_title=gamma_vs_sigma_star_title,
+        figure_title=f"{figure_title} | gamma vs log $\\Sigma_*$",
     )
     _write_standalone_gamma_trend_artifacts(
         result_dir=result_dir,
@@ -4120,13 +3658,13 @@ def run_posterior_trends(
         axis_spec=log_re_axis_spec,
         gamma_summary=gamma_vs_logre_summary,
         gamma_draws=gamma_vs_logre_draws,
-        parent_bin_counts_draws=gamma_vs_logre_parent_bin_counts_draws,
-        detectable_weight_sums_draws=gamma_vs_logre_detectable_weight_sums_draws,
-        selected_weight_sums_draws=gamma_vs_logre_selected_weight_sums_draws,
-        observed_overlay=observed_gamma_logre_overlay,
+        parent_bin_counts_draws=diagnostics["gamma_vs_logre_parent_bin_counts_draws"],
+        detectable_weight_sums_draws=diagnostics["gamma_vs_logre_detectable_weight_sums_draws"],
+        selected_weight_sums_draws=diagnostics["gamma_vs_logre_selected_weight_sums_draws"],
+        observed_overlay=composite_extra_panels[1]["observed_overlay"],
         observed_overlay_draws=None,
         base_metadata=standalone_base_metadata,
-        figure_title=gamma_vs_logre_title,
+        figure_title=f"{figure_title} | gamma vs log $r_e$",
     )
     _write_standalone_gamma_trend_artifacts(
         result_dir=result_dir,
@@ -4134,16 +3672,20 @@ def run_posterior_trends(
         axis_spec=delta_r_axis_spec,
         gamma_summary=gamma_vs_delta_r_summary,
         gamma_draws=gamma_vs_delta_r_draws,
-        parent_bin_counts_draws=gamma_vs_delta_r_parent_bin_counts_draws,
-        detectable_weight_sums_draws=gamma_vs_delta_r_detectable_weight_sums_draws,
-        selected_weight_sums_draws=gamma_vs_delta_r_selected_weight_sums_draws,
-        observed_overlay=observed_gamma_delta_r_overlay,
+        parent_bin_counts_draws=diagnostics["gamma_vs_delta_r_parent_bin_counts_draws"],
+        detectable_weight_sums_draws=diagnostics["gamma_vs_delta_r_detectable_weight_sums_draws"],
+        selected_weight_sums_draws=diagnostics["gamma_vs_delta_r_selected_weight_sums_draws"],
+        observed_overlay=_build_observed_gamma_delta_r_overlay(
+            measurements=observed_gamma_measurements,
+            profile=profile_spec,
+            axis_spec=delta_r_axis_spec,
+        ),
         observed_overlay_draws=None,
         base_metadata=standalone_base_metadata,
-        figure_title=gamma_vs_delta_r_title,
+        figure_title=f"{figure_title} | gamma vs $\\Delta_R$",
     )
 
-    return PosteriorTrendResult(
+    return PosteriorDiagnosticsResult(
         run_id=resolved_run_dir.name,
         profile_name=runtime_config.profile.name,
         input_run_dir=resolved_run_dir,
@@ -4151,12 +3693,16 @@ def run_posterior_trends(
         status="completed",
         burn_in_applied=burn_in_steps,
         n_posterior_draws=n_posterior_draws_used,
+        parent_sample_size=int(parent_sample_size),
         n_mass_bins=int(n_mass_bins),
         sigma_table_path=resolved_sigma_table_path,
         metadata={
+            "backend": backend_name,
+            "parent_sample_size": int(parent_sample_size),
             "requested_n_posterior_draws": None if n_posterior_draws is None else int(n_posterior_draws),
             "n_posterior_draws_used": n_posterior_draws_used,
             "posterior_draw_mode": posterior_draw_mode,
+            "posterior_artifact": posterior_artifact,
             "posterior_draw_tail_cap": int(posterior_draw_tail_cap),
             "observation_path": str(runtime_config.data.observation_path),
             "observation_flavor": observation_flavor,
@@ -4164,26 +3710,96 @@ def run_posterior_trends(
             "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
             "gamma_mode": runtime_config.gamma_model.mode,
             "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
-            "n_parent_sample": int(n_parent_sample),
-            "mass_bin_min": float(mass_bin_min),
-            "mass_bin_max": float(mass_bin_max),
-            "n_mass_bins": int(n_mass_bins),
-            "generator_mode": "sampled_population_binned",
             "mass_definition": mass_definition_metadata(mass_definition),
-            "parallel_strategy": parallelism.strategy,
-            "worker_processes": int(parallelism.worker_processes),
-            "parallelism": parallelism.to_dict(),
-            "figure_title": figure_title,
-            "gamma_vs_sigma_star_figure": str(result_dir / "gamma_vs_sigma_star.png"),
-            "gamma_vs_sigma_star_summary": str(result_dir / "gamma_vs_sigma_star_summary.json"),
-            "gamma_vs_sigma_star_curves": str(result_dir / "gamma_vs_sigma_star_curves.npz"),
-            "gamma_vs_logre_kpc_figure": str(result_dir / "gamma_vs_logre_kpc.png"),
-            "gamma_vs_logre_kpc_summary": str(result_dir / "gamma_vs_logre_kpc_summary.json"),
-            "gamma_vs_logre_kpc_curves": str(result_dir / "gamma_vs_logre_kpc_curves.npz"),
-            "gamma_vs_delta_r_figure": str(result_dir / "gamma_vs_delta_r.png"),
-            "gamma_vs_delta_r_summary": str(result_dir / "gamma_vs_delta_r_summary.json"),
-            "gamma_vs_delta_r_curves": str(result_dir / "gamma_vs_delta_r_curves.npz"),
+            "parallelism": parallelism_payload,
+            "statistics": ppc_summary_payload["statistics"],
         },
+    )
+
+
+def run_posterior_trends(
+    run_dir: str,
+    sigma_table_path: str,
+    output_root_dir: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
+    n_posterior_draws: int | None = DEFAULT_TREND_POSTERIOR_DRAWS,
+    burn_in: str | int = "auto",
+    random_seed: int = DEFAULT_RANDOM_SEED + 1,
+    n_parent_sample: int = DEFAULT_TREND_PARENT_SAMPLE_SIZE,
+    n_mass_bins: int = DEFAULT_TREND_MASS_BIN_COUNT,
+    mass_bin_min: float = DEFAULT_TREND_MASS_BIN_MIN,
+    mass_bin_max: float = DEFAULT_TREND_MASS_BIN_MAX,
+    worker_processes: int | None = None,
+    posterior_draw_tail_cap: int = DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP,
+) -> PosteriorTrendResult:
+    """Run standalone trend diagnostics through the shared JAX parent-population backend.
+
+    The historical public API is preserved so existing scripts can keep calling
+    ``posterior-trends``. Internally this is now only a compatibility wrapper:
+    the full ``run_posterior_diagnostics`` workflow writes both PPC and trend
+    artifacts from one JAX parent sample per posterior draw, then this function
+    maps the joint result back to the older ``PosteriorTrendResult`` contract.
+    """
+
+    diagnostics_result = run_posterior_diagnostics(
+        run_dir=run_dir,
+        sigma_table_path=sigma_table_path,
+        output_root_dir=output_root_dir,
+        n_posterior_draws=n_posterior_draws,
+        burn_in=burn_in,
+        random_seed=random_seed,
+        parent_sample_size=n_parent_sample,
+        n_mass_bins=n_mass_bins,
+        mass_bin_min=mass_bin_min,
+        mass_bin_max=mass_bin_max,
+        worker_processes=worker_processes,
+        posterior_draw_tail_cap=posterior_draw_tail_cap,
+    )
+    summary_payload = json.loads((diagnostics_result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
+    metadata = dict(diagnostics_result.metadata)
+    metadata.update(
+        {
+            "requested_n_posterior_draws": summary_payload["requested_n_posterior_draws"],
+            "n_posterior_draws_used": summary_payload["n_posterior_draws_used"],
+            "posterior_draw_mode": summary_payload["posterior_draw_mode"],
+            "posterior_draw_tail_cap": summary_payload["posterior_draw_tail_cap"],
+            "observation_path": summary_payload["observation_path"],
+            "observation_flavor": summary_payload["observation_flavor"],
+            "sigma_table_path": str(Path(sigma_table_path).expanduser().resolve()),
+            "sigma_table_leaf_path": summary_payload["sigma_table_leaf_path"],
+            "gamma_mode": summary_payload["gamma_mode"],
+            "parameter_order": summary_payload["parameter_order"],
+            "n_parent_sample": summary_payload["n_parent_sample"],
+            "mass_bin_min": summary_payload["mass_bin_min"],
+            "mass_bin_max": summary_payload["mass_bin_max"],
+            "n_mass_bins": summary_payload["n_mass_bins"],
+            "generator_mode": summary_payload["generator_mode"],
+            "mass_definition": summary_payload["mass_definition"],
+            "parallel_strategy": summary_payload["parallel_strategy"],
+            "worker_processes": summary_payload["worker_processes"],
+            "parallelism": summary_payload["parallelism"],
+            "figure_title": summary_payload["figure_title"],
+            "gamma_vs_sigma_star_figure": str(diagnostics_result.result_dir / "gamma_vs_sigma_star.png"),
+            "gamma_vs_sigma_star_summary": str(diagnostics_result.result_dir / "gamma_vs_sigma_star_summary.json"),
+            "gamma_vs_sigma_star_curves": str(diagnostics_result.result_dir / "gamma_vs_sigma_star_curves.npz"),
+            "gamma_vs_logre_kpc_figure": str(diagnostics_result.result_dir / "gamma_vs_logre_kpc.png"),
+            "gamma_vs_logre_kpc_summary": str(diagnostics_result.result_dir / "gamma_vs_logre_kpc_summary.json"),
+            "gamma_vs_logre_kpc_curves": str(diagnostics_result.result_dir / "gamma_vs_logre_kpc_curves.npz"),
+            "gamma_vs_delta_r_figure": str(diagnostics_result.result_dir / "gamma_vs_delta_r.png"),
+            "gamma_vs_delta_r_summary": str(diagnostics_result.result_dir / "gamma_vs_delta_r_summary.json"),
+            "gamma_vs_delta_r_curves": str(diagnostics_result.result_dir / "gamma_vs_delta_r_curves.npz"),
+        }
+    )
+    return PosteriorTrendResult(
+        run_id=diagnostics_result.run_id,
+        profile_name=diagnostics_result.profile_name,
+        input_run_dir=diagnostics_result.input_run_dir,
+        result_dir=diagnostics_result.result_dir,
+        status=diagnostics_result.status,
+        burn_in_applied=diagnostics_result.burn_in_applied,
+        n_posterior_draws=diagnostics_result.n_posterior_draws,
+        n_mass_bins=int(n_mass_bins),
+        sigma_table_path=Path(sigma_table_path).expanduser().resolve(),
+        metadata=metadata,
     )
 
 
@@ -4538,206 +4154,71 @@ def run_posterior_predictive(
     worker_processes: int | None = None,
     posterior_draw_tail_cap: int = DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP,
 ) -> PosteriorPredictiveResult:
-    """
-    Run the posterior predictive test for one completed inference run.
+    """Run standalone PPC through the shared JAX diagnostics backend.
 
-    Parameters
-    ----------
-    run_dir:
-        Completed inference run directory containing `config_snapshot.yaml` and
-        `chain.h5`.
-    sigma_table_path:
-        Path to the Jeans interpolation table consumed by the sigma PPC step.
-    output_root_dir:
-        Root directory under which PPC artifacts will be written as
-        `<output_root>/<profile>/<run_id>/...`.
-    n_replicates:
-        Optional number of posterior draws / replicated samples to generate.
-        When omitted, the canonical PPC policy uses the tail of the flattened
-        post-burn-in chain, capped at `DEFAULT_CANONICAL_POSTERIOR_DRAW_CAP`.
-    burn_in:
-        Integer number of MCMC steps to discard, or `"auto"` to reuse the
-        original run configuration's `warmup` value.
-    random_seed:
-        Seed controlling posterior-draw sampling, candidate-pool subsampling,
-        weighted replicated-lens draws, and sigma noise injection.
-    candidate_pool_size:
-        Number of candidate lenses to materialize per posterior draw before
-        applying weighted sampling. This is intentionally distinct from the
-        normalization kernel's Monte Carlo sample count.
-    worker_processes:
-        Optional process count for posterior-draw chunk parallelism. When
-        omitted, PPC resolves a process budget from the machine CPU count and
-        the stored runtime `reserve_cores`.
-    posterior_draw_tail_cap:
-        Maximum number of tail posterior draws used when `n_replicates` is not
-        explicitly provided. The monitor uses this to align both profiles.
+    This function keeps the historical PPC API stable, including the
+    ``candidate_pool_size`` default policy, but no longer owns a separate
+    NumPy/SciPy simulation path. The full diagnostics workflow writes the PPC
+    artifacts and the trend artifacts from the same JAX parent population; this
+    wrapper returns the older ``PosteriorPredictiveResult`` view of that joint
+    run.
     """
 
     resolved_run_dir = Path(run_dir).expanduser().resolve()
-    config_snapshot_path = resolved_run_dir / "config_snapshot.yaml"
-    chain_path = resolved_run_dir / "chain.h5"
-    runtime_config = load_runtime_config(config_snapshot_path)
-    mass_definition = runtime_config.mass_definition
-    mass_label = mass_definition.label
-    burn_in_steps = _resolve_burn_in(burn_in, runtime_config.sampling.warmup)
-    selection_rng = np.random.default_rng(random_seed)
-    posterior_draws, posterior_draw_mode = _load_posterior_draws(
-        chain_path,
-        burn_in=burn_in_steps,
-        rng=selection_rng,
-        n_replicates=n_replicates,
-        tail_cap=posterior_draw_tail_cap,
-    )
-    n_posterior_draws_used = int(posterior_draws.shape[0])
-
-    compiled_context, profile_spec, _, _, _, observations = build_compiled_context(runtime_config)
-    observation_contract = _load_observation_contract_from_path(runtime_config.data.observation_path)
-    observation_flavor = observation_contract.observation_flavor
-    sigma_table = SigmaUnitTable.from_path(
-        sigma_table_path,
-        mass_definition=mass_definition,
-        observation_flavor=observation_flavor,
-    )
-    _assert_sigma_table_matches_run(
-        sigma_table=sigma_table,
-        profile_name=profile_spec.name,
-        mass_definition=mass_definition,
-        observation_flavor=observation_flavor,
-        observation_contract=observation_contract,
-    )
-
+    runtime_config = load_runtime_config(resolved_run_dir / "config_snapshot.yaml")
+    compiled_context, _, _, _, _, _ = build_compiled_context(runtime_config)
     effective_candidate_pool_size = _resolve_candidate_pool_size(
         candidate_pool_size=candidate_pool_size,
         base_normals_count=int(compiled_context.base_normals.shape[0]),
     )
-    parallelism = _resolve_ppc_parallelism(
-        runtime_config=runtime_config,
-        requested_worker_processes=worker_processes,
-        n_draws=n_posterior_draws_used,
-    )
-    theta_latent, sigma_latent, theta_replicated_stats, sigma_replicated_stats = _run_ppc_replicates(
-        posterior_draws=posterior_draws,
-        profile=profile_spec,
-        context=compiled_context,
-        mass_definition=mass_definition,
-        sigma_table_path=str(Path(sigma_table_path).expanduser().resolve()),
-        observation_flavor=observation_flavor,
-        candidate_pool_size=effective_candidate_pool_size,
+    diagnostics_result = run_posterior_diagnostics(
+        run_dir=run_dir,
+        sigma_table_path=sigma_table_path,
+        output_root_dir=output_root_dir,
+        n_posterior_draws=n_replicates,
+        burn_in=burn_in,
         random_seed=random_seed,
-        parallelism=parallelism,
+        parent_sample_size=effective_candidate_pool_size,
+        worker_processes=worker_processes,
+        posterior_draw_tail_cap=posterior_draw_tail_cap,
     )
 
-    theta_observed = _summary_statistics(_observed_theta_ein_values(observations))
-    sigma_observed = _summary_statistics(_observed_sigma_values(observations))
-    theta_summary = _summarize_observed_against_replicates(theta_observed, theta_replicated_stats)
-    sigma_summary = _summarize_observed_against_replicates(sigma_observed, sigma_replicated_stats)
+    ppc_summary_path = diagnostics_result.result_dir / "ppc_summary.json"
+    ppc_summary_payload = json.loads(ppc_summary_path.read_text(encoding="utf-8"))
+    manifest_path = diagnostics_result.result_dir / "run_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    ppc_summary_payload["candidate_pool_size"] = effective_candidate_pool_size
+    manifest_payload["candidate_pool_size"] = effective_candidate_pool_size
+    ppc_summary_path.write_text(json.dumps(ppc_summary_payload, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2, sort_keys=True), encoding="utf-8")
 
-    result_dir = _materialize_result_dir(Path(output_root_dir), runtime_config.profile.name, resolved_run_dir.name)
-    summary_payload = {
-        "run_id": resolved_run_dir.name,
-        "profile_name": runtime_config.profile.name,
-        "gamma_mode": runtime_config.gamma_model.mode,
-        "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
-        "input_run_dir": str(resolved_run_dir),
-        "observation_path": str(runtime_config.data.observation_path),
-        "observation_flavor": observation_flavor,
-        "result_dir": str(result_dir),
-        "burn_in_applied": burn_in_steps,
-        "requested_n_replicates": None if n_replicates is None else int(n_replicates),
-        "n_posterior_draws_used": n_posterior_draws_used,
-        "posterior_draw_mode": posterior_draw_mode,
-        "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
-        "mass_definition": mass_definition_metadata(mass_definition),
-        "sample_sizes": {"theta_ein": THETA_SAMPLE_SIZE, "sigma": SIGMA_SAMPLE_SIZE},
-        "statistics": {"theta_ein": theta_summary, "sigma": sigma_summary},
-        "parallelism": parallelism.to_dict(),
-    }
-    (result_dir / "ppc_summary.json").write_text(json.dumps(summary_payload, indent=2, sort_keys=True), encoding="utf-8")
-
-    manifest_payload = {
-        "run_id": resolved_run_dir.name,
-        "profile_name": runtime_config.profile.name,
-        "gamma_mode": runtime_config.gamma_model.mode,
-        "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
-        "config_snapshot_path": str(config_snapshot_path),
-        "chain_path": str(chain_path),
-        "observation_path": str(runtime_config.data.observation_path),
-        "observation_flavor": observation_flavor,
-        "sigma_table_path": str(Path(sigma_table_path).expanduser().resolve()),
-        "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
-        "candidate_pool_size": effective_candidate_pool_size,
-        "normalization_samples": int(runtime_config.integration.normalization_samples),
-        "burn_in_applied": burn_in_steps,
-        "random_seed": int(random_seed),
-        "requested_n_replicates": None if n_replicates is None else int(n_replicates),
-        "n_posterior_draws_used": n_posterior_draws_used,
-        "posterior_draw_mode": posterior_draw_mode,
-        "mass_definition": mass_definition_metadata(mass_definition),
-        "parallelism": parallelism.to_dict(),
-    }
-    (result_dir / "run_manifest.json").write_text(json.dumps(manifest_payload, indent=2, sort_keys=True), encoding="utf-8")
-
-    np.savez(
-        result_dir / "replicated_statistics.npz",
-        theta_sample_theta_ein=theta_latent["theta_ein"],
-        theta_sample_gamma=theta_latent["gamma"],
-        theta_sample_zd=theta_latent["zd"],
-        theta_sample_zs=theta_latent["zs"],
-        **{f"theta_sample_{mass_label}": theta_latent[mass_label]},
-        theta_sample_re_kpc=theta_latent["re_kpc"],
-        theta_sample_n=theta_latent["n"],
-        sigma_sample_sigma=sigma_latent["sigma"],
-        sigma_sample_theta_ein=sigma_latent["theta_ein"],
-        sigma_sample_gamma=sigma_latent["gamma"],
-        sigma_sample_zd=sigma_latent["zd"],
-        sigma_sample_zs=sigma_latent["zs"],
-        **{f"sigma_sample_{mass_label}": sigma_latent[mass_label]},
-        sigma_sample_re_kpc=sigma_latent["re_kpc"],
-        sigma_sample_n=sigma_latent["n"],
-        theta_stat_median=theta_replicated_stats["median"],
-        theta_stat_std=theta_replicated_stats["std"],
-        theta_stat_p10=theta_replicated_stats["p10"],
-        theta_stat_p90=theta_replicated_stats["p90"],
-        sigma_stat_median=sigma_replicated_stats["median"],
-        sigma_stat_std=sigma_replicated_stats["std"],
-        sigma_stat_p10=sigma_replicated_stats["p10"],
-        sigma_stat_p90=sigma_replicated_stats["p90"],
-    )
-
-    _write_overview_figure(
-        result_dir / "ppc_overview.png",
-        profile_name=runtime_config.profile.name,
-        theta_replicated_stats=theta_replicated_stats,
-        theta_summary=theta_summary,
-        sigma_replicated_stats=sigma_replicated_stats,
-        sigma_summary=sigma_summary,
-    )
-
-    result = PosteriorPredictiveResult(
-        run_id=resolved_run_dir.name,
-        profile_name=runtime_config.profile.name,
-        input_run_dir=resolved_run_dir,
-        result_dir=result_dir,
-        status="completed",
-        burn_in_applied=burn_in_steps,
-        n_replicates=n_posterior_draws_used,
-        sample_sizes={"theta_ein": THETA_SAMPLE_SIZE, "sigma": SIGMA_SAMPLE_SIZE},
-        sigma_table_path=Path(sigma_table_path).expanduser().resolve(),
-        metadata={
-            "requested_n_replicates": None if n_replicates is None else int(n_replicates),
-            "n_posterior_draws_used": n_posterior_draws_used,
-            "posterior_draw_mode": posterior_draw_mode,
+    metadata = dict(diagnostics_result.metadata)
+    metadata.update(
+        {
+            "requested_n_replicates": ppc_summary_payload["requested_n_replicates"],
+            "n_posterior_draws_used": ppc_summary_payload["n_posterior_draws_used"],
+            "posterior_draw_mode": ppc_summary_payload["posterior_draw_mode"],
             "candidate_pool_size": effective_candidate_pool_size,
             "normalization_samples": runtime_config.integration.normalization_samples,
-            "observation_path": str(runtime_config.data.observation_path),
-            "observation_flavor": observation_flavor,
-            "sigma_table_leaf_path": sigma_table.bundle_leaf_path,
-            "gamma_mode": runtime_config.gamma_model.mode,
-            "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
-            "mass_definition": mass_definition_metadata(mass_definition),
-            "parallelism": parallelism.to_dict(),
-            "statistics": summary_payload["statistics"],
-        },
+            "observation_path": ppc_summary_payload["observation_path"],
+            "observation_flavor": ppc_summary_payload["observation_flavor"],
+            "sigma_table_leaf_path": ppc_summary_payload["sigma_table_leaf_path"],
+            "gamma_mode": ppc_summary_payload["gamma_mode"],
+            "parameter_order": ppc_summary_payload["parameter_order"],
+            "mass_definition": ppc_summary_payload["mass_definition"],
+            "parallelism": ppc_summary_payload["parallelism"],
+            "statistics": ppc_summary_payload["statistics"],
+        }
     )
-    return result
+    return PosteriorPredictiveResult(
+        run_id=diagnostics_result.run_id,
+        profile_name=diagnostics_result.profile_name,
+        input_run_dir=diagnostics_result.input_run_dir,
+        result_dir=diagnostics_result.result_dir,
+        status=diagnostics_result.status,
+        burn_in_applied=diagnostics_result.burn_in_applied,
+        n_replicates=diagnostics_result.n_posterior_draws,
+        sample_sizes={"theta_ein": THETA_SAMPLE_SIZE, "sigma": SIGMA_SAMPLE_SIZE},
+        sigma_table_path=Path(sigma_table_path).expanduser().resolve(),
+        metadata=metadata,
+    )

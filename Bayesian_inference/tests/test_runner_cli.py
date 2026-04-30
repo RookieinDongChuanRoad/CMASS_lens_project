@@ -31,6 +31,28 @@ from cmass_lens_inference.sampler import _summarize_recent_blobs
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _force_single_chain_for_orchestration_test(config_path: Path) -> None:
+    """
+    Keep runner/CLI orchestration tests intentionally small.
+
+    The production default is now `2 * ndim` chains so real runs keep the same
+    broad initialization convention as the historical emcee workflow.  These
+    integration tests are different: they only need to prove that run/resume,
+    metadata, checkpoints, and output files are wired correctly.  Pinning one
+    sequential chain here prevents those contract tests from becoming expensive
+    implicit sampler-quality tests.
+    """
+
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload.setdefault("sampling", {}).update(
+        {
+            "num_chains": 1,
+            "chain_method": "sequential",
+        }
+    )
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
 def _seed_backend_with_steps(chain_path: Path, n_walkers: int, n_dim: int, n_steps: int) -> None:
     """
     Create a minimal but real `emcee` backend file for resume tests.
@@ -66,6 +88,7 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
     the configured output root and return a typed summary object.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_config_path)
     run_result = run_inference(str(synthetic_config_path))
 
     assert run_result.profile_name == "sersic"
@@ -154,6 +177,7 @@ def test_run_inference_serializes_fp_prior_metadata(
     bundle leaf.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_fp_prior_config_path)
     runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
     run_result = run_inference(str(synthetic_fp_prior_config_path))
 
@@ -186,6 +210,7 @@ def test_samples_npz_is_readable_as_primary_numpyro_backend(synthetic_config_pat
     and recover posterior samples plus log-probability diagnostics.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_config_path)
     run_result = run_inference(str(synthetic_config_path))
 
     with np.load(run_result.run_dir / "samples.npz") as payload:
@@ -206,6 +231,7 @@ def test_run_inference_uses_independent_gamma_parameter_dimension(
     reads the exact parameter vector implied by the chosen gamma mode.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_independent_config_path)
     run_result = run_inference(str(synthetic_independent_config_path))
 
     with np.load(run_result.run_dir / "samples.npz") as payload:
@@ -235,6 +261,7 @@ def test_run_inference_uses_sigma_star_gamma_parameter_dimension(
     and serialized metadata must agree on the third gamma parameterization.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_sigma_star_dependent_config_path)
     run_result = run_inference(str(synthetic_sigma_star_dependent_config_path))
 
     with np.load(run_result.run_dir / "samples.npz") as payload:
@@ -261,6 +288,7 @@ def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path)
     checkpoint rather than creating a new run tree.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_config_path)
     runtime_config = load_runtime_config(synthetic_config_path)
     run_layout = create_run_layout(
         root_dir=runtime_config.output.root_dir,
@@ -305,6 +333,7 @@ def test_resume_inference_migrates_legacy_run_snapshot_missing_gamma_mode(
     can continue to resume older runs without mutating their source configs.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_config_path)
     runtime_config = load_runtime_config(synthetic_config_path)
     run_layout = create_run_layout(
         root_dir=runtime_config.output.root_dir,
@@ -346,6 +375,7 @@ def test_cli_run_command_executes_minimal_pipeline(synthetic_config_path: Path) 
     run directory as machine-readable JSON.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_config_path)
     completed = subprocess.run(
         [
             sys.executable,
@@ -376,6 +406,7 @@ def test_run_inference_supports_process_pool_strategy(synthetic_config_path: Pat
     record its resolved parallel settings in the artifacts.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_config_path)
     config_text = synthetic_config_path.read_text(encoding="utf-8")
     config_text = config_text.replace("parallel_strategy: auto", "parallel_strategy: process_pool")
     config_text = config_text.replace("num_threads: 0", "num_threads: 2")
@@ -400,6 +431,7 @@ def test_run_inference_supports_process_pool_strategy_with_fp_prior(
     runtime option and guards against nested-thread regressions.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_fp_prior_config_path)
     config_text = synthetic_fp_prior_config_path.read_text(encoding="utf-8")
     config_text = config_text.replace("parallel_strategy: auto", "parallel_strategy: process_pool")
     config_text = config_text.replace("num_threads: 0", "num_threads: 2")
@@ -426,6 +458,7 @@ def test_run_inference_serializes_m10_mass_definition_metadata(
     be explicit and definition-aware.
     """
 
+    _force_single_chain_for_orchestration_test(synthetic_m10_config_path)
     run_result = run_inference(str(synthetic_m10_config_path))
 
     assert run_result.metadata["mass_definition"]["label"] == "m10"

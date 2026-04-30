@@ -8,6 +8,8 @@ the new package must expose its own CLI and stop relying on the
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
     """The new standalone package should own the PPT command surface."""
@@ -34,6 +36,15 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
             "/tmp/table.h5",
         ]
     )
+    posterior_diagnostics_args = parser.parse_args(
+        [
+            "posterior-diagnostics",
+            "--run-dir",
+            "/tmp/run",
+            "--sigma-table",
+            "/tmp/table.h5",
+        ]
+    )
     monitor_args = parser.parse_args(
         [
             "posterior-predictive-monitor",
@@ -48,28 +59,31 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
             "/tmp/run-b",
         ]
     )
-    notebook_comparison_args = parser.parse_args(
-        [
-            "notebook-comparison",
-            "--chain-path",
-            "/tmp/chain.h5",
-            "--population-model-path",
-            "/tmp/Population_model.py",
-            "--sigma-table-path",
-            "/tmp/table.h5",
-            "--cross-section-path",
-            "/tmp/cs.h5",
-            "--output-dir",
-            "/tmp/out",
-        ]
-    )
-
     assert posterior_predictive_args.command == "posterior-predictive"
     assert posterior_trends_args.command == "posterior-trends"
+    assert posterior_diagnostics_args.command == "posterior-diagnostics"
+    assert posterior_diagnostics_args.parent_sample_size == 10000
+    assert posterior_diagnostics_args.n_mass_bins == 19
     assert monitor_args.command == "posterior-predictive-monitor"
     assert annotate_args.command == "annotate-fig8-observations"
     assert annotate_args.run_dir == ["/tmp/run-a", "/tmp/run-b"]
-    assert notebook_comparison_args.command == "notebook-comparison"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "notebook" + "-comparison",
+                "--chain-path",
+                "/tmp/chain.h5",
+                "--population-model-path",
+                "/tmp/Population_model.py",
+                "--sigma-table-path",
+                "/tmp/table.h5",
+                "--cross-section-path",
+                "/tmp/cs.h5",
+                "--output-dir",
+                "/tmp/out",
+            ]
+        )
 
 
 def test_standalone_cli_output_dir_explicit_override_wins() -> None:
@@ -83,6 +97,17 @@ def test_standalone_cli_output_dir_explicit_override_wins() -> None:
     posterior_predictive_args = parser.parse_args(
         [
             "posterior-predictive",
+            "--run-dir",
+            "/tmp/run",
+            "--sigma-table",
+            "/tmp/table.h5",
+            "--output-dir",
+            output_root,
+        ]
+    )
+    posterior_diagnostics_args = parser.parse_args(
+        [
+            "posterior-diagnostics",
             "--run-dir",
             "/tmp/run",
             "--sigma-table",
@@ -119,5 +144,6 @@ def test_standalone_cli_output_dir_explicit_override_wins() -> None:
 
     assert posterior_predictive_args.output_dir == output_root
     assert posterior_trends_args.output_dir == output_root
+    assert posterior_diagnostics_args.output_dir == output_root
     assert monitor_args.output_dir == output_root
     assert annotate_args.outputs_root == output_root

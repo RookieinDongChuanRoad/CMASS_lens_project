@@ -11,11 +11,11 @@ from __future__ import annotations
 import argparse
 import json
 
-from .notebook_comparison import run_notebook_pipeline_comparison
 from .predictive import (
     DEFAULT_EXTERNAL_SIGMA_DIR,
     DEFAULT_MONITOR_NOT_BEFORE,
     DEFAULT_N_REPLICATES,
+    DEFAULT_DIAGNOSTICS_PARENT_SAMPLE_SIZE,
     DEFAULT_PPC_OUTPUT_ROOT_DIR,
     DEFAULT_TREND_MASS_BIN_COUNT,
     DEFAULT_TREND_MASS_BIN_MAX,
@@ -23,6 +23,7 @@ from .predictive import (
     DEFAULT_TREND_PARENT_SAMPLE_SIZE,
     DEFAULT_TREND_POSTERIOR_DRAWS,
     annotate_existing_fig8_like_figures_with_observations,
+    run_posterior_diagnostics,
     run_posterior_predictive,
     wait_for_external_sigma_tables_and_run,
 )
@@ -69,6 +70,26 @@ def build_argument_parser() -> argparse.ArgumentParser:
     trend_parser.add_argument("--logmstar-min", type=float, default=None, help=argparse.SUPPRESS)
     trend_parser.add_argument("--logmstar-max", type=float, default=None, help=argparse.SUPPRESS)
     trend_parser.add_argument("--n-candidate-per-mass", type=int, default=None, help=argparse.SUPPRESS)
+
+    diagnostics_parser = subparsers.add_parser(
+        "posterior-diagnostics",
+        help="Run JAX shared-parent PPC and Fig. 8-like trend diagnostics",
+    )
+    diagnostics_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
+    diagnostics_parser.add_argument("--sigma-table", required=True, help="Path to the Jeans sigma-unit interpolation table")
+    diagnostics_parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
+        help=f"Root directory for diagnostics artifacts (default: {DEFAULT_PPC_OUTPUT_ROOT_DIR})",
+    )
+    diagnostics_parser.add_argument("--n-posterior-draws", type=int, default=DEFAULT_TREND_POSTERIOR_DRAWS)
+    diagnostics_parser.add_argument("--burn-in", default="auto")
+    diagnostics_parser.add_argument("--seed", type=int, default=20260309)
+    diagnostics_parser.add_argument("--parent-sample-size", type=int, default=DEFAULT_DIAGNOSTICS_PARENT_SAMPLE_SIZE)
+    diagnostics_parser.add_argument("--worker-processes", type=int, default=None)
+    diagnostics_parser.add_argument("--n-mass-bins", type=int, default=DEFAULT_TREND_MASS_BIN_COUNT)
+    diagnostics_parser.add_argument("--mass-bin-min", type=float, default=DEFAULT_TREND_MASS_BIN_MIN)
+    diagnostics_parser.add_argument("--mass-bin-max", type=float, default=DEFAULT_TREND_MASS_BIN_MAX)
 
     monitor_parser = subparsers.add_parser(
         "posterior-predictive-monitor",
@@ -121,21 +142,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=None,
     )
     annotate_parser.add_argument("--backup-prefix", default="pre_observed_points")
-
-    comparison_parser = subparsers.add_parser("notebook-comparison", help="Compare notebook and standalone PPT")
-    comparison_parser.add_argument("--chain-path", required=True)
-    comparison_parser.add_argument("--population-model-path", required=True)
-    comparison_parser.add_argument("--sigma-table-path", required=True)
-    comparison_parser.add_argument("--cross-section-path", required=True)
-    comparison_parser.add_argument("--output-dir", required=True)
-    comparison_parser.add_argument("--pipeline-config-path", required=False, default="/Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest/config_snapshot.yaml")
-    comparison_parser.add_argument("--observation-path", required=False, default=None)
-    comparison_parser.add_argument("--discard", type=int, default=1000)
-    comparison_parser.add_argument("--max-samples", type=int, default=None)
-    comparison_parser.add_argument("--num-parents", type=int, default=10000)
-    comparison_parser.add_argument("--theta-sample-size", type=int, default=22)
-    comparison_parser.add_argument("--sigma-sample-size", type=int, default=7)
-    comparison_parser.add_argument("--seed", type=int, default=20260310)
 
     return parser
 
@@ -190,6 +196,23 @@ def main() -> None:
             mass_bin_min=args.mass_bin_min,
             mass_bin_max=args.mass_bin_max,
         )
+    elif args.command == "posterior-diagnostics":
+        burn_in = args.burn_in
+        if burn_in != "auto":
+            burn_in = int(burn_in)
+        result = run_posterior_diagnostics(
+            run_dir=args.run_dir,
+            sigma_table_path=args.sigma_table,
+            output_root_dir=args.output_dir,
+            n_posterior_draws=args.n_posterior_draws,
+            burn_in=burn_in,
+            random_seed=args.seed,
+            parent_sample_size=args.parent_sample_size,
+            worker_processes=args.worker_processes,
+            n_mass_bins=args.n_mass_bins,
+            mass_bin_min=args.mass_bin_min,
+            mass_bin_max=args.mass_bin_max,
+        )
     elif args.command == "posterior-predictive-monitor":
         burn_in = args.burn_in
         if burn_in != "auto":
@@ -216,22 +239,8 @@ def main() -> None:
             raw_sersic_path=args.raw_sersic,
             backup_prefix=args.backup_prefix,
         )
-    else:
-        result = run_notebook_pipeline_comparison(
-            chain_path=args.chain_path,
-            pipeline_config_path=args.pipeline_config_path,
-            population_model_path=args.population_model_path,
-            sigma_table_path=args.sigma_table_path,
-            cross_section_path=args.cross_section_path,
-            output_dir=args.output_dir,
-            discard=args.discard,
-            max_samples=args.max_samples,
-            num_parents=args.num_parents,
-            theta_sample_size=args.theta_sample_size,
-            sigma_sample_size=args.sigma_sample_size,
-            random_seed=args.seed,
-            observation_path=args.observation_path,
-        )
+    else:  # pragma: no cover - argparse prevents this for supported command sets.
+        parser.error(f"Unsupported command: {args.command}")
 
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 

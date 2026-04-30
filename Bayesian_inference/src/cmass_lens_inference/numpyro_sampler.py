@@ -10,6 +10,7 @@ the CMASS lens likelihood through a `numpyro.factor`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
-from numpyro.infer import MCMC, NUTS, init_to_value
+from numpyro.infer import MCMC, NUTS, init_to_uniform
 
 from .jax_model import log_prob_value
 from .outputs import append_run_log
@@ -108,6 +109,69 @@ def _initial_values(runtime_context: RuntimeContext) -> dict[str, float]:
     return runtime_context.config.sampling.initial_center.to_dict()
 
 
+def _bounded_jittered_init(site=None, *, initial_values: dict[str, float], prior_bounds: dict[str, tuple[float, float]], jitter_scale: float):
+    """
+    NumPyro init strategy that jitters each chain inside the constrained box.
+
+    NumPyro calls an init strategy once per chain when `chain_method` is
+    sequential. Using the site's RNG key here gives every chain an independent
+    starting point without changing the model's scalar parameter sites. The
+    clipping margin keeps Uniform-prior initial values away from exact support
+    boundaries, where unconstrained transforms can become numerically awkward.
+    """
+
+    if site is None:
+        return partial(
+            _bounded_jittered_init,
+            initial_values=initial_values,
+            prior_bounds=prior_bounds,
+            jitter_scale=float(jitter_scale),
+        )
+
+    if site["type"] == "sample" and not site["is_observed"] and site["name"] in initial_values:
+        parameter_name = site["name"]
+        center = jnp.asarray(initial_values[parameter_name], dtype=jnp.float64)
+        lower, upper = prior_bounds[parameter_name]
+        lower_value = jnp.asarray(lower, dtype=jnp.float64)
+        upper_value = jnp.asarray(upper, dtype=jnp.float64)
+        width = upper_value - lower_value
+        margin = jnp.maximum(jnp.asarray(1.0e-12, dtype=jnp.float64), jnp.asarray(1.0e-9, dtype=jnp.float64) * width)
+        rng_key = site["kwargs"].get("rng_key")
+        if jitter_scale > 0.0 and rng_key is not None:
+            proposed = center + jnp.asarray(jitter_scale, dtype=jnp.float64) * jax.random.normal(rng_key, dtype=jnp.float64)
+        else:
+            proposed = center
+        return jnp.clip(proposed, lower_value + margin, upper_value - margin)
+
+    return init_to_uniform(site)
+
+
+def _build_jittered_initial_strategy(runtime_context: RuntimeContext):
+    """
+    Build the NUTS initialization strategy for this run.
+
+    The legacy emcee path needed a large walker cloud to avoid poor ensemble
+    conditioning. NUTS does not use an ensemble geometry, but multi-chain runs
+    still benefit from independent, valid initial points for convergence
+    diagnostics.
+    """
+
+    runtime_config = getattr(runtime_context, "config", runtime_context)
+    parameter_schema = runtime_config.parameter_schema
+    return _bounded_jittered_init(
+        initial_values=runtime_config.sampling.initial_center.to_dict(),
+        prior_bounds={
+            name: tuple(bounds)
+            for name, bounds in zip(
+                parameter_schema.internal_parameter_names,
+                parameter_schema.prior_bounds,
+                strict=True,
+            )
+        },
+        jitter_scale=runtime_config.sampling.initial_jitter_scale,
+    )
+
+
 def _samples_to_ordered_array(samples: dict[str, np.ndarray], parameter_names: tuple[str, ...]) -> np.ndarray:
     """Convert NumPyro's sample dictionary into the canonical parameter matrix."""
 
@@ -157,7 +221,7 @@ def run_numpyro_sampler(
     rng_key = jax.random.PRNGKey(int(sampling.random_seed))
     kernel = NUTS(
         numpyro_model,
-        init_strategy=init_to_value(values=_initial_values(runtime_context)),
+        init_strategy=_build_jittered_initial_strategy(runtime_context),
         target_accept_prob=0.8,
     )
     mcmc = MCMC(

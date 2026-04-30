@@ -329,7 +329,7 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
             random_seed=int(sampling_raw["random_seed"]),
             initial_center=initial_center,
             initial_jitter_scale=float(sampling_raw.get("initial_jitter_scale", 1.0e-3)),
-            num_chains=int(sampling_raw.get("num_chains", 1)),
+            num_chains=int(sampling_raw.get("num_chains", 2 * parameter_schema.n_dim)),
             num_samples=int(sampling_raw.get("num_samples", sampling_raw["n_steps"])),
             num_warmup=int(sampling_raw.get("num_warmup", sampling_raw["warmup"])),
             thinning=int(sampling_raw.get("thinning", 1)),

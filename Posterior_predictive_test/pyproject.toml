@@ -9,12 +9,14 @@ description = "Standalone posterior-predictive workflows for CMASS strong-lens a
 readme = "findings.md"
 requires-python = ">=3.11"
 dependencies = [
+  "arviz>=0.22",
   "emcee>=3.1",
   "h5py>=3.10",
+  "jax>=0.8.3,<0.9",
+  "jaxlib>=0.8.3,<0.9",
   "matplotlib>=3.8",
   "numpy>=1.26",
   "PyYAML>=6.0",
-  "scipy>=1.11",
   "cmass-lens-inference",
 ]
 

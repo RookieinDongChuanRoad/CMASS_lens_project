@@ -49,12 +49,10 @@ the legacy reference implementation.
 
 ### `Posterior_predictive_test/`
 
-Standalone posterior-predictive, trend, monitor, and notebook-comparison package.
+Standalone posterior-predictive, trend, monitor, and JAX diagnostics package.
 
 - Package source lives under `Posterior_predictive_test/src/cmass_posterior_predictive/`
-- Provides the `cmass-posterior-predictive` CLI for PPC, trends, and monitor workflows
-- Keeps the one-off comparison driver:
-  `Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
+- Provides the `cmass-posterior-predictive` CLI for PPC, trends, diagnostics, and monitor workflows
 - Writes its artifacts under `Posterior_predictive_test/results/`
 - Some defaults in this area point outside the repository to
   `/Users/liurongfu/Desktop/Spectrum_reduction/...`
@@ -117,7 +115,6 @@ Many configs, scripts, and reports assume this exact root path:
 This is especially true for:
 
 - `Bayesian_inference/configs/*.yaml`
-- `Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
 - reports and manifests under `key_tests/`
 
 ### Missing large artifacts from Git
@@ -282,12 +279,10 @@ conda run -n cmass_lens python run_comparison.py
 This workflow prepares the workspace, refreshes copied reference files, runs
 smoke and compare jobs for both profiles, and rewrites the comparison report.
 
-### 6. Run notebook-vs-pipeline comparison scripts only when the external defaults are valid
+### 6. Run posterior diagnostics through the JAX shared-parent path
 
-`Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py` is a
-research-side script, not a stable package CLI. Its default paths point to
-desktop-side notebooks and chain files outside this repository. Override those
-arguments if your local setup differs.
+The former notebook-vs-pipeline comparison entrypoint has been retired. Use
+`posterior-diagnostics` for the maintained PPC plus Fig. 8-like trend workflow.
 
 ## Data and Output Conventions
 
@@ -295,8 +290,7 @@ arguments if your local setup differs.
 - Canonical external grids live under `data/external/`
 - Main inference outputs live under `outputs/`
 - Current-vs-reference comparison artifacts live under `key_tests/output/`
-- Notebook-vs-pipeline comparison artifacts live under
-  `Posterior_predictive_test/results/`
+- Posterior diagnostics artifacts live under `Posterior_predictive_test/results/`
 
 Git intentionally ignores most heavy runtime artifacts, so absence from Git
 history does not mean those files are optional for local scientific runs.
