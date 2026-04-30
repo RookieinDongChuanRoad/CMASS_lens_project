@@ -235,3 +235,72 @@ def test_plan_sigma_updates_rejects_missing_double_observation_tags(tmp_path: Pa
 
     with pytest.raises(SigmaUpdateValidationError, match="double-galaxy"):
         plan_sigma_updates_for_files(csv_path=csv_path, hdf5_paths=[hdf5_path])
+
+
+def test_plan_sigma_updates_accepts_real_csv_shape_and_uses_stat_error_column(tmp_path: Path) -> None:
+    """Extra PPXF columns should be ignored while `sigma_stat_kms` remains authoritative.
+
+    The real CSV exported by the spectroscopy workflow carries many more columns
+    than the updater needs, including `sigma_total_kms`. This regression test
+    locks the current contract: planning must still use `sigma_primary_kms` for
+    the value and `sigma_stat_kms` for the uncertainty.
+    """
+
+    csv_path = tmp_path / "ppxf_results_optimal.csv"
+    hdf5_path = tmp_path / "input.hdf5"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "system",
+                "base_name",
+                "obs_tag",
+                "sigma_primary_kms",
+                "sigma_stat_kms",
+                "sigma_total_kms",
+                "warnings",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "system": "single-galaxy",
+                "base_name": "single-galaxy",
+                "obs_tag": "",
+                "sigma_primary_kms": 225.869123,
+                "sigma_stat_kms": 9.587872,
+                "sigma_total_kms": 31.25,
+                "warnings": "",
+            }
+        )
+        writer.writerow(
+            {
+                "system": "double-galaxy-A",
+                "base_name": "double-galaxy",
+                "obs_tag": "A",
+                "sigma_primary_kms": 271.480496,
+                "sigma_stat_kms": 7.103578,
+                "sigma_total_kms": 71.0,
+                "warnings": "",
+            }
+        )
+        writer.writerow(
+            {
+                "system": "double-galaxy-B",
+                "base_name": "double-galaxy",
+                "obs_tag": "B",
+                "sigma_primary_kms": 269.682745,
+                "sigma_stat_kms": 7.398339,
+                "sigma_total_kms": 55.0,
+                "warnings": "",
+            }
+        )
+    _create_hdf5_fixture(hdf5_path)
+
+    plans = plan_sigma_updates_for_files(csv_path=csv_path, hdf5_paths=[hdf5_path])
+    preview_rows = {item.group_name: item for item in plans[0].group_updates}
+
+    assert preview_rows["single-galaxy"].new_sigma.tolist() == [226]
+    assert preview_rows["single-galaxy"].new_sigma_err.tolist() == [10]
+    assert preview_rows["double-galaxy"].new_sigma.tolist() == [271, 270]
+    assert preview_rows["double-galaxy"].new_sigma_err.tolist() == [7, 7]

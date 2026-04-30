@@ -19,7 +19,7 @@ import yaml
 
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.io import load_cross_section_grid, load_observations, load_sigma_unit_table
-from cmass_lens_inference.mass_definition import convert_log_enclosed_mass, get_mass_definition
+from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, get_mass_definition
 from cmass_lens_inference.profiles import build_profile_spec
 
 
@@ -107,6 +107,57 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     assert runtime_config.parameter_schema.prior_bounds[0] == pytest.approx((9.0, 12.0))
 
 
+def test_load_runtime_config_builds_h_unit_mass_definition(synthetic_config_path: Path) -> None:
+    """The h-units config surface should expose h-dependent labels and pivots."""
+
+    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    payload["unit_convention"] = "h_units_v1"
+    payload["mass_definition"] = {"aperture_hinv_kpc": 5}
+    payload["box_prior"] = {
+        "mu5h_0": [9.0, 12.0],
+        "beta5h": [-3.0, 3.0],
+        "xi5h": [-3.0, 3.0],
+        "sigma5h": [1.0e-2, 0.2],
+        "mu_gamma_0": [1.5, 2.5],
+        "beta_gamma": [-3.0, 3.0],
+        "xi_gamma": [-3.0, 3.0],
+        "sigma_gamma": [0.0, 0.5],
+        "mu_zs": [1.0, 3.0],
+        "sigma_zs": [0.0, 2.0],
+        "theta0": [0.0, 3.0],
+        "loga": [-1.0, 3.0],
+    }
+    payload["sampling"]["initial_center"] = {
+        "mu5h_0": 11.17,
+        "beta5h": 0.59,
+        "xi5h": -0.11,
+        "sigma5h": 0.06,
+        "mu_gamma_0": 1.99,
+        "beta_gamma": 0.10,
+        "xi_gamma": -0.67,
+        "sigma_gamma": 0.149,
+        "mu_zs": 1.8,
+        "sigma_zs": 0.215,
+        "theta0": 0.93,
+        "loga": 1.0,
+    }
+    h_unit_config_path = synthetic_config_path.parent / "h_unit_config.yaml"
+    h_unit_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    runtime_config = load_runtime_config(h_unit_config_path)
+
+    assert runtime_config.unit_convention == "h_units_v1"
+    assert runtime_config.h_ref == pytest.approx(0.7)
+    assert runtime_config.mass_definition.label == "m5_hinvkpc"
+    assert runtime_config.mass_definition.subgroup_name == "m5_hinvkpc"
+    assert runtime_config.parameter_schema.public_parameter_names[:4] == (
+        "mu5h_0",
+        "beta5h",
+        "xi5h",
+        "sigma5h",
+    )
+
+
 def test_load_runtime_config_requires_sigma_table_path_when_fp_prior_enabled(
     synthetic_config_path: Path,
 ) -> None:
@@ -145,12 +196,12 @@ def test_load_runtime_config_builds_fp_prior_config_when_enabled(
     assert runtime_config.data.sigma_table_path == synthetic_sersic_sigma_table_file
     assert runtime_config.fp_prior.fit_mstar_min == pytest.approx(11.0)
     assert runtime_config.fp_prior.pivot_mstar == pytest.approx(11.3)
-    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.047)
-    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.008)
-    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.341871, abs=1.0e-6)
-    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.03)
-    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.25774, abs=1.0e-5)
-    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.03)
+    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.075)
+    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.003)
+    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.34548, abs=1.0e-5)
+    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.00611, abs=1.0e-5)
+    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.176, abs=1.0e-6)
+    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.011)
 
 
 def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Path) -> None:
@@ -802,6 +853,70 @@ def test_load_observations_uses_devauc_aliases(
     assert observation.num_sigma == 0
 
 
+def test_load_observations_validates_and_reads_h_unit_contract(
+    tmp_path: Path,
+    synthetic_observation_file: Path,
+) -> None:
+    """
+    h-units observation files must expose h-specific fields and metadata.
+
+    This test deliberately exercises both directions of the guard: an h-units
+    config cannot consume legacy files, and a legacy config cannot consume an
+    explicitly h-units file.
+    """
+
+    path = tmp_path / "synthetic_h_units_observations.hdf5"
+    gamma_grid = np.linspace(1.3, 2.7, 17)
+    with h5py.File(path, "w") as handle:
+        handle.attrs["unit_convention"] = H_UNITS_V1
+        handle.attrs["h_ref"] = 0.7
+        group = handle.create_group("lens-h")
+        group.attrs["unit_convention"] = H_UNITS_V1
+        group.attrs["h_ref"] = 0.7
+        group.attrs["zd"] = 0.55
+        group.attrs["zs"] = 1.75
+        group.attrs["logmchab_h2"] = 10.99
+        group.attrs["logmchab_err"] = 0.05
+        group.attrs["log10_re_hinv_kpc"] = 0.64
+        group.attrs["nser"] = 4.2
+        group.attrs["rein_arcsec"] = 1.3
+        group.attrs["num_sigma"] = 0
+        group.create_dataset("gamma_grid", data=gamma_grid)
+        mass_group = group.create_group("mass_definitions").create_group("m5_hinvkpc")
+        mass_group.attrs["unit_convention"] = H_UNITS_V1
+        mass_group.attrs["h_ref"] = 0.7
+        mass_group.create_dataset("mass_grid", data=np.linspace(11.7, 10.9, 17))
+        mass_group.create_dataset("dmass_dthetaein_grid", data=np.linspace(-2.0, -1.0, 17))
+
+    h_mass_definition = get_mass_definition(5, unit_convention=H_UNITS_V1)
+    observations = load_observations(
+        path,
+        build_profile_spec("sersic"),
+        h_mass_definition,
+        h_ref=0.7,
+    )
+
+    assert observations[0].log_stellar_mass_obs == pytest.approx(10.99)
+    assert observations[0].log_effective_radius_obs == pytest.approx(0.64)
+    assert observations[0].mass_grid_17[0] == pytest.approx(11.7)
+
+    with pytest.raises(ValueError, match="missing unit_convention"):
+        load_observations(
+            synthetic_observation_file,
+            build_profile_spec("sersic"),
+            h_mass_definition,
+            h_ref=0.7,
+        )
+
+    with pytest.raises(ValueError, match="does not match active convention"):
+        load_observations(
+            path,
+            build_profile_spec("sersic"),
+            get_mass_definition(5, unit_convention=LEGACY_FIXED_KPC),
+            h_ref=0.7,
+        )
+
+
 def test_load_sigma_unit_table_reads_supported_hdf5_schema(
     synthetic_sersic_sigma_table_file: Path,
 ) -> None:
@@ -824,6 +939,59 @@ def test_load_sigma_unit_table_reads_supported_hdf5_schema(
     assert sigma_table.sigma_unit_grid.shape == (5, 4, 3, 4)
 
 
+def test_load_sigma_unit_table_validates_h_unit_contract(
+    tmp_path: Path,
+    synthetic_sersic_sigma_table_file: Path,
+) -> None:
+    """Sigma tables must fail fast when their convention differs from config."""
+
+    path = tmp_path / "synthetic_h_units_sigma_table.h5"
+    gamma_axis = np.linspace(1.2, 2.8, 5)
+    zd_axis = np.linspace(0.43, 0.82, 4)
+    log_re_axis = np.linspace(0.35, 1.1, 3)
+    with h5py.File(path, "w") as handle:
+        handle.attrs["schema_version"] = "sigma_unit_hdf5_v1"
+        handle.attrs["unit_convention"] = H_UNITS_V1
+        handle.attrs["h_ref"] = 0.7
+        handle.attrs["mass_definition_label"] = "m5_hinvkpc"
+        handle.attrs["mass_radius_kpc"] = 5.0
+        handle.attrs["units"] = "km2 s-2 per 10**m5_hinvkpc"
+        handle.create_dataset("profile_name", data=np.bytes_("sersic"))
+        handle.create_dataset("gamma_axis", data=gamma_axis)
+        handle.create_dataset("zd_axis", data=zd_axis)
+        handle.create_dataset("log_re_kpc_axis", data=log_re_axis)
+        handle.create_dataset("n_axis", data=np.linspace(2.5, 10.5, 4))
+        handle.create_dataset("s_unit_grid", data=np.ones((5, 4, 3, 4)))
+
+    h_mass_definition = get_mass_definition(5, unit_convention=H_UNITS_V1)
+    sigma_table = load_sigma_unit_table(
+        path,
+        build_profile_spec("sersic"),
+        h_mass_definition,
+        h_ref=0.7,
+    )
+
+    assert sigma_table.unit_convention == H_UNITS_V1
+    assert sigma_table.h_ref == pytest.approx(0.7)
+    assert sigma_table.mass_definition_label == "m5_hinvkpc"
+
+    with pytest.raises(ValueError, match="missing unit_convention"):
+        load_sigma_unit_table(
+            synthetic_sersic_sigma_table_file,
+            build_profile_spec("sersic"),
+            h_mass_definition,
+            h_ref=0.7,
+        )
+
+    with pytest.raises(ValueError, match="does not match active convention"):
+        load_sigma_unit_table(
+            path,
+            build_profile_spec("sersic"),
+            get_mass_definition(5, unit_convention=LEGACY_FIXED_KPC),
+            h_ref=0.7,
+        )
+
+
 def test_load_sigma_unit_table_reads_requested_boss_bundle_leaf(
     synthetic_boss_sigma_bundle_file: Path,
 ) -> None:
@@ -844,6 +1012,75 @@ def test_load_sigma_unit_table_reads_requested_boss_bundle_leaf(
     assert sigma_table.log_re_kpc_axis.shape == (3,)
     assert sigma_table.n_axis is None
     assert sigma_table.sigma_unit_grid.shape == (5, 4, 3)
+
+
+def test_load_sigma_unit_table_reads_requested_within_re_bundle_leaf(
+    synthetic_within_re_sigma_bundle_file: Path,
+) -> None:
+    """The loader must support explicit bundle-group reads for within-Re leaves."""
+
+    sigma_table = load_sigma_unit_table(
+        synthetic_within_re_sigma_bundle_file,
+        build_profile_spec("sersic"),
+        get_mass_definition(5),
+        bundle_group="within_re",
+    )
+
+    assert sigma_table.profile_name == "sersic"
+    assert sigma_table.mass_definition_label == "m5"
+    assert sigma_table.mass_radius_kpc == pytest.approx(5.0)
+    assert sigma_table.gamma_axis.shape == (5,)
+    assert sigma_table.zd_axis is None
+    assert sigma_table.log_re_kpc_axis.shape == (3,)
+    assert sigma_table.n_axis is not None
+    assert sigma_table.n_axis.shape == (4,)
+    assert sigma_table.sigma_unit_grid.shape == (5, 3, 4)
+    assert sigma_table.sigma_definition == "within_re"
+    assert sigma_table.bundle_group_name == "within_re"
+    assert sigma_table.observation_flavor is None
+    assert sigma_table.bundle_leaf_path == "/within_re/m5"
+
+
+def test_load_sigma_unit_table_rejects_missing_within_re_bundle_group(
+    synthetic_boss_sigma_bundle_file: Path,
+) -> None:
+    """Explicit within-Re reads must fail on legacy-compatible bundles that only carry slit/boss."""
+
+    with pytest.raises(ValueError, match="does not contain the bundle group 'within_re'"):
+        load_sigma_unit_table(
+            synthetic_boss_sigma_bundle_file,
+            build_profile_spec("sersic"),
+            get_mass_definition(5),
+            bundle_group="within_re",
+        )
+
+
+def test_build_compiled_context_rejects_fp_prior_bundle_without_within_re_leaf(
+    synthetic_bad_boss_sigma_bundle_file: Path,
+    synthetic_fp_prior_config_path: Path,
+) -> None:
+    """
+    FP prior should fail fast when the configured sigma bundle lacks within-Re data.
+
+    The scientific contract now requires effective-radius sigma for every
+    FP-enabled inference run. A bundle that only carries observation-flavor
+    leaves must therefore be rejected immediately instead of silently falling
+    back to slit or BOSS apertures.
+    """
+
+    from cmass_lens_inference.compiled_context import build_compiled_context
+    from cmass_lens_inference.config import load_runtime_config
+
+    payload = yaml.safe_load(synthetic_fp_prior_config_path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    payload["data"]["sigma_table_path"] = str(synthetic_bad_boss_sigma_bundle_file)
+
+    broken_config_path = synthetic_fp_prior_config_path.parent / "missing_within_re_fp.yaml"
+    broken_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    runtime_config = load_runtime_config(broken_config_path)
+    with pytest.raises(ValueError, match="within_re"):
+        build_compiled_context(runtime_config)
 
 
 def test_load_sigma_unit_table_rejects_boss_bundle_with_wrong_seeing(
@@ -886,35 +1123,24 @@ def test_load_sigma_unit_table_rejects_mass_definition_mismatch(
         )
 
 
-def test_load_observations_converts_legacy_m5_grid_to_selected_mass_definition(
-    synthetic_observation_file: Path,
+def test_load_observations_rejects_root_level_legacy_grids_without_namespaced_subgroups(
+    synthetic_legacy_only_observation_file: Path,
 ) -> None:
     """
-    Legacy observation files still store only root-level `m5` datasets.
+    Observation loading no longer supports root-level mass/sigma grids.
 
-    The loader must preserve backward compatibility by converting those
-    datasets analytically when a run requests `m10`.
+    Once the migration is complete, every supported file must expose
+    `mass_definitions/<label>/...` and the loader should fail fast instead of
+    silently falling back to deprecated root-level datasets.
     """
 
     profile_spec = build_profile_spec("sersic")
-    observations = load_observations(
-        synthetic_observation_file,
-        profile_spec,
-        get_mass_definition(10),
-    )
-
-    assert len(observations) == 1
-    observation = observations[0]
-    expected_mass_grid = convert_log_enclosed_mass(
-        log_mass=np.linspace(11.6, 10.8, 17),
-        gamma=np.linspace(1.3, 2.7, 17),
-        from_radius_kpc=5,
-        to_radius_kpc=10,
-    )
-
-    np.testing.assert_allclose(observation.mass_grid_17, expected_mass_grid)
-    np.testing.assert_allclose(observation.dmass_dthetaein_grid_17, np.linspace(-2.0, -1.0, 17))
-    assert observation.s2_grid_17 is not None
+    with pytest.raises(KeyError, match="mass-definition subgroup"):
+        load_observations(
+            synthetic_legacy_only_observation_file,
+            profile_spec,
+            get_mass_definition(10),
+        )
 
 
 def test_load_observations_reads_namespaced_mass_definition_subgroup_when_available(

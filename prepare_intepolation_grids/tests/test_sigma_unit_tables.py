@@ -9,20 +9,23 @@ These tests lock in the contract for the PPT-facing Jeans tables:
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import h5py
 import numpy as np
+import pytest
 
 from interpolation_grids.config import (
     BOSS_CIRCULAR_APERTURE_POLICY,
     DEFAULT_PRODUCTION_APERTURE_POLICY,
+    H_UNITS_V1,
     SIGMA_UNIT_DEVAUC_LOG_RE_KPC_AXIS,
     SIGMA_UNIT_GAMMA_AXIS,
     SIGMA_UNIT_SERSIC_LOG_RE_KPC_AXIS,
     SIGMA_UNIT_SERSIC_N_AXIS,
     SIGMA_UNIT_ZD_AXIS,
 )
-from interpolation_grids.cli import build_parser
+from interpolation_grids.cli import build_parser, main
 from interpolation_grids.io.sigma_tables import (
     build_default_sigma_unit_hdf5_tables,
     build_sigma_unit_table,
@@ -100,6 +103,48 @@ def test_build_sigma_unit_table_matches_direct_jeans_values_on_selected_grid_nod
                     np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-12)
 
 
+def test_build_sigma_unit_table_can_emit_h_unit_metadata_and_scaling(tmp_path: Path) -> None:
+    """h-units sigma tables should shift size axes and scale S_unit analytically."""
+
+    h_ref = 0.7
+    gamma_axis = np.array([1.7, 2.0, 2.3])
+    physical_log_re_axis = np.array([0.5])
+    h_unit_log_re_axis = physical_log_re_axis + np.log10(h_ref)
+    legacy_table = build_sigma_unit_table(
+        profile_name="devauc",
+        gamma_axis=gamma_axis,
+        zd_axis=np.array([0.55]),
+        log_re_kpc_axis=physical_log_re_axis,
+        workers=1,
+    )
+    h_unit_table = build_sigma_unit_table(
+        profile_name="devauc",
+        gamma_axis=gamma_axis,
+        zd_axis=np.array([0.55]),
+        log_re_kpc_axis=h_unit_log_re_axis,
+        workers=1,
+        unit_convention=H_UNITS_V1,
+        h_ref=h_ref,
+    )
+
+    assert h_unit_table.unit_convention == H_UNITS_V1
+    assert h_unit_table.mass_definition_label == "m5_hinvkpc"
+    np.testing.assert_allclose(h_unit_table.log_re_kpc_axis, h_unit_log_re_axis)
+    np.testing.assert_allclose(
+        h_unit_table.values,
+        legacy_table.values * np.power(h_ref, 2.0 - gamma_axis)[:, None, None],
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+    output_path = write_sigma_unit_table_hdf5(h_unit_table, tmp_path / "h_unit_sigma.h5")
+    with h5py.File(output_path, "r") as handle:
+        assert handle.attrs["unit_convention"] == H_UNITS_V1
+        assert handle.attrs["h_ref"] == h_ref
+        assert handle.attrs["mass_definition_label"] == "m5_hinvkpc"
+        assert handle.attrs["units"] == "km2 s-2 per 10**m5_hinvkpc"
+
+
 def test_build_sigma_unit_table_records_boss_aperture_metadata_and_changes_values() -> None:
     """BOSS tables must carry circular-aperture metadata and differ from slit tables."""
 
@@ -125,6 +170,42 @@ def test_build_sigma_unit_table_records_boss_aperture_metadata_and_changes_value
     assert boss_table.aperture_radius_arcsec == 1.0
     assert boss_table.seeing_fwhm_arcsec == 1.5
     assert not np.allclose(boss_table.values, slit_table.values)
+
+
+def test_build_sigma_unit_table_supports_within_re_sigma_definition() -> None:
+    """The builder must support the low-dimensional within-Re sigma definition."""
+
+    devauc_table = build_sigma_unit_table(
+        profile_name="devauc",
+        gamma_axis=np.array([1.2, 2.0, 2.8]),
+        log_re_kpc_axis=np.array([0.50, 1.10]),
+        workers=1,
+        sigma_definition="within_re",
+    )
+    sersic_table = build_sigma_unit_table(
+        profile_name="sersic",
+        gamma_axis=np.array([1.2, 2.0, 2.8]),
+        log_re_kpc_axis=np.array([0.50, 1.10]),
+        n_axis=np.array([2.5, 7.0, 10.5]),
+        workers=1,
+        sigma_definition="within_re",
+    )
+
+    assert devauc_table.sigma_definition == "within_re"
+    assert devauc_table.bundle_group_name == "within_re"
+    assert devauc_table.observation_flavor is None
+    assert devauc_table.zd_axis is None
+    assert devauc_table.values.shape == (3, 2)
+    assert devauc_table.aperture_shape == "circular"
+    assert devauc_table.aperture_radius_arcsec is None
+    assert devauc_table.seeing_fwhm_arcsec is None
+
+    assert sersic_table.sigma_definition == "within_re"
+    assert sersic_table.bundle_group_name == "within_re"
+    assert sersic_table.observation_flavor is None
+    assert sersic_table.zd_axis is None
+    assert sersic_table.values.shape == (3, 2, 3)
+    assert sersic_table.n_axis is not None
 
 
 def test_boss_aperture_policy_uses_flavor_specific_seeing_constant() -> None:
@@ -160,7 +241,7 @@ def test_build_default_sigma_unit_hdf5_tables_writes_bundle_schema_and_expected_
     assert np.array_equal(SIGMA_UNIT_SERSIC_N_AXIS, np.linspace(2.5, 10.5, 21))
 
     with h5py.File(output_paths["devauc"], "r") as handle:
-        assert set(handle.keys()) == {"profile_name", "slit", "boss"}
+        assert set(handle.keys()) == {"profile_name", "slit", "boss", "within_re"}
         assert handle["profile_name"][()].decode("utf-8") == "devauc"
         assert handle.attrs["schema_version"] == "sigma_unit_bundle_hdf5_v2"
         assert handle.attrs["quantity_name"] == "S_unit"
@@ -173,9 +254,17 @@ def test_build_default_sigma_unit_hdf5_tables_writes_bundle_schema_and_expected_
         assert boss_m10.attrs["observation_flavor"] == "boss"
         assert boss_m10.attrs["aperture_shape"] == "circular"
         assert boss_m10.attrs["aperture_radius_arcsec"] == 1.0
+        within_re_m5 = handle["within_re"]["m5"]
+        assert set(within_re_m5.keys()) == {"gamma_axis", "log_re_kpc_axis", "s_unit_grid"}
+        assert within_re_m5["s_unit_grid"].shape == (2, 2)
+        assert within_re_m5.attrs["sigma_definition"] == "within_re"
+        assert within_re_m5.attrs["aperture_shape"] == "circular"
+        assert within_re_m5.attrs["aperture_radius_mode"] == "effective_radius"
+        assert within_re_m5.attrs["seeing_mode"] == "none"
+        assert "zd_axis" not in within_re_m5
 
     with h5py.File(output_paths["sersic"], "r") as handle:
-        assert set(handle.keys()) == {"profile_name", "slit", "boss"}
+        assert set(handle.keys()) == {"profile_name", "slit", "boss", "within_re"}
         assert handle["profile_name"][()].decode("utf-8") == "sersic"
         slit_m5 = handle["slit"]["m5"]
         assert set(slit_m5.keys()) == {"gamma_axis", "zd_axis", "log_re_kpc_axis", "n_axis", "s_unit_grid"}
@@ -187,6 +276,14 @@ def test_build_default_sigma_unit_hdf5_tables_writes_bundle_schema_and_expected_
         assert slit_m5.attrs["aperture_width_arcsec"] == 1.6
         assert slit_m5.attrs["aperture_height_arcsec"] == 0.9
         assert np.all(np.diff(slit_m5["n_axis"][:]) > 0.0)
+        within_re_m10 = handle["within_re"]["m10"]
+        assert set(within_re_m10.keys()) == {"gamma_axis", "log_re_kpc_axis", "n_axis", "s_unit_grid"}
+        assert within_re_m10["s_unit_grid"].shape == (2, 2, 2)
+        assert within_re_m10.attrs["sigma_definition"] == "within_re"
+        assert within_re_m10.attrs["aperture_shape"] == "circular"
+        assert within_re_m10.attrs["aperture_radius_mode"] == "effective_radius"
+        assert within_re_m10.attrs["seeing_mode"] == "none"
+        assert "zd_axis" not in within_re_m10
 
 
 def test_build_default_sigma_unit_hdf5_tables_can_limit_work_to_one_profile(tmp_path: Path) -> None:
@@ -220,8 +317,11 @@ def test_build_default_sigma_unit_hdf5_tables_can_limit_work_to_one_profile(tmp_
     with h5py.File(output_paths["devauc"], "r") as handle:
         assert set(handle["slit"].keys()) == {"m10"}
         assert set(handle["boss"].keys()) == {"m5"}
+        assert set(handle["within_re"].keys()) == {"m5", "m10"}
         assert handle["slit"]["m10"].attrs["observation_flavor"] == "slit"
         assert handle["boss"]["m5"].attrs["observation_flavor"] == "boss"
+        assert handle["within_re"]["m5"].attrs["sigma_definition"] == "within_re"
+        assert handle["within_re"]["m10"].attrs["sigma_definition"] == "within_re"
 
 
 def test_repack_legacy_sigma_unit_hdf5_tables_into_bundles_migrates_only_slit_leaves(tmp_path: Path) -> None:
@@ -269,9 +369,10 @@ def test_repack_legacy_sigma_unit_hdf5_tables_into_bundles_migrates_only_slit_le
     assert legacy_m10_path.read_bytes() == legacy_snapshots[legacy_m10_path.name]
 
     with h5py.File(output_paths["devauc"], "r") as handle:
-        assert set(handle.keys()) == {"profile_name", "slit", "boss"}
+        assert set(handle.keys()) == {"profile_name", "slit", "boss", "within_re"}
         assert set(handle["slit"].keys()) == {"m5", "m10"}
         assert set(handle["boss"].keys()) == set()
+        assert set(handle["within_re"].keys()) == set()
         slit_m10 = handle["slit"]["m10"]
         assert slit_m10.attrs["observation_flavor"] == "slit"
         assert slit_m10.attrs["aperture_shape"] == "rectangular"
@@ -299,6 +400,45 @@ def test_sigma_unit_cli_exposes_observation_flavor_selector() -> None:
     assert args.build_sigma_unit_hdf5 is True
     assert args.profile == "devauc"
     assert args.observation_flavor == "boss"
+
+
+def test_sigma_unit_cli_exposes_sigma_definition_selector() -> None:
+    """The public CLI must expose the observed-aperture versus within-Re selector."""
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--build-sigma-unit-hdf5",
+            "--sigma-definition",
+            "within_re",
+        ]
+    )
+
+    assert args.build_sigma_unit_hdf5 is True
+    assert args.sigma_definition == "within_re"
+
+
+def test_sigma_unit_cli_rejects_within_re_when_observation_flavor_is_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runtime CLI guard must reject treating within-Re as an observation flavor."""
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "python",
+            "-m",
+            "interpolation_grids",
+            "--build-sigma-unit-hdf5",
+            "--sigma-definition",
+            "within_re",
+            "--observation-flavor",
+            "boss",
+        ],
+    )
+    with pytest.raises(SystemExit, match="2"):
+        main()
 
 
 def test_sigma_unit_cli_exposes_legacy_repack_mode() -> None:

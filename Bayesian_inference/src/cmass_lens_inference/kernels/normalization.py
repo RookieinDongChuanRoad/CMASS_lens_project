@@ -29,17 +29,13 @@ from .primitives import (
     truncnorm_sample,
 )
 
-FP_OLS_SUMMARY_SIZE = 10
+FP_OLS_SUMMARY_SIZE = 6
 FP_OLS_COUNT_INDEX = 0
 FP_OLS_SUM_X1_INDEX = 1
-FP_OLS_SUM_X2_INDEX = 2
-FP_OLS_SUM_X1X1_INDEX = 3
-FP_OLS_SUM_X1X2_INDEX = 4
-FP_OLS_SUM_X2X2_INDEX = 5
-FP_OLS_SUM_Y_INDEX = 6
-FP_OLS_SUM_X1Y_INDEX = 7
-FP_OLS_SUM_X2Y_INDEX = 8
-FP_OLS_SUM_YY_INDEX = 9
+FP_OLS_SUM_X1X1_INDEX = 2
+FP_OLS_SUM_Y_INDEX = 3
+FP_OLS_SUM_X1Y_INDEX = 4
+FP_OLS_SUM_YY_INDEX = 5
 
 
 @nb.njit(cache=True, inline="always")
@@ -71,6 +67,7 @@ def _draw_population_state(
     gamma_trunc_low: float,
     gamma_trunc_high: float,
     gamma_mode_code: int,
+    stellar_mass_pivot: float,
 ) -> tuple[float, float, float, float, float, float, float]:
     """
     Draw one parent-population galaxy from the fixed Monte Carlo basis.
@@ -88,20 +85,21 @@ def _draw_population_state(
         nrm[2],
         nrm[3],
     )
+    mstar_shift = mstar - stellar_mass_pivot
 
     if use_sersic_index == 1:
-        logn = mu_n0 + beta_n * (mstar - 11.4) + sigma_n * nrm[4]
+        logn = mu_n0 + beta_n * mstar_shift + sigma_n * nrm[4]
         n_value = 10.0**logn
-        mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r)
+        mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r, stellar_mass_pivot)
         re_draw = mu_r_draw + sigma_r * nrm[5]
         delta_r = re_draw - mu_r_draw
-        log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[6]
+        log_enclosed_mass = mu5_0 + beta5 * mstar_shift + xi5 * delta_r + sigma5 * nrm[6]
     else:
         n_value = n_fixed
-        mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r)
+        mu_r_draw = mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r, stellar_mass_pivot)
         re_draw = mu_r_draw + sigma_r * nrm[4]
         delta_r = re_draw - mu_r_draw
-        log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * nrm[5]
+        log_enclosed_mass = mu5_0 + beta5 * mstar_shift + xi5 * delta_r + sigma5 * nrm[5]
 
     sigma_star_shift9p0 = mstar - LOG10_2PI - 2.0 * re_draw - 9.0
     mu_gamma = gamma_population_mean(
@@ -109,7 +107,7 @@ def _draw_population_state(
         beta_gamma,
         xi_gamma,
         beta_sigma_star_gamma,
-        mstar - 11.4,
+        mstar_shift,
         delta_r,
         sigma_star_shift9p0,
         gamma_mode_code,
@@ -129,31 +127,25 @@ def _draw_population_state(
 def _accumulate_fp_ols_summary(
     fp_summary: np.ndarray,
     mstar: float,
-    delta_r: float,
     log_sigma_model: float,
     pivot_mstar: float,
 ) -> None:
     """
-    Update the sufficient statistics for the linear FP regression.
+    Update the sufficient statistics for the 1D sigma-logM* regression.
 
     The regression model is:
-        log10(sigma) = a + b * (mstar - pivot) + c * delta_r
+        log10(sigma) = a + b * (mstar - pivot)
     Only the aggregate moments are needed downstream, so the hot kernel never
     stores the full synthetic population in memory.
     """
 
     x1 = mstar - pivot_mstar
-    x2 = delta_r
 
     fp_summary[FP_OLS_COUNT_INDEX] += 1.0
     fp_summary[FP_OLS_SUM_X1_INDEX] += x1
-    fp_summary[FP_OLS_SUM_X2_INDEX] += x2
     fp_summary[FP_OLS_SUM_X1X1_INDEX] += x1 * x1
-    fp_summary[FP_OLS_SUM_X1X2_INDEX] += x1 * x2
-    fp_summary[FP_OLS_SUM_X2X2_INDEX] += x2 * x2
     fp_summary[FP_OLS_SUM_Y_INDEX] += log_sigma_model
     fp_summary[FP_OLS_SUM_X1Y_INDEX] += x1 * log_sigma_model
-    fp_summary[FP_OLS_SUM_X2Y_INDEX] += x2 * log_sigma_model
     fp_summary[FP_OLS_SUM_YY_INDEX] += log_sigma_model * log_sigma_model
 
 
@@ -183,6 +175,8 @@ def normalization_mc_numba(
     gamma_trunc_high: float,
     mass_radius_kpc: float,
     gamma_mode_code: int,
+    stellar_mass_pivot: float = 11.4,
+    mass_log_physical_offset: float = 0.0,
 ) -> float:
     """
     Estimate the selection normalization for one hyper-parameter vector.
@@ -251,6 +245,7 @@ def normalization_mc_numba(
             gamma_trunc_low,
             gamma_trunc_high,
             gamma_mode_code,
+            stellar_mass_pivot,
         )
         zs = mu_zs + sigma_zs * nrm[1]
         if zd <= 0.0 or zs <= 0.0 or zs <= zd:
@@ -267,6 +262,7 @@ def normalization_mc_numba(
             z_grid,
             chi_kpc_grid,
             mass_radius_kpc,
+            mass_log_physical_offset,
         )
         if theta_e <= 0.0:
             continue
@@ -313,6 +309,8 @@ def _population_summary_mc_serial_reference_numba(
     fp_n_axis: np.ndarray,
     fp_sigma_unit_grid: np.ndarray,
     fp_has_n_axis: int,
+    stellar_mass_pivot: float = 11.4,
+    mass_log_physical_offset: float = 0.0,
 ) -> tuple[float, np.ndarray]:
     """
     Legacy serial reference for the FP population-summary computation.
@@ -388,6 +386,7 @@ def _population_summary_mc_serial_reference_numba(
             gamma_trunc_low,
             gamma_trunc_high,
             gamma_mode_code,
+            stellar_mass_pivot,
         )
         if zd > 0.0 and math.isfinite(gamma) and mstar > fp_fit_mstar_min:
             sigma_unit = interp_sigma_unit_clip(
@@ -408,7 +407,6 @@ def _population_summary_mc_serial_reference_numba(
                     _accumulate_fp_ols_summary(
                         fp_summary,
                         mstar,
-                        delta_r,
                         log_sigma_model,
                         fp_pivot_mstar,
                     )
@@ -425,6 +423,7 @@ def _population_summary_mc_serial_reference_numba(
             z_grid,
             chi_kpc_grid,
             mass_radius_kpc,
+            mass_log_physical_offset,
         )
         if theta_e <= 0.0:
             continue
@@ -471,6 +470,8 @@ def population_summary_mc_numba(
     fp_n_axis: np.ndarray,
     fp_sigma_unit_grid: np.ndarray,
     fp_has_n_axis: int,
+    stellar_mass_pivot: float = 11.4,
+    mass_log_physical_offset: float = 0.0,
 ) -> tuple[float, np.ndarray]:
     """
     Estimate normalization and FP summary statistics in one parallel population pass.
@@ -547,6 +548,7 @@ def population_summary_mc_numba(
             gamma_trunc_low,
             gamma_trunc_high,
             gamma_mode_code,
+            stellar_mass_pivot,
         )
         if zd > 0.0 and math.isfinite(gamma) and mstar > fp_fit_mstar_min:
             sigma_unit = interp_sigma_unit_clip(
@@ -567,7 +569,6 @@ def population_summary_mc_numba(
                     _accumulate_fp_ols_summary(
                         row,
                         mstar,
-                        delta_r,
                         log_sigma_model,
                         fp_pivot_mstar,
                     )
@@ -584,6 +585,7 @@ def population_summary_mc_numba(
             z_grid,
             chi_kpc_grid,
             mass_radius_kpc,
+            mass_log_physical_offset,
         )
         if theta_e <= 0.0:
             continue

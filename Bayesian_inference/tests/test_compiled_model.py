@@ -128,7 +128,7 @@ def _population_summary_kwargs(theta: np.ndarray, compiled_model) -> dict[str, o
     }
 
 
-def _solve_fp_from_summary(fp_summary: np.ndarray) -> tuple[float, float, float, float]:
+def _solve_fp_from_summary(fp_summary: np.ndarray) -> tuple[float, float, float]:
     """
     Convert a summary vector into the fitted FP coefficients used by the prior.
 
@@ -140,14 +140,10 @@ def _solve_fp_from_summary(fp_summary: np.ndarray) -> tuple[float, float, float,
     return solve_fundamental_plane_ols(
         sample_count=float(fp_summary[0]),
         sum_x1=float(fp_summary[1]),
-        sum_x2=float(fp_summary[2]),
-        sum_x1x1=float(fp_summary[3]),
-        sum_x1x2=float(fp_summary[4]),
-        sum_x2x2=float(fp_summary[5]),
-        sum_y=float(fp_summary[6]),
-        sum_x1y=float(fp_summary[7]),
-        sum_x2y=float(fp_summary[8]),
-        sum_yy=float(fp_summary[9]),
+        sum_x1x1=float(fp_summary[2]),
+        sum_y=float(fp_summary[3]),
+        sum_x1y=float(fp_summary[4]),
+        sum_yy=float(fp_summary[5]),
     )
 
 
@@ -169,7 +165,7 @@ def _legacy_log_prob_with_serial_fp_prior(theta: np.ndarray, compiled_model) -> 
     context = compiled_model.context
     z_norm, fp_summary = serial_summary_kernel(**_population_summary_kwargs(theta, compiled_model))
     likelihood_value = _log_likelihood_from_context(theta, compiled_model)
-    intercept, beta_mass, _beta_radius, scatter = _solve_fp_from_summary(fp_summary)
+    intercept, beta_mass, scatter = _solve_fp_from_summary(fp_summary)
     if not np.isfinite([z_norm, likelihood_value, intercept, beta_mass, scatter]).all():
         return -np.inf
 
@@ -270,7 +266,15 @@ def test_compiled_model_tracks_selected_mass_definition_in_context(synthetic_m10
 def test_compiled_model_exposes_fp_prior_sigma_table_context(
     synthetic_fp_prior_config_path,
 ) -> None:
-    """Enabling the FP prior should compile the sigma-table arrays into context."""
+    """
+    FP prior must compile the within-Re sigma leaf into the numerical context.
+
+    The scientific contract for the Cannarozzo+20 prior is a velocity
+    dispersion measured inside each galaxy's effective radius. This regression
+    test therefore locks the loader to the `/within_re/<mass>` bundle leaf
+    instead of the observation-flavor leaves that the rest of the pipeline uses
+    for observed-aperture sigma predictions.
+    """
 
     runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
     compiled_model = build_compiled_model(runtime_config)
@@ -280,17 +284,24 @@ def test_compiled_model_exposes_fp_prior_sigma_table_context(
     assert context.fp_fit_mstar_min == pytest.approx(11.0)
     assert context.fp_pivot_mstar == pytest.approx(11.3)
     assert context.fp_gamma_axis.shape == (5,)
-    assert context.fp_zd_axis.shape == (4,)
+    assert context.fp_zd_axis.shape == (1,)
     assert context.fp_log_re_kpc_axis.shape == (3,)
     assert context.fp_n_axis.shape == (4,)
-    assert context.fp_sigma_unit_grid.shape == (5, 4, 3, 4)
+    assert context.fp_sigma_unit_grid.shape == (5, 1, 3, 4)
     assert context.fp_has_n_axis == 1
 
 
 def test_compiled_model_fp_prior_uses_degenerate_n_axis_for_devauc(
     synthetic_devauc_fp_prior_config_path,
 ) -> None:
-    """Devauc FP-prior context should collapse the missing n-axis to length one."""
+    """
+    Devauc FP-prior context should use the within-Re leaf and a degenerate n axis.
+
+    The de Vaucouleurs bundle does not tabulate an observed `n` dimension even
+    for within-Re sigma. The compiled FP context should therefore preserve the
+    within-Re gamma/logRe axes while synthesizing only the compatibility
+    singleton n-axis required by the interpolation kernel.
+    """
 
     runtime_config = load_runtime_config(synthetic_devauc_fp_prior_config_path)
     compiled_model = build_compiled_model(runtime_config)
@@ -298,8 +309,9 @@ def test_compiled_model_fp_prior_uses_degenerate_n_axis_for_devauc(
 
     assert context.fp_enabled == 1
     assert context.fp_has_n_axis == 0
+    assert context.fp_zd_axis.shape == (1,)
     assert context.fp_n_axis.shape == (1,)
-    assert context.fp_sigma_unit_grid.shape == (5, 4, 3, 1)
+    assert context.fp_sigma_unit_grid.shape == (5, 1, 3, 1)
 
 
 def test_model_log_prob_runs_through_monolithic_numba_kernels(synthetic_config_path) -> None:
@@ -392,19 +404,19 @@ def test_fp_prior_log_prob_matches_serial_reference_in_dependent_gamma_mode(
     compiled_model = build_compiled_model(runtime_config)
     theta = runtime_config.sampling.initial_center.to_array()
 
-    log_prob_value, _ = log_prob(theta, compiled_model)
+    log_prob_value, blob = log_prob(theta, compiled_model)
     legacy_value = _legacy_log_prob_with_serial_fp_prior(theta, compiled_model)
 
     assert np.isfinite(log_prob_value)
     assert log_prob_value == pytest.approx(legacy_value)
+    assert np.isnan(float(blob["fpfit_xi"]))
 
 
 def test_solve_fundamental_plane_ols_matches_numpy_reference() -> None:
-    """The FP OLS helper should recover the same fit as a direct NumPy solve."""
+    """The 1D FP OLS helper should recover the same fit as a direct NumPy solve."""
 
     x1 = np.array([-0.3, 0.2, 0.7, -0.5, 1.1], dtype=np.float64)
-    x2 = np.array([0.4, -0.6, 0.1, 0.8, -0.2], dtype=np.float64)
-    design_matrix = np.column_stack([np.ones_like(x1), x1, x2])
+    design_matrix = np.column_stack([np.ones_like(x1), x1])
     y = np.array([2.15, 1.82, 2.41, 1.96, 2.63], dtype=np.float64)
 
     xtx = design_matrix.T @ design_matrix
@@ -414,22 +426,17 @@ def test_solve_fundamental_plane_ols_matches_numpy_reference() -> None:
     residual_reference = y - design_matrix @ coeff_reference
     scatter_reference = float(np.sqrt(np.mean(residual_reference**2)))
 
-    intercept, beta_mass, beta_radius, scatter = solve_fundamental_plane_ols(
+    intercept, beta_mass, scatter = solve_fundamental_plane_ols(
         sample_count=float(y.shape[0]),
         sum_x1=float(design_matrix[:, 1].sum()),
-        sum_x2=float(design_matrix[:, 2].sum()),
         sum_x1x1=float(np.sum(design_matrix[:, 1] ** 2)),
-        sum_x1x2=float(np.sum(design_matrix[:, 1] * design_matrix[:, 2])),
-        sum_x2x2=float(np.sum(design_matrix[:, 2] ** 2)),
         sum_y=float(y.sum()),
         sum_x1y=float(np.sum(design_matrix[:, 1] * y)),
-        sum_x2y=float(np.sum(design_matrix[:, 2] * y)),
         sum_yy=yty,
     )
 
     assert intercept == pytest.approx(float(coeff_reference[0]))
     assert beta_mass == pytest.approx(float(coeff_reference[1]))
-    assert beta_radius == pytest.approx(float(coeff_reference[2]))
     assert scatter == pytest.approx(scatter_reference)
 
 

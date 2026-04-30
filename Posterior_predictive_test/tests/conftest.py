@@ -113,8 +113,10 @@ def synthetic_observation_file(tmp_path: Path) -> Path:
     path = tmp_path / "synthetic_observations.hdf5"
     gamma_grid = np.linspace(1.3, 2.7, 17)
     m5_grid = np.linspace(11.6, 10.8, 17)
+    m10_grid = m5_grid + (3.0 - gamma_grid) * np.log10(2.0)
     dm5_dthetaein_grid = np.linspace(-2.0, -1.0, 17)
     s2_grid = np.linspace(0.8, 1.2, 17)
+    s2_m10_grid = s2_grid * np.power(0.5, 3.0 - gamma_grid)
 
     with h5py.File(path, "w") as handle:
         group = handle.create_group("lens-0001")
@@ -132,9 +134,15 @@ def synthetic_observation_file(tmp_path: Path) -> Path:
         group.attrs["sigma"] = 320000.0
         group.attrs["sigma_err"] = 20000.0
         group.create_dataset("gamma_grid", data=gamma_grid)
-        group.create_dataset("m5_grid", data=m5_grid)
-        group.create_dataset("dm5_dthetaein_grid", data=dm5_dthetaein_grid)
-        group.create_dataset("s2_grid", data=s2_grid)
+        mass_root = group.create_group("mass_definitions")
+        m5_group = mass_root.create_group("m5")
+        m5_group.create_dataset("mass_grid", data=m5_grid)
+        m5_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+        m5_group.create_dataset("s2_grid", data=s2_grid)
+        m10_group = mass_root.create_group("m10")
+        m10_group.create_dataset("mass_grid", data=m10_grid)
+        m10_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+        m10_group.create_dataset("s2_grid", data=s2_m10_grid)
 
     return path
 
@@ -151,6 +159,7 @@ def synthetic_devauc_observation_file(tmp_path: Path) -> Path:
     path = tmp_path / "synthetic_devauc_observations.hdf5"
     gamma_grid = np.linspace(1.25, 2.65, 17)
     m5_grid = np.linspace(11.5, 10.7, 17)
+    m10_grid = m5_grid + (3.0 - gamma_grid) * np.log10(2.0)
     dm5_dthetaein_grid = np.linspace(-1.8, -1.1, 17)
 
     with h5py.File(path, "w") as handle:
@@ -166,8 +175,13 @@ def synthetic_devauc_observation_file(tmp_path: Path) -> Path:
         group.attrs["rein_arcsec"] = 1.0
         group.attrs["num_sigma"] = 0
         group.create_dataset("gamma_grid", data=gamma_grid)
-        group.create_dataset("m5_grid", data=m5_grid)
-        group.create_dataset("dm5_dthetaein_grid", data=dm5_dthetaein_grid)
+        mass_root = group.create_group("mass_definitions")
+        m5_group = mass_root.create_group("m5")
+        m5_group.create_dataset("mass_grid", data=m5_grid)
+        m5_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
+        m10_group = mass_root.create_group("m10")
+        m10_group.create_dataset("mass_grid", data=m10_grid)
+        m10_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
 
     return path
 

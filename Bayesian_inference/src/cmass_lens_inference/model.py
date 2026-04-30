@@ -18,12 +18,8 @@ from .kernels.likelihood import log_likelihood_lenses_numba
 from .kernels.normalization import (
     FP_OLS_COUNT_INDEX,
     FP_OLS_SUM_X1X1_INDEX,
-    FP_OLS_SUM_X1X2_INDEX,
     FP_OLS_SUM_X1Y_INDEX,
     FP_OLS_SUM_X1_INDEX,
-    FP_OLS_SUM_X2X2_INDEX,
-    FP_OLS_SUM_X2Y_INDEX,
-    FP_OLS_SUM_X2_INDEX,
     FP_OLS_SUM_Y_INDEX,
     FP_OLS_SUM_YY_INDEX,
     normalization_mc_numba,
@@ -140,72 +136,62 @@ def solve_fundamental_plane_ols(
     *,
     sample_count: float,
     sum_x1: float,
-    sum_x2: float,
     sum_x1x1: float,
-    sum_x1x2: float,
-    sum_x2x2: float,
     sum_y: float,
     sum_x1y: float,
-    sum_x2y: float,
     sum_yy: float,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float]:
     """
-    Solve the linear FP regression from sufficient statistics.
+    Solve the 1D sigma-logM* regression from sufficient statistics.
 
     Why the solver lives in Python instead of the kernel:
-    - the regression is tiny (one 3x3 solve per `log_prob` evaluation)
+    - the regression is tiny (one 2x2 solve per `log_prob` evaluation)
     - keeping the linear algebra outside numba avoids embedding a second
       optimization layer inside the hot Monte Carlo loop
     - the kernel only needs to export stable moments, which are easy to test
       and easy to persist later in diagnostics blobs
     """
 
-    if sample_count < 3.0:
-        return math.nan, math.nan, math.nan, math.nan
+    if sample_count < 2.0:
+        return math.nan, math.nan, math.nan
 
     xtx = np.array(
         [
-            [sample_count, sum_x1, sum_x2],
-            [sum_x1, sum_x1x1, sum_x1x2],
-            [sum_x2, sum_x1x2, sum_x2x2],
+            [sample_count, sum_x1],
+            [sum_x1, sum_x1x1],
         ],
         dtype=np.float64,
     )
-    xty = np.array([sum_y, sum_x1y, sum_x2y], dtype=np.float64)
+    xty = np.array([sum_y, sum_x1y], dtype=np.float64)
 
     try:
         coefficients = np.linalg.solve(xtx, xty)
     except np.linalg.LinAlgError:
-        return math.nan, math.nan, math.nan, math.nan
+        return math.nan, math.nan, math.nan
 
     sse = float(sum_yy - np.dot(coefficients, xty))
     if sse < 0.0 and abs(sse) < 1.0e-12:
         sse = 0.0
     if sse < 0.0:
-        return math.nan, math.nan, math.nan, math.nan
+        return math.nan, math.nan, math.nan
 
     scatter = math.sqrt(sse / sample_count)
     return (
         float(coefficients[0]),
         float(coefficients[1]),
-        float(coefficients[2]),
         float(scatter),
     )
 
 
-def _fit_fundamental_plane_from_summary(fp_summary: np.ndarray) -> tuple[float, float, float, float]:
-    """Convert the kernel summary vector into the `(a, b, c, scatter)` FP fit."""
+def _fit_fundamental_plane_from_summary(fp_summary: np.ndarray) -> tuple[float, float, float]:
+    """Convert the kernel summary vector into the `(a, b, scatter)` 1D fit."""
 
     return solve_fundamental_plane_ols(
         sample_count=float(fp_summary[FP_OLS_COUNT_INDEX]),
         sum_x1=float(fp_summary[FP_OLS_SUM_X1_INDEX]),
-        sum_x2=float(fp_summary[FP_OLS_SUM_X2_INDEX]),
         sum_x1x1=float(fp_summary[FP_OLS_SUM_X1X1_INDEX]),
-        sum_x1x2=float(fp_summary[FP_OLS_SUM_X1X2_INDEX]),
-        sum_x2x2=float(fp_summary[FP_OLS_SUM_X2X2_INDEX]),
         sum_y=float(fp_summary[FP_OLS_SUM_Y_INDEX]),
         sum_x1y=float(fp_summary[FP_OLS_SUM_X1Y_INDEX]),
-        sum_x2y=float(fp_summary[FP_OLS_SUM_X2Y_INDEX]),
         sum_yy=float(fp_summary[FP_OLS_SUM_YY_INDEX]),
     )
 
@@ -230,18 +216,19 @@ def _evaluate_fundamental_plane_prior(
     compiled_model: CompiledModel,
 ) -> tuple[float, float, float, float, float]:
     """
-    Fit the synthetic FP relation and return the corresponding log-prior term.
+    Fit the synthetic 1D sigma-logM* relation and return the log-prior term.
 
     Only three fitted quantities contribute to the posterior:
     - intercept `a`
     - stellar-mass slope `b`
     - residual scatter
-    The `delta_r` slope `c` is still computed because it is scientifically
-    useful diagnostic output, but the reference posterior does not penalize it.
+    The historical `fpfit_xi` blob field is now a compatibility placeholder
+    and therefore remains `NaN`.
     """
 
-    intercept, beta_mass, beta_radius, scatter = _fit_fundamental_plane_from_summary(fp_summary)
-    if not all(np.isfinite([intercept, beta_mass, beta_radius, scatter])):
+    intercept, beta_mass, scatter = _fit_fundamental_plane_from_summary(fp_summary)
+    beta_radius = math.nan
+    if not all(np.isfinite([intercept, beta_mass, scatter])):
         return -np.inf, intercept, beta_mass, beta_radius, scatter
 
     context = compiled_model.context
@@ -321,6 +308,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
             gamma_trunc_high=context.gamma_trunc_high,
             mass_radius_kpc=context.mass_radius_kpc,
             gamma_mode_code=context.gamma_mode_code,
+            stellar_mass_pivot=context.stellar_mass_pivot,
+            mass_log_physical_offset=context.mass_log_physical_offset,
             fp_fit_mstar_min=context.fp_fit_mstar_min,
             fp_pivot_mstar=context.fp_pivot_mstar,
             fp_gamma_axis=context.fp_gamma_axis,
@@ -356,6 +345,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
             gamma_trunc_high=context.gamma_trunc_high,
             mass_radius_kpc=context.mass_radius_kpc,
             gamma_mode_code=context.gamma_mode_code,
+            stellar_mass_pivot=context.stellar_mass_pivot,
+            mass_log_physical_offset=context.mass_log_physical_offset,
         )
         fp_summary = None
     normalization_seconds = perf_counter() - normalization_start
@@ -386,6 +377,7 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel) -> tuple[float, n
         gamma_grid_int=context.gamma_grid_int,
         mass_radius_kpc=context.mass_radius_kpc,
         gamma_mode_code=context.gamma_mode_code,
+        mass_log_physical_offset=context.mass_log_physical_offset,
     )
     likelihood_seconds = perf_counter() - likelihood_start
 

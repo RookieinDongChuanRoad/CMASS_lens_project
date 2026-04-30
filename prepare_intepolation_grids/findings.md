@@ -2,9 +2,9 @@
 
 ## Requirements
 - 将 `project.md` 中描述的插值网格准备流程落地为可维护的本地项目，而不是继续依赖散落的参考脚本。
-- 对每个 galaxy 更新 `m5_grid` 与 `dm5_dthetaein_grid`。
-- 仅对已有 `s2_grid` 的 galaxy 更新 `s2_grid`。
-- 输出文件保持原有 HDF5 结构，只覆盖目标 dataset。
+- 对每个 galaxy 更新 `mass_definitions/{m5,m10}/mass_grid` 与 `mass_definitions/{m5,m10}/dmass_dthetaein_grid`。
+- 仅对 `num_sigma > 0` 的 galaxy 更新 `mass_definitions/{m5,m10}/s2_grid`。
+- 输出文件保持原有 HDF5 分组结构；root-level 只保留 `gamma_grid`，不再保留 root-level `m5_grid`、`dm5_dthetaein_grid` 或 `s2_grid`。
 - 标准环境必须统一为 `cmass_lens`。
 - 代码需要具备较高可读性、充足注释和可继续交接能力。
 - 测试必须包含参考脚本一致性验证，而不是只做自洽验证。

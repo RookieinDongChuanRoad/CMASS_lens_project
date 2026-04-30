@@ -14,7 +14,9 @@ $$
 + \log p(\eta)
 $$
 
-推断超参数 $\eta$；最后，再从 $p(\eta \mid D)$ 前向生成 parent population、detectable population 和 selected population，用 replicated catalogs 与质量分箱趋势带检查模型是否能重现观测样本的整体统计特征。当前主线在这个统一框架上又增加了两项能力：一是 `gamma_model.mode = sigma_star_dependent`，二是从 BOSS summary table 独立重建的 BOSS raw observation HDF5 产品；但本文的数值结果段仍只引用 `2026-03-17` 的 active `m10` dependent-gamma rerun，不把这些新增能力误写成已有新 posterior 结果。
+推断超参数 $\eta$；最后，再从 $p(\eta \mid D)$ 前向生成 parent population、detectable population 和 selected population，用 replicated catalogs 与质量分箱趋势带检查模型是否能重现观测样本的整体统计特征。
+
+当前主线的“代码能力”和“本地数值证据”需要明确区分。源码能力层面，这套框架现在同时支持 `dependent`、`independent`、`sigma_star_dependent` 三种 `gamma_model.mode`，也同时支持 `slit` 与 `boss` 两种 observed-aperture contract，以及供 FP prior 使用的独立 `within_re` sigma definition。生产流水线层面，`2026-04-20` 起的主线 run 已切到 `m10 + slit rebuilt observations + fp_prior + /within_re/m10`；`2026-04-21` 又在 `good_drop2sigma_within_re` 口径上完整跑通了 `devauc/sersic × independent/sigma_star_dependent` 四组 inference、posterior corner、PPC、posterior trends 与 Fig. 8 观测点回填；`2026-04-22` 再用 BIC 汇总这 8 条 run 做模型选择。本文的数值结果段因此不再沿用 `2026-03-17` 的 rerun，而改为引用这套 `2026-04-20/21` pipeline 的显式 run 目录；BOSS branch 仍作为当前主线支持的 observation contract 说明，但不是本文当前主结果的证据来源。
 
 ## Data And Derived Quantities
 
@@ -37,12 +39,16 @@ $$
 
 其中：
 
-- 全部 23 个 lens 都贡献透镜和选择项；
-- 只有 7 个 `num_sigma > 0` 的 lens 进入动力学 likelihood；
+- 全部 23 个 lens group 都保留在 raw HDF5 中，并都贡献透镜和选择项；
+- 动力学 likelihood 是否使用某个 lens，取决于该 group 的 `num_sigma`，而不是一个写死常数；
+- `2026-04-20` 的 rebuilt-observation slit 文件仍保留 `13` 个 lens-level sigma objects，对应 `16` 个原始 sigma measurements；
+- `2026-04-21` 的 `good` 文件没有删掉任何 lens，而是把 `140929-011410` 与 `220506+014703` 两颗最低-`log M_\ast` 的 sigma lenses 改写为 `num_sigma = 0`；因此当前 BIC 优选结果对应的是 `11` 个 lens-level sigma objects 与 `14` 个原始 sigma measurement points；
 - `devauc` 分支取 $n_i^{\mathrm{obs}} = 4$；
 - `sersic` 分支使用观测到的 $n_i^{\mathrm{obs}}$。
 
 这组观测量在统计上的角色并不对称。$z_d$ 与 $z_s$ 决定透镜几何，$\theta_E$ 决定质量轨迹 $m_R(\gamma)$，$\log M_\ast^{\mathrm{obs}}$ 与 $\log R_e^{\mathrm{obs}}$ 约束群体层关系中的 latent structural state，而 $\sigma_{\mathrm{ap}}^{\mathrm{obs}}$ 只在有动力学数据时参与单镜头似然。
+
+对当前 `good` 口径，还需要额外记住一件事：root attrs 已显式写入 `derivation_note` 与 `excluded_sigma_lens_ids`，因此“drop2sigma”在这里表示重写动力学子样本口径，而不是删掉 lens group 或改动透镜几何样本本身。
 
 ### BOSS observation products as a new upstream data branch
 
@@ -260,7 +266,7 @@ $$
 \right).
 $$
 
-在当前活跃的 `2026-03-17` 本地结果里，这组参数对 $R=10\,\mathrm{kpc}$ 写成
+在 `dependent` 参数化下，这组参数对 $R=10\,\mathrm{kpc}$ 可写成
 
 $$
 (
@@ -344,7 +350,7 @@ $$
 + \xi_{\gamma}\Delta_R.
 $$
 
-这对应当前活跃 `2026-03-17` rerun 使用的 `dependent` gamma 模式。与此同时，主线源码现在把 $\mu_\gamma$ 的参数化显式推广成三种 mode-aware 写法：
+这对应 `dependent` gamma 模式的写法。与此同时，主线源码现在把 $\mu_\gamma$ 的参数化显式推广成三种 mode-aware 写法：
 
 $$
 \mu_\gamma
@@ -376,7 +382,9 @@ $$
 - `independent`: 10 维
 - `sigma_star_dependent`: 11 维
 
-需要强调的是，`sigma_star_dependent` 改变的只是 $\mu_\gamma$ 的群体均值参数化；单镜头 likelihood 的积分结构、selection normalization 的定义，以及总体后验主公式都保持不变。它是当前主线已支持的模型能力，但不是本文当前本地主结果的证据来源。
+`2026-04-21` 的 full4 slit-good pipeline 明确比较了 `independent` 与 `sigma_star_dependent` 两种模式在 `devauc` 和 `sersic` 上的表现，`2026-04-22` 的 BIC 汇总最终选择 `devauc + sigma_star_dependent` 与 `sersic + independent` 作为本文当前主结果锚点。
+
+需要强调的是，`sigma_star_dependent` 改变的只是 $\mu_\gamma$ 的群体均值参数化；单镜头 likelihood 的积分结构、selection normalization 的定义，以及总体后验主公式都保持不变。它现在不再只是源码里“可支持”的能力，而是已经进入 `2026-04-20/21` 生产 run 的实际比较矩阵。
 
 因此，群体层条件分布写成
 
@@ -619,12 +627,7 @@ $$
 
 群体层后验由 `emcee` 采样，目标分布就是上式的 $p(\eta \mid D)$。`devauc` 与 `sersic` 两条分支共享同一后验构造逻辑；它们的差异只体现在 profile-specific 的 structural law 和 sigma-unit table 上，而不是后验形式本身。
 
-当前活跃的两个本地结果都是 `2026-03-17` 的 `m10` rerun，分别位于：
-
-- `outputs/devauc/20260317_144144_devauc_m10_rerun_20260317`
-- `outputs/sersic/20260317_144956_sersic_m10_rerun_20260317`
-
-这两个 run 使用相同的采样框架：`24` 个 walkers、`10000` 个 steps、`2000` 个 warmup。本文结果段统一使用 post-burn-in 扁平链，因此每个参数 $\eta_k$ 的摘要都写成
+当前 `2026-04-20/21` 生产 run 在采样层共享同一组主参数：`24` 个 walkers、`10000` 个 steps、`2000` 个 warmup、`m10` 质量定义、`100000` 个 normalization samples。本文结果段统一使用 post-burn-in 扁平链，因此每个参数 $\eta_k$ 的摘要都写成
 
 $$
 q_{16}(\eta_k),\quad q_{50}(\eta_k),\quad q_{84}(\eta_k),
@@ -632,7 +635,23 @@ $$
 
 其中 $q_p$ 表示去掉前 `2000` steps 后的 posterior samples 的第 $p$ 百分位数。
 
-需要额外说明的是，当前 `2026-03-17` 的 `config_snapshot.yaml` 没有显式记录 `gamma_model` 字段。这是 snapshot 代际问题，而不是统计模型本身的歧义。就当前活跃结果而言，posterior parameter order 明确包含 `beta_gamma` 和 `xi_gamma`，因此这些 run 可以被解释为 dependent gamma 模式。
+对当前被选中的 `2026-04-21` run，还需要额外强调三件事。第一，`config_snapshot.yaml` 已显式记录 `gamma_model.mode`。第二，`metadata.json` 也显式记录了 `fp_sigma_definition = within_re` 与 `fp_sigma_table_leaf_path = /within_re/m10`。第三，这并不意味着 likelihood 或 PPC 也切到 `within_re`；那部分仍使用 observation-flavor 对应的 observed-aperture sigma leaf。
+
+### Current production sequence
+
+`2026-04-20/21` 的主线 pipeline 不是抽象顺序，而是已经落在真实脚本与真实 run 目录上的生产编排。当前工作站上的现行顺序是：
+
+1. `prepare_intepolation_grids` 维护 raw observation HDF5 与 sigma bundle。
+2. `cmass_lens_inference cli run` 分别跑 `devauc` / `sersic` inference。
+3. `cmass_lens_inference cli posterior-corner-latest` 生成 posterior corner。
+4. `cmass_posterior_predictive posterior-predictive-monitor` 生成 PPC。
+5. `cmass_posterior_predictive posterior-trends` 生成 Fig. 8-like 与其它 trend 图。
+6. `cmass_posterior_predictive annotate-fig8-observations` 把 raw HDF5 中的观测点回填到已有 `fig8_like.png`。
+7. `Bayesian_inference/scripts/compute_bic_after_20260420.py` 汇总 8 条 run 的 BIC 比较。
+
+其中 `2026-04-21` 的 orchestrator 不是“只跑一对 profile”。`outputs/_staging/20260421_full4_slit_good_drop2sigma_within_re/run_full_pipeline.sh` 的真实顺序是：先跑 `devauc/sersic` 两条 `independent` inference，并对这两条 run 完整执行 corner、PPC、posterior trends 与 Fig. 8 回填；随后再跑 `devauc/sersic` 两条 `sigma_star_dependent` inference，并重复相同的后处理链。也就是说，当前主线的“结果产物”本身就已经是按 mode-aware bundle workflow 组织出来的。
+
+这条生产链里，`within_re` 的角色也必须写清。FP prior 固定消费 `/within_re/m10` synthetic sigma，而 likelihood、PPC 和 posterior trends 里的 observed-aperture velocity dispersion 预测仍然读取 `/slit/m10`。因此 `within_re` 是一套独立 sigma definition，不是把 `slit` observation flavor 整体替换掉。
 
 ## Posterior Predictive Methodology
 
@@ -737,7 +756,7 @@ T\!\left(D^{\mathrm{rep},(s)}\right)
 \right\}_{s=1}^{N_{\mathrm{draw}}}.
 $$
 
-其中 $\theta_E$ 的观测统计直接使用全部 lens 的 Einstein radius，而 $\sigma$ 的观测统计先压缩成 7 个 lens-level 值；若某个 lens 有两个 velocity-dispersion measurements，则先做 inverse-variance weighted mean，再进入 $T(D_{\mathrm{obs}})$。因此它检验的不是逐个 lens 的 residual，而是整份 catalog 的样本级统计摘要是否像观测 catalog。
+其中 $\theta_E$ 的观测统计直接使用全部 23 个 lens 的 Einstein radius，而 $\sigma$ 的观测统计在当前 `good` raw 文件里先压缩成 11 个 lens-level 值；若某个 lens 有两个 velocity-dispersion measurements，则先做 inverse-variance weighted mean，再进入 $T(D_{\mathrm{obs}})$。需要显式指出的是：当前 `ppc_summary.json` 仍把 `sample_sizes.sigma` 写成历史常量 `7`，但 `2026-04-21 good_drop2sigma` 结果里真正参与观测侧 summary-statistic 计算的是这 11 个聚合后的 lens-level sigma 值；与此同时，Fig. 8 观测点回填仍保留 14 个原始 sigma measurement points。PPC 检验的因此不是逐个 lens 的 residual，而是整份 catalog 的样本级统计摘要是否像观测 catalog。
 
 ### Fig. 8-like trend bands
 
@@ -801,48 +820,109 @@ $$
 
 ## Current Local Results
 
-本文结果段只使用 `2026-03-17` 的两个活跃 `m10` rerun，以及对应的 `chain.h5`、`ppc_summary.json` 和 `fig8_like_summary.json`。这两条 run 仍按 dependent gamma 模式解释，不把 `sigma_star_dependent` 或 BOSS observation 分支混入当前数值证据。因此，下面三组结果分别对应上文的三个数学对象：
+本文结果段不再把 `2026-03-17` rerun 当作“当前主线结果”。当前证据锚点改为 `2026-04-20` 到 `2026-04-22` 这一轮真实生产 pipeline：`2026-04-20` 完成 `rebuilt_obs_within_re` 过渡 run，`2026-04-21` 完成 `good_drop2sigma_within_re` 的四组完整比较，`2026-04-22` 再用 `outputs/_staging/20260422_bic_after_20260420/bic_report.md` 做统一 BIC 筛选。由于 `outputs/devauc/latest` 与 `outputs/sersic/latest` 目前都指向已归档目录下的 basename，symlink 已经失效，所以下文统一引用显式 run 目录，而不是使用 `latest`。
 
-- 超参数表对应 $p(\eta \mid D)$ 的边缘 posterior 摘要；
-- PPC 对应 $T(D^{\mathrm{rep}})$ 与 $T(D_{\mathrm{obs}})$ 的比较；
-- Fig. 8-like 趋势对应不同 population class 条件下的 posterior predictive bands。
+这意味着，下面三组结果分别对应上文的三个数学对象，但数值证据改为：
+
+- `devauc` 采用 `outputs/devauc/archived/20260421_170915_devauc_m10_sigma_star_fp_prior_slit_good_drop2sigma_within_re_20260421`；
+- `sersic` 采用 `outputs/sersic/archived/20260421_163640_sersic_m10_independent_fp_prior_slit_good_drop2sigma_within_re_20260421`；
+- 它们分别对应 BIC 汇总后的当前最优 `devauc` 与 `sersic` 分支，而不是沿用同一种 gamma 参数化的历史配对结果。
+
+### 4/20-4/21 run matrix and model selection
+
+本轮用于比较的 8 条 run 分成三组：
+
+- `rebuilt_obs_within_re` 两条：`2026-04-20` 的 `devauc/sersic` `sigma_star_dependent` 过渡 run；
+- `rebuilt_obs_within_re_test` 两条：`2026-04-21` 的 `devauc/sersic` `independent` 对照 run；
+- `good_drop2sigma_within_re` 四条：`2026-04-21` 在 `good` raw HDF5 上同时跑 `independent` 与 `sigma_star_dependent` 的完整比较。
+
+`2026-04-22` 的 BIC 汇总结果如下。这里的 `n=23` 对应 lens group 数，`k` 是各自的超参数维度；`independent` 为 `k=10`，`sigma_star_dependent` 为 `k=11`。
+
+**devauc**
+
+| Run | gamma mode | observation file | `k` | max log-like | BIC | `ΔBIC` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `20260421_170915_devauc_m10_sigma_star_fp_prior_slit_good_drop2sigma_within_re_20260421` | `sigma_star_dependent` | `observations_deV_with_mass_grids_good.hdf5` | 11 | -34.775211 | 104.040859 | 0.000000 |
+| `20260421_162512_devauc_m10_independent_fp_prior_slit_good_drop2sigma_within_re_20260421` | `independent` | `observations_deV_with_mass_grids_good.hdf5` | 10 | -43.352651 | 118.060244 | 14.019385 |
+| `20260420_125501_devauc_m10_sigma_star_fp_prior_slit_rebuilt_obs_within_re_20260420` | `sigma_star_dependent` | `observations_deV_with_mass_grids.hdf5` | 11 | -44.082115 | 122.654666 | 18.613806 |
+| `20260421_144356_devauc_m10_independent_fp_prior_slit_rebuilt_obs_within_re_test_20260421` | `independent` | `observations_deV_with_mass_grids.hdf5` | 10 | -53.413512 | 138.181967 | 34.141108 |
+
+**sersic**
+
+| Run | gamma mode | observation file | `k` | max log-like | BIC | `ΔBIC` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `20260421_163640_sersic_m10_independent_fp_prior_slit_good_drop2sigma_within_re_20260421` | `independent` | `observations_with_mass_grids_all_good.hdf5` | 10 | -52.086028 | 135.526997 | 0.000000 |
+| `20260421_172028_sersic_m10_sigma_star_fp_prior_slit_good_drop2sigma_within_re_20260421` | `sigma_star_dependent` | `observations_with_mass_grids_all_good.hdf5` | 11 | -51.279443 | 137.049321 | 1.522324 |
+| `20260421_145549_sersic_m10_independent_fp_prior_slit_rebuilt_obs_within_re_test_20260421` | `independent` | `observations_with_mass_grids_all.hdf5` | 10 | -62.326496 | 156.007935 | 20.480937 |
+| `20260420_130706_sersic_m10_sigma_star_fp_prior_slit_rebuilt_obs_within_re_20260420` | `sigma_star_dependent` | `observations_with_mass_grids_all.hdf5` | 11 | -61.558556 | 157.607549 | 22.080552 |
+
+当前主线因此表现出一个明确但不对称的选择结果：
+
+- `devauc` 明显偏好 `sigma_star_dependent`，相对同一 `good` 文件上的 `independent` 分支有 `ΔBIC = 14.02` 的优势；
+- `sersic` 仅弱偏好 `independent`，相对 `sigma_star_dependent` 的优势只有 `ΔBIC = 1.52`；
+- `2026-04-21` orchestrator 更新 `latest` 时把两条 `latest` 都指到了 sigma-star 那一对 basename，所以 `devauc/latest` 恰好与 BIC 最优一致，但 `sersic/latest` 并不等于当前 BIC 最优，而且两个 symlink 现在都已经是坏链。
 
 ### Posterior summaries
 
-去掉前 `2000` steps 后，两个 run 各自提供 `192000` 个 posterior samples。12 个超参数的 $q_{50}^{+q_{84}-q_{50}}_{-q_{50}+q_{16}}$ 摘要如下。
+去掉前 `2000` steps 后，两条选中 run 各自提供 `192000` 个 posterior samples。由于当前被选中的两支 schema 不同，结果段不再强行使用一张共享 12 参数表，而是严格按各自 `parameter_order` 分开列出。
 
-| Parameter | devauc | sersic |
-| --- | --- | --- |
-| `mu10_0` | 11.6389 (-0.0552/+0.0357) | 11.5855 (-0.0489/+0.0366) |
-| `beta10` | 0.6747 (-0.1328/+0.1316) | 0.4335 (-0.0998/+0.1107) |
-| `xi10` | -0.8154 (-0.3086/+0.2694) | -0.9341 (-0.1862/+0.1749) |
-| `sigma10` | 0.0440 (-0.0245/+0.0358) | 0.0398 (-0.0201/+0.0267) |
-| `mu_gamma_0` | 1.9965 (-0.1343/+0.1222) | 2.1957 (-0.1180/+0.0811) |
-| `beta_gamma` | -0.9653 (-0.3559/+0.4402) | -0.6200 (-0.2478/+0.3670) |
-| `xi_gamma` | -1.1961 (-1.2245/+1.4312) | 0.5903 (-0.7786/+0.5067) |
-| `sigma_gamma` | 0.1136 (-0.0566/+0.0676) | 0.0901 (-0.0542/+0.0877) |
-| `mu_zs` | 1.2615 (-0.1817/+0.2485) | 1.2630 (-0.1801/+0.2437) |
-| `sigma_zs` | 0.8245 (-0.1346/+0.1441) | 0.8231 (-0.1324/+0.1581) |
-| `theta0` | 0.6657 (-0.3831/+0.4258) | 0.6757 (-0.3894/+0.4905) |
-| `loga` | 0.9856 (-1.3811/+1.2346) | 0.9228 (-1.3739/+1.2233) |
+**`devauc / sigma_star_dependent / 11 parameters`**
 
-从这组后验可以看出，两条分支对 source-redshift 与 selection 参数给出了相当接近的结果，但对 `mu_gamma_0` 与 `xi_gamma` 的偏好不同：`sersic` 分支更偏向较高的中心 $\gamma$，同时对结构残差的响应方向与 `devauc` 并不相同。这说明在当前数据与模型设定下，光分布假设会显著影响对 density-slope population relation 的解释。
+| Parameter | Posterior summary |
+| --- | --- |
+| `mu10_0` | 11.7286 (-0.0170/+0.0158) |
+| `beta10` | 0.6997 (-0.0817/+0.0678) |
+| `xi10` | -0.1685 (-0.1906/+0.1608) |
+| `sigma10` | 0.0589 (-0.0196/+0.0171) |
+| `mu_gamma_0` | 1.8812 (-0.0265/+0.0313) |
+| `beta_sigma_star_gamma` | 0.5725 (-0.1261/+0.0970) |
+| `sigma_gamma` | 0.0791 (-0.0241/+0.0246) |
+| `mu_zs` | 1.2654 (-0.1856/+0.2365) |
+| `sigma_zs` | 0.8281 (-0.1329/+0.1513) |
+| `theta0` | 0.5468 (-0.3675/+0.7344) |
+| `loga` | 1.0726 (-1.7461/+1.2960) |
+
+**`sersic / independent / 10 parameters`**
+
+| Parameter | Posterior summary |
+| --- | --- |
+| `mu10_0` | 11.6660 (-0.0195/+0.0198) |
+| `beta10` | 0.3995 (-0.0345/+0.0325) |
+| `xi10` | -0.6891 (-0.1080/+0.1326) |
+| `sigma10` | 0.0379 (-0.0186/+0.0251) |
+| `mu_gamma_0` | 2.0251 (-0.0264/+0.0264) |
+| `sigma_gamma` | 0.1397 (-0.0170/+0.0156) |
+| `mu_zs` | 1.2989 (-0.2011/+0.2446) |
+| `sigma_zs` | 0.8279 (-0.1336/+0.1499) |
+| `theta0` | 0.6098 (-0.4001/+0.8129) |
+| `loga` | 0.8199 (-1.4669/+1.3961) |
+
+这组结果需要按“当前最优 profile 分支各自配套的 gamma mode”来解释，而不是继续把 `devauc` 与 `sersic` 当成同一参数化下的纯 profile 对照。当前可比的是：在 BIC 优选设定下，`devauc` 倾向较低的中心 `mu_gamma_0` 与更窄的 `sigma_gamma`，同时其 $\gamma$ 均值显式依赖 $\Sigma_\ast$；`sersic` 则保留 `independent` 模式，只用一个更宽的 `sigma_gamma` 来吸收群体散度。
 
 ### Posterior predictive checks
 
 这一节对应的是 replicated summary-statistic 分布
 
 $$
-\left\{
-T\!\left(D^{\mathrm{rep},(s)}\right)
-\right\}_{s}
+\left\{ T\!\left(D^{\mathrm{rep},(s)}\right) \right\}_{s}
 $$
 
 与观测统计量 $T(D_{\mathrm{obs}})$ 的比较。
 
-第一，$\theta_E$ 与 $\sigma$ 的中位数基本可以被模型重现。以 `devauc` 为例，$\theta_E$ 的观测中位数是 `1.2480`，replicated mean of medians 为 `1.3025`；$\sigma$ 的观测中位数是 `263.0 km/s`，replicated mean of medians 为 `265.1450 km/s`。`sersic` 分支也给出类似结果：$\theta_E$ 中位数 `1.2888`，$\sigma$ 中位数 `267.6540 km/s`，都与观测样本接近。
+当前 `good` raw HDF5 上，PPC 里的观测侧 $\sigma$ 不是历史文档里写的 “7 个 sigma lenses”，而是先把同一 lens 的多次 dispersion measurement 做 inverse-variance aggregation，再形成 `11` 个 lens-level $\sigma$ 值进入统计量。`ppc_summary.json` 里的 `sample_sizes.sigma = 7` 仍然是遗留常量字段，但 `observed.sigma.*` 数值本身已经对应这 `11` 个聚合值；它们与 raw `good` 文件直接重算出来的 median/std/p10/p90 一致。
 
-第二，replicated catalog 的分布宽度明显偏大。最显眼的是标准差统计：观测 $\theta_E$ 标准差只有 `0.3263`，而 `devauc` 的 replicated mean of standard deviations 达到 `5.9761`，`sersic` 也达到 `4.4578`；观测 $\sigma$ 标准差为 `16.5386 km/s`，而 `devauc` 与 `sersic` 的 replicated mean 分别为 `70.4261` 与 `51.9504 km/s`。与此一致，`p90` 也普遍偏高。这表明当前层级模型虽然能把 catalog 的中心位置调到合理范围，但仍倾向于生成过宽的样本分布。
+四个最直接的 PPC 统计量如下：
+
+| Statistic | Observed | `devauc` replicated mean | `sersic` replicated mean |
+| --- | --- | --- | --- |
+| `theta.median` | 1.2480 | 1.4346 | 1.3537 |
+| `theta.std` | 0.3263 | 1.7517 | 0.5248 |
+| `sigma.median` | 239.0 | 246.9596 | 264.0310 |
+| `sigma.std` | 29.1868 | 44.2979 | 55.0334 |
+
+第一，$\theta_E$ 与 $\sigma$ 的中位数仍然能被两条选中 run 大致重现，说明当前 posterior predictive catalog 在中心位置上没有明显失真。
+
+第二，分布宽度仍然偏大，但偏差结构与旧的 `2026-03-17` 结果并不一样。`devauc` 的 $\theta_E$ 标准差明显偏宽，而 `sersic` 的 $\theta_E$ 宽度已经接近观测；相反，两个分支对 $\sigma$ 的 replicated 宽度都偏大，其中 `sersic` 更宽。这说明“模型整体过宽”仍然成立，但不应再照搬旧结果里那种对两条分支都同样失配的描述。
 
 ### Fig. 8-like trends near $\log M_\ast \approx 11.3$
 
@@ -858,43 +938,42 @@ $$
 
 的带状摘要，其中 $y \in \{m_{10}, \gamma, \sigma_{\mathrm{ap}}\}$。
 
-在 $\log M_\ast = 11.3$ 附近，三层人群的差异已经很清楚。
+在当前两条 BIC 优选 run 里，$\log M_\ast \approx 11.3$ 附近的中位带如下：
 
-对于 `devauc` 分支：
+| Profile | Class | `m10` | `gamma` | `sigma_ap` (km/s) |
+| --- | --- | --- | --- | --- |
+| `devauc` | `parent` | 11.6607 | 1.9669 | 221.2968 |
+| `devauc` | `detectable` | 11.6846 | 1.9912 | 232.4576 |
+| `devauc` | `selected` | 11.6868 | 1.9933 | 233.5387 |
+| `sersic` | `parent` | 11.6276 | 2.0267 | 225.5544 |
+| `sersic` | `detectable` | 11.6745 | 2.0348 | 239.3056 |
+| `sersic` | `selected` | 11.6807 | 2.0365 | 241.1194 |
 
-- $m_{10}$ 的中位趋势从 `parent` 的 `11.5751` 上升到 `detectable` 的 `11.6295`，再到 `selected` 的 `11.6434`；
-- $\gamma$ 也从 `parent` 的 `2.1004` 上升到 `selected` 的 `2.1769`；
-- $\sigma_{\mathrm{ap}}$ 从 `239.44 km/s` 上升到 `275.98 km/s`。
+这里的图像关系比旧版 `2026-03-17` 结果更简单：两条选中 run 都表现出从 `parent` 到 `selected` 的 `m10` 上升、`sigma_ap` 上升，以及温和的 $\gamma$ 上升。也就是说，在当前 4/21 BIC 优选口径下，selection 对 $\gamma$ 的影响不再呈现旧文档里那种 “`devauc` 推高、`sersic` 略压低” 的分裂图景。
 
-这说明在 `devauc` 分支下，selection 倾向于挑选更高 enclosed mass、更陡 density slope、也更高 aperture velocity dispersion 的对象。
-
-对于 `sersic` 分支：
-
-- $m_{10}$ 仍然从 `11.5435` 上升到 `11.6292`；
-- $\sigma_{\mathrm{ap}}$ 从 `264.46 km/s` 上升到 `279.20 km/s`；
-- 但 $\gamma$ 的行为不同：`parent` 中位数为 `2.2557`，而 `selected` 为 `2.2167`，即 selection 后并没有进一步推高 $\gamma$，反而略低于 parent 中位值。
-
-因此，当前代码给出的信息不是“selection 总会把 $\gamma$ 推高”，而是：selection 对 $m_{10}$ 与 $\sigma_{\mathrm{ap}}$ 的推高是稳定的，但对 $\gamma$ 的影响依赖于 profile 分支与群体关系参数化。
+同时还要记住，Fig. 8-like overlay 中观测点的口径与 PPC 不同：当前 `good` 文件里，annotation workflow 对应的是 `11` 个 `gamma` 点、`11` 个 mass 点和 `14` 个逐测量 `sigma` 点，因此这张图展示的是 raw flat-prior attrs 与 posterior predictive bands 的并置，而不是 23 个 lens 的统一 posterior list。
 
 ## Interpretation Boundaries
 
-第一，single-lens flat-prior summary 与 hierarchical population posterior 必须严格区分。前者是为了给每个 lens 生成 Fig. 8 风格的 $m_5/m_{10}$ 与 $\gamma$ 点误差条；后者才是整套群体层模型真正推断的对象。把 single-lens 摘要误写成 hierarchical posterior 的 per-lens 结果，会直接改变统计解释。
+第一，single-lens flat-prior summary 与 hierarchical population posterior 仍然必须严格区分。前者服务于 Fig. 8-like 观测点 annotation，后者才是整套群体模型真正推断的对象；把两者混成“逐 lens 的 hierarchical posterior”会直接改写统计解释。
 
-第二，当前 raw 文件中的这些 flat-prior 摘要 attrs 只存在于有速度弥散观测的 7 个 lens 上，而不是全部 23 个 lens。这意味着 Fig. 8 观测点本身对应的是“可做动力学摘要的子样本”，不是整个 lens sample 的逐对象后验列表。
+第二，`good` raw HDF5 不是删掉了 2 个 lens group，而是保留全部 `23` 个 lens，只把最低 `logM*` 的两颗 sigma lens 改写成 `num_sigma = 0`。因此当前主线的样本变化是“关闭两颗 lens 的 sigma 观测参与资格”，不是“从 catalog 中删除对象”。
 
-第三，$m_{10}$ 不是独立于 $m_5$ 的新物理模型。它只是同一 power-law profile 在不同 aperture radius 下的 enclosed-mass 定义，因此对 $m_{10}$ 结果的解读应始终回到“质量定义变化”，而不是“模型家族变化”。
+第三，当前 `good` 文件上的三个 sigma 口径必须分开写：raw 文件里有 `11` 个 lens-level sigma objects；同一批 raw attrs 里保留 `14` 个逐测量 sigma points 供 Fig. 8 overlay 使用；PPC 则先做 lens-level inverse-variance aggregation，再用聚合后的 `11` 个值计算 `observed.sigma.*`。
 
-第四，当前活跃 run 的 snapshot 没显式记录 `gamma_model` 字段，这是历史配置快照遗留问题。本文把它们解释为 dependent gamma 模式，是依据 posterior parameter order 与当前源码契约做出的有根据判断。
+第四，`ppc_summary.json` 中的 `sample_sizes.sigma = 7` 是遗留常量字段，不代表当前 `good` 文件的真实样本量。当前真实观测 sigma 样本量必须以 raw `good` HDF5 重算出的 `11` 个 lens-level 值为准。
 
-第五，trend 图中的 $\sigma_{\mathrm{ap}}$ 观测点和 PPC 中用于计算 $T(D_{\mathrm{obs}})$ 的 7-lens sigma 样本不是同一个对象。前者在 overlay 里保留 raw HDF5 的逐测量点，`num_sigma=2` 的 lens 会画出两个点；后者则先把同一 lens 的多次 dispersion measurement 聚合成一个 lens-level 值，再进入 replicated-statistic 比较。
+第五，$m_{10}$ 不是独立于 $m_5$ 的新物理模型。它只是同一 power-law profile 在不同 aperture radius 下的 enclosed-mass 定义，因此对 `m10` 结果的解释始终应回到“质量定义变化”，而不是“模型家族变化”。
 
-第六，`sigma_star_dependent` 是新增支持的 gamma population mode，不等于本文已经给出了该模式下的新 posterior 结果。本文当前结果段仍然只对应 `2026-03-17` 的 dependent-gamma rerun。
+第六，当前 `2026-04-20/21` run 的 snapshot 已经显式记录 `gamma_model`、`fp_sigma_definition` 和 `fp_sigma_table_leaf_path`，所以不再需要沿用旧报告里那种“从 parameter order 反推 gamma mode”的 caveat。相应地，当前 `devauc` 与 `sersic` 的主结果本身就混合了 profile 选择与 gamma-mode 选择。
 
-第七，BOSS raw observation HDF5 是新增上游数据分支，不等于本文当前结果已经切换到 BOSS sample。正文对 BOSS 的讨论只涉及主线现在支持什么 observation contract，以及这些 attrs 如何进入方法定义。
+第七，`within_re` 只用于 FP prior 所引用的 sigma 定义与 sigma bundle path；likelihood、PPC 和 posterior-trends 里的观测 aperture sigma 仍然来自 `/slit/m10`。把这两层 aperture contract 合并成“现在都切到 within_re”会误写实际流程。
 
-第八，本文不展开最近其它工程演化，例如 `fig8 observation annotation workflow`、`sigma bundle / bundle-aware PPT loading` 和 `Avoid recomputing sigma tables for m10 mass radii`。这些变更可能影响工作流接口或数据搬运，但不属于本次方法论修订的主角。
+第八，`outputs/devauc/latest` 与 `outputs/sersic/latest` 当前都是坏链，因此正文不能把 `latest` 当作可靠证据锚点。更具体地说，4/21 orchestrator 把 `latest` 指到了 sigma-star 那一对 basename；这让 `devauc/latest` 恰好与 BIC 最优一致，但 `sersic/latest` 与当前 BIC 最优并不一致。
 
-第九，本文只讨论当前主线代码在本地已有 run 上表现如何，不延伸到与历史 notebook 或其它对照流程的数值一致性比较。
+第九，BOSS raw observation branch 仍然只是当前代码支持的 observation contract 之一，不是本文主结果的证据来源。本文当前结果全部来自 slit rebuilt / good HDF5 分支。
+
+第十，本文仍然只讨论主线代码、主线产物与本地已有 run 的方法含义，不延伸到历史 notebook、旧版对照流程或其它工程性重构的数值一致性审计。
 
 ## Notation And Code Mapping
 

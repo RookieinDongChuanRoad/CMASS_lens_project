@@ -11,24 +11,14 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-import subprocess
 
+import h5py
+import numpy as np
 import pytest
 
 
 WORKTREE_ROOT = Path(__file__).resolve().parents[2]
-COMMON_GIT_DIRECTORY = Path(
-    subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"],
-        cwd=WORKTREE_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-).resolve()
-REPOSITORY_ROOT = COMMON_GIT_DIRECTORY.parent
 SCRIPT_PATH = WORKTREE_ROOT / "data" / "plot_einstein_radius_hist.py"
-INPUT_PATH = REPOSITORY_ROOT / "data" / "raw" / "observations_with_m5_grids_all.hdf5"
 EXPECTED_MEAN_R_EIN_KPC = 8.463024096936982
 EXPECTED_SAMPLE_SIZE = 23
 
@@ -51,6 +41,29 @@ def _load_script_module():
     return module
 
 
+def _write_einstein_radius_fixture(path: Path) -> Path:
+    """
+    Write a minimal observation HDF5 file for the standalone plotting script.
+
+    The production script only depends on each galaxy group exposing an
+    ``r_ein_kpc`` attribute, so the test fixture should encode exactly that
+    public contract instead of depending on a large ignored raw-data file from a
+    particular developer checkout.  The symmetric offsets keep the expected mean
+    analytically fixed while still exercising histogram rendering on a non-empty
+    distribution rather than on one repeated value.
+    """
+
+    radius_offsets = np.linspace(-1.1, 1.1, EXPECTED_SAMPLE_SIZE)
+    radii_kpc = EXPECTED_MEAN_R_EIN_KPC + radius_offsets
+
+    with h5py.File(path, "w") as observation_file:
+        for index, radius_kpc in enumerate(radii_kpc):
+            galaxy_group = observation_file.create_group(f"lens_{index:02d}")
+            galaxy_group.attrs["r_ein_kpc"] = float(radius_kpc)
+
+    return path
+
+
 def test_load_compute_and_plot_histogram_with_mean_annotation(tmp_path: Path) -> None:
     """
     The script must expose a reproducible path from raw data to annotated PNG.
@@ -63,8 +76,9 @@ def test_load_compute_and_plot_histogram_with_mean_annotation(tmp_path: Path) ->
     """
 
     histogram_module = _load_script_module()
+    input_path = _write_einstein_radius_fixture(tmp_path / "observations_with_m5_grids_all.hdf5")
 
-    radii_kpc = histogram_module.load_einstein_radii_kpc(INPUT_PATH)
+    radii_kpc = histogram_module.load_einstein_radii_kpc(input_path)
     assert len(radii_kpc) == EXPECTED_SAMPLE_SIZE
 
     summary_statistics = histogram_module.compute_summary_statistics(radii_kpc)

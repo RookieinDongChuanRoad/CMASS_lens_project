@@ -13,7 +13,9 @@ import os
 from pathlib import Path
 
 from .config import load_runtime_config
+from .io import WITHIN_RE_SIGMA_DEFINITION
 from .jax_model import build_jax_model
+from .mass_definition import mass_definition_metadata
 from .numpyro_sampler import run_numpyro_sampler
 from .outputs import (
     append_run_log,
@@ -65,11 +67,10 @@ def _run_with_layout(
             "name": runtime_context.config.model.name,
             "components": runtime_context.config.model.components,
         },
+        "unit_convention": runtime_context.config.unit_convention,
+        "h_ref": runtime_context.config.h_ref,
         "gamma_mode": runtime_context.config.gamma_model.mode,
-        "mass_definition": {
-            "label": runtime_context.config.mass_definition.label,
-            "enclosed_radius_kpc": float(runtime_context.config.mass_definition.radius_kpc),
-        },
+        "mass_definition": mass_definition_metadata(runtime_context.config.mass_definition),
         "sampling": {
             "num_chains": runtime_context.config.sampling.num_chains,
             "num_samples": runtime_context.config.sampling.num_samples,
@@ -106,6 +107,16 @@ def _run_with_layout(
         "sigma_table_mass_definition": (
             runtime_context.config.mass_definition.label
             if runtime_context.config.data.sigma_table_path is not None
+            else None
+        ),
+        "fp_sigma_definition": (
+            WITHIN_RE_SIGMA_DEFINITION
+            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
+            else None
+        ),
+        "fp_sigma_table_leaf_path": (
+            f"/{WITHIN_RE_SIGMA_DEFINITION}/{runtime_context.config.mass_definition.label}"
+            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
             else None
         ),
         "parallelism": runtime_context.parallelism.to_dict(),

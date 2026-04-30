@@ -308,14 +308,15 @@ def theta_ein_arcsec(
     z_grid: np.ndarray,
     chi_kpc_grid: np.ndarray,
     mass_radius_kpc: float = 5.0,
+    log_mass_physical_offset: float = 0.0,
 ) -> float:
     """
     Einstein radius in arcseconds from `(m_R, gamma)` and distance tables.
 
     The same power-law lens can be parameterized by `m5`, `m10`, or any other
     supported enclosed projected mass definition. The only definition-specific
-    ingredient is the physical aperture radius `R` that enters the analytic
-    relation between `m_R` and `r_ein`.
+    ingredients are the physical aperture radius `R` and the optional additive
+    conversion from the serialized mass unit into physical `Msun`.
     """
 
     if zd <= 0.0 or zs <= zd or gamma <= 1.0:
@@ -333,7 +334,7 @@ def theta_ein_arcsec(
         return 0.0
 
     sigma_crit = (C_KM_S * C_KM_S) / (4.0 * math.pi * G_KPC_KMS2_MSUN) * (ds / (dl * dls))
-    base = (10.0**log_enclosed_mass) / (
+    base = (10.0 ** (log_enclosed_mass + log_mass_physical_offset)) / (
         math.pi * sigma_crit * (mass_radius_kpc ** (3.0 - gamma))
     )
     if base <= 0.0:
@@ -364,10 +365,11 @@ def mu_r(
     mu_r0: float,
     beta_r: float,
     nu_r: float,
+    stellar_mass_pivot: float = 11.4,
 ) -> float:
     """Mean size relation used by both likelihood and normalization kernels."""
 
-    out = mu_r0 + beta_r * (mstar - 11.4)
+    out = mu_r0 + beta_r * (mstar - stellar_mass_pivot)
     if use_sersic_index == 1:
         out += nu_r * (math.log10(max(n_value, 1.0e-12)) - LOG10_4)
     return out

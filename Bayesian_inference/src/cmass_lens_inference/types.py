@@ -149,12 +149,12 @@ class FPPriorConfig:
     enabled: bool
     fit_mstar_min: float = 11.0
     pivot_mstar: float = 11.3
-    fiducial_scatter: float = 0.047
-    scatter_error: float = 0.008
-    mu_v_prior: float = 2.341871
-    mu_v_error: float = 0.03
-    beta_v_prior: float = 0.25774
-    beta_v_error: float = 0.03
+    fiducial_scatter: float = 0.075
+    scatter_error: float = 0.003
+    mu_v_prior: float = 2.34548
+    mu_v_error: float = 0.00611
+    beta_v_prior: float = 0.176
+    beta_v_error: float = 0.011
 
 
 @dataclass(frozen=True)
@@ -252,6 +252,8 @@ class OutputConfig:
 class RuntimeConfig:
     """The fully parsed project configuration."""
 
+    unit_convention: str
+    h_ref: float
     profile: ProfileConfig
     model: ModelConfig
     mass_definition: MassDefinition
@@ -302,6 +304,7 @@ class ObservationRecord:
     log_stellar_mass_err: float
     n_observed: float
     effective_radius_arcsec: float
+    log_effective_radius_obs: float | None
     einstein_radius_arcsec: float
     num_sigma: int
     sigma_observed: np.ndarray
@@ -333,18 +336,22 @@ class SigmaUnitTable:
     profile_name: str
     mass_definition_label: str
     mass_radius_kpc: float
+    unit_convention: str
+    h_ref: float | None
     units: str
     gamma_axis: np.ndarray
-    zd_axis: np.ndarray
+    zd_axis: np.ndarray | None
     log_re_kpc_axis: np.ndarray
     sigma_unit_grid: np.ndarray
     n_axis: np.ndarray | None = None
-    observation_flavor: str = "slit"
+    sigma_definition: str = "observed_aperture"
+    bundle_group_name: str = "slit"
+    observation_flavor: str | None = "slit"
     aperture_shape: str = "rectangular"
     aperture_width_arcsec: float | None = 1.6
     aperture_height_arcsec: float | None = 0.9
     aperture_radius_arcsec: float | None = None
-    seeing_fwhm_arcsec: float = 0.9
+    seeing_fwhm_arcsec: float | None = 0.9
     bundle_leaf_path: str = "/"
 
 
@@ -413,11 +420,13 @@ class CompiledModelContext:
     p_zd_fixed: np.ndarray
     mstar_grid: np.ndarray
     mstar_shift11p4: np.ndarray
+    stellar_mass_pivot: float
     sigma_star_shift9p0_grid: np.ndarray
     mstar_integrand_base: np.ndarray
     delta_r_grid: np.ndarray
     base_normals: np.ndarray
     mass_radius_kpc: float
+    mass_log_physical_offset: float
     use_sersic_index: int
     n_fixed: float
     mu_n0: float

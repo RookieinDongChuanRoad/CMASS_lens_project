@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 import yaml
@@ -19,6 +20,43 @@ from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.jax_model import build_jax_model, log_prob as jax_log_prob
 from cmass_lens_inference.model import build_compiled_model, log_prob as legacy_log_prob
 from cmass_lens_inference.runner import run_inference
+
+
+def _write_h_unit_observation_file(path: Path) -> Path:
+    """
+    Write the minimal h-units observation schema needed by the JAX regression.
+
+    The fixture is intentionally local to this test module because it is not a
+    generic data-builder.  It exists to exercise the exact boundary between the
+    merged hunit I/O contract and the JAX posterior: h-unit stellar mass,
+    h-unit size, and the `m5_hinvkpc` mass-definition subgroup.
+    """
+
+    gamma_grid = np.linspace(1.3, 2.7, 17)
+    with h5py.File(path, "w") as handle:
+        handle.attrs["unit_convention"] = "h_units_v1"
+        handle.attrs["h_ref"] = 0.7
+
+        group = handle.create_group("lens-h")
+        group.attrs["unit_convention"] = "h_units_v1"
+        group.attrs["h_ref"] = 0.7
+        group.attrs["zd"] = 0.55
+        group.attrs["zs"] = 1.75
+        group.attrs["logmchab_h2"] = 10.99
+        group.attrs["logmchab_err"] = 0.05
+        group.attrs["log10_re_hinv_kpc"] = 0.64
+        group.attrs["nser"] = 4.2
+        group.attrs["rein_arcsec"] = 1.3
+        group.attrs["num_sigma"] = 0
+        group.create_dataset("gamma_grid", data=gamma_grid)
+
+        mass_group = group.create_group("mass_definitions").create_group("m5_hinvkpc")
+        mass_group.attrs["unit_convention"] = "h_units_v1"
+        mass_group.attrs["h_ref"] = 0.7
+        mass_group.create_dataset("mass_grid", data=np.linspace(11.7, 10.9, 17))
+        mass_group.create_dataset("dmass_dthetaein_grid", data=np.linspace(-2.0, -1.0, 17))
+
+    return path
 
 
 def test_config_loads_model_components_and_numpyro_sampling_aliases(
@@ -110,6 +148,71 @@ def test_jax_fp_prior_log_prob_matches_legacy_kernel(
     legacy_value, _ = legacy_log_prob(theta, legacy_model)
     jax_value, _ = jax_log_prob(theta, jax_model)
 
+    assert np.isfinite(jax_value)
+    assert jax_value == pytest.approx(legacy_value, rel=1.0e-8, abs=1.0e-8)
+
+
+def test_jax_log_prob_matches_legacy_kernel_for_h_unit_current_model(
+    tmp_path: Path,
+    synthetic_config_path: Path,
+) -> None:
+    """
+    The JAX backend must honor the merged hunit mass and size convention.
+
+    This is the regression that protects the non-textual merge risk: Git can
+    merge `compiled_context.py` automatically, but JAX still has to consume the
+    hunit-aware `stellar_mass_pivot`, physical aperture radius, and mass-log
+    offset exported by that context.
+    """
+
+    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    payload["unit_convention"] = "h_units_v1"
+    payload["data"]["observation_path"] = str(_write_h_unit_observation_file(tmp_path / "h_units_observations.hdf5"))
+    payload["mass_definition"] = {"aperture_hinv_kpc": 5}
+    payload["box_prior"] = {
+        "mu5h_0": [9.0, 12.0],
+        "beta5h": [-3.0, 3.0],
+        "xi5h": [-3.0, 3.0],
+        "sigma5h": [1.0e-2, 0.2],
+        "mu_gamma_0": [1.5, 2.5],
+        "beta_gamma": [-3.0, 3.0],
+        "xi_gamma": [-3.0, 3.0],
+        "sigma_gamma": [0.0, 0.5],
+        "mu_zs": [1.0, 3.0],
+        "sigma_zs": [0.0, 2.0],
+        "theta0": [0.0, 3.0],
+        "loga": [-1.0, 3.0],
+    }
+    payload["sampling"]["initial_center"] = {
+        "mu5h_0": 11.17,
+        "beta5h": 0.59,
+        "xi5h": -0.11,
+        "sigma5h": 0.06,
+        "mu_gamma_0": 1.99,
+        "beta_gamma": 0.10,
+        "xi_gamma": -0.67,
+        "sigma_gamma": 0.149,
+        "mu_zs": 1.8,
+        "sigma_zs": 0.215,
+        "theta0": 0.93,
+        "loga": 1.0,
+    }
+
+    h_unit_config_path = tmp_path / "h_unit_jax.yaml"
+    h_unit_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    runtime_config = load_runtime_config(h_unit_config_path)
+    theta = runtime_config.sampling.initial_center.to_array()
+
+    legacy_model = build_compiled_model(runtime_config)
+    jax_model = build_jax_model(runtime_config)
+
+    legacy_value, _ = legacy_log_prob(theta, legacy_model)
+    jax_value, _ = jax_log_prob(theta, jax_model)
+
+    assert runtime_config.mass_definition.label == "m5_hinvkpc"
+    assert jax_model.context.stellar_mass_pivot == pytest.approx(11.4 + 2.0 * np.log10(0.7))
+    assert jax_model.context.mass_radius_kpc == pytest.approx(5.0 / 0.7)
+    assert jax_model.context.mass_log_physical_offset == pytest.approx(np.log10(0.7**-1))
     assert np.isfinite(jax_value)
     assert jax_value == pytest.approx(legacy_value, rel=1.0e-8, abs=1.0e-8)
 

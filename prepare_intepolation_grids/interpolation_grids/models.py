@@ -115,9 +115,10 @@ class GalaxyInputs:
         reference-script regression tests and for documenting previous data
         products, but the current production `s2_grid` policy uses the fixed
         aperture width defined in `config.py` instead.
-    has_s2_grid:
-        Whether the input group already contains the velocity-dispersion grid.
-        The business rule is to update only existing `s2_grid` datasets.
+    num_sigma:
+        Count of observed velocity-dispersion constraints attached to the
+        galaxy. This is the authoritative business signal for whether the raw
+        rebuilding pipeline must regenerate `s2_grid`.
     """
 
     group_name: str
@@ -131,7 +132,7 @@ class GalaxyInputs:
     reff_dev_arcsec: float | None
     nser: float | None
     aperture_width_arcsec: float | None
-    has_s2_grid: bool
+    num_sigma: int
 
 
 @dataclass
@@ -184,13 +185,17 @@ class SigmaUnitTable:
     mass_definition_label: str
     mass_radius_kpc: float
     gamma_axis: np.ndarray
-    zd_axis: np.ndarray
+    zd_axis: np.ndarray | None
     log_re_kpc_axis: np.ndarray
     values: np.ndarray
     n_axis: np.ndarray | None = None
-    observation_flavor: str = "slit"
+    sigma_definition: str = "observed_aperture"
+    bundle_group_name: str = "slit"
+    observation_flavor: str | None = "slit"
     aperture_shape: str = "rectangular"
     aperture_width_arcsec: float | None = 1.6
     aperture_height_arcsec: float | None = 0.9
     aperture_radius_arcsec: float | None = None
-    seeing_fwhm_arcsec: float = 0.9
+    seeing_fwhm_arcsec: float | None = 0.9
+    unit_convention: str = "legacy_fixed_kpc"
+    h_ref: float = 0.7

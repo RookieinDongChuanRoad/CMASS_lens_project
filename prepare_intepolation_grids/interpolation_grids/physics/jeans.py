@@ -25,8 +25,13 @@ from spherical_jeans.mass_profiles import powerlaw
 from interpolation_grids.config import (
     DEFAULT_RADIAL_GRID_SIZE,
     DEFAULT_PRODUCTION_APERTURE_POLICY,
+    H_UNITS_V1,
+    LEGACY_FIXED_KPC,
+    OBSERVED_APERTURE_SIGMA_DEFINITION,
+    WITHIN_RE_SIGMA_DEFINITION,
 )
 from interpolation_grids.models import AperturePolicy, GalaxyInputs
+from interpolation_grids.unit_conventions import Sunit_hinv_from_fixed_kpc
 
 
 COSMOLOGY = FlatLambdaCDM(H0=70, Om0=0.3)
@@ -75,7 +80,9 @@ def uses_devaucouleurs_branch(source_filename: str) -> bool:
 
 def _build_aperture_and_seeing_kpc(
     zd: float,
+    re_kpc: float | None = None,
     aperture_policy: AperturePolicy | None = None,
+    sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
 ) -> tuple[float | list[float], float]:
     """Convert one explicit aperture policy from arcsec into physical kpc.
 
@@ -83,6 +90,14 @@ def _build_aperture_and_seeing_kpc(
     different physical aperture without mutating the behavior of every Jeans
     calculation in the repository.
     """
+
+    normalized_sigma_definition = sigma_definition.strip().lower()
+    if normalized_sigma_definition == WITHIN_RE_SIGMA_DEFINITION:
+        if re_kpc is None or re_kpc <= 0.0:
+            raise ValueError("The within-Re sigma definition requires a strictly positive `re_kpc`.")
+        return float(re_kpc), None
+    if normalized_sigma_definition != OBSERVED_APERTURE_SIGMA_DEFINITION:
+        raise ValueError(f"Unsupported sigma definition: {sigma_definition}")
 
     physical_kpc_per_arcsec = kpc_per_arcsec(zd)
     resolved_policy = aperture_policy or DEFAULT_PRODUCTION_APERTURE_POLICY
@@ -134,7 +149,7 @@ def _resolve_tracer_setup(
 def _compute_sigma_unit_values_for_prepared_inputs(
     gamma_grid: np.ndarray,
     aperture_kpc: float | list[float],
-    seeing_kpc: float,
+    seeing_kpc: float | None,
     tracer_parameters: float | tuple[float, float],
     tracer_profile: object,
     radial_grid: np.ndarray,
@@ -152,12 +167,15 @@ def _compute_sigma_unit_values_for_prepared_inputs(
     for index, gamma in enumerate(np.asarray(gamma_grid, dtype=float)):
         normalization = 1.0 / powerlaw.M2d(5.0, gamma)
         enclosed_mass_grid = normalization * powerlaw.M3d(radial_grid, gamma)
+        sigma2_kwargs = {}
+        if seeing_kpc is not None:
+            sigma2_kwargs["seeing"] = seeing_kpc
         sigma2_over_g = sigma_model.sigma2(
             (radial_grid, enclosed_mass_grid),
             aperture_kpc,
             tracer_parameters,
             tracer_profile,
-            seeing=seeing_kpc,
+            **sigma2_kwargs,
         )
         output[index] = sigma2_over_g * SIGMA2_TO_KM2_PER_S2
     return output
@@ -171,6 +189,9 @@ def compute_sigma_unit(
     n_value: float | None = None,
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
+    sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> float:
     """Evaluate the unit-mass Jeans response for one physical lens coordinate.
 
@@ -185,7 +206,12 @@ def compute_sigma_unit(
     unit `10**m5` normalization.
     """
 
-    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd, aperture_policy=aperture_policy)
+    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(
+        zd,
+        re_kpc=re_kpc,
+        aperture_policy=aperture_policy,
+        sigma_definition=sigma_definition,
+    )
     tracer_parameters, tracer_profile, radial_grid = _resolve_tracer_setup(
         profile_name=profile_name,
         re_kpc=re_kpc,
@@ -200,7 +226,12 @@ def compute_sigma_unit(
         tracer_profile=tracer_profile,
         radial_grid=radial_grid,
     )
-    return float(values[0] * _sigma_unit_mass_scale_factor(np.asarray([gamma], dtype=float), mass_radius_kpc)[0])
+    legacy_value = values[0] * _sigma_unit_mass_scale_factor(np.asarray([gamma], dtype=float), mass_radius_kpc)[0]
+    if str(unit_convention).strip() == H_UNITS_V1:
+        return float(Sunit_hinv_from_fixed_kpc(legacy_value, gamma, h_ref=h_ref))
+    if str(unit_convention).strip() != LEGACY_FIXED_KPC:
+        raise ValueError(f"Unsupported unit_convention for sigma-unit calculation: {unit_convention}")
+    return float(legacy_value)
 
 
 def compute_sigma_unit_grid(
@@ -211,10 +242,18 @@ def compute_sigma_unit_grid(
     n_value: float | None = None,
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
+    sigma_definition: str = OBSERVED_APERTURE_SIGMA_DEFINITION,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> np.ndarray:
     """Evaluate `S_unit` over one gamma axis for fixed non-gamma lens inputs."""
 
-    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(zd, aperture_policy=aperture_policy)
+    aperture_kpc, seeing_kpc = _build_aperture_and_seeing_kpc(
+        zd,
+        re_kpc=re_kpc,
+        aperture_policy=aperture_policy,
+        sigma_definition=sigma_definition,
+    )
     tracer_parameters, tracer_profile, radial_grid = _resolve_tracer_setup(
         profile_name=profile_name,
         re_kpc=re_kpc,
@@ -228,7 +267,13 @@ def compute_sigma_unit_grid(
         tracer_profile=tracer_profile,
         radial_grid=radial_grid,
     )
-    return base_values * _sigma_unit_mass_scale_factor(np.asarray(gamma_grid, dtype=float), mass_radius_kpc)
+    legacy_values = base_values * _sigma_unit_mass_scale_factor(np.asarray(gamma_grid, dtype=float), mass_radius_kpc)
+    normalized_convention = str(unit_convention).strip()
+    if normalized_convention == H_UNITS_V1:
+        return Sunit_hinv_from_fixed_kpc(legacy_values, np.asarray(gamma_grid, dtype=float), h_ref=h_ref)
+    if normalized_convention != LEGACY_FIXED_KPC:
+        raise ValueError(f"Unsupported unit_convention for sigma-unit grid calculation: {unit_convention}")
+    return legacy_values
 
 
 def compute_s2_grid(
@@ -236,6 +281,8 @@ def compute_s2_grid(
     gamma_grid: np.ndarray,
     mass_radius_kpc: float = 5.0,
     aperture_policy: AperturePolicy | None = None,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
 ) -> np.ndarray:
     """Compute the per-galaxy `s2_grid` for the requested mass definition.
 
@@ -267,6 +314,8 @@ def compute_s2_grid(
             re_kpc=galaxy.reff_dev_arcsec * physical_kpc_per_arcsec,
             mass_radius_kpc=mass_radius_kpc,
             aperture_policy=aperture_policy,
+            unit_convention=unit_convention,
+            h_ref=h_ref,
         )
     else:
         if galaxy.re_arcsec is None or galaxy.nser is None:
@@ -279,4 +328,6 @@ def compute_s2_grid(
             n_value=galaxy.nser,
             mass_radius_kpc=mass_radius_kpc,
             aperture_policy=aperture_policy,
+            unit_convention=unit_convention,
+            h_ref=h_ref,
         )

@@ -13,6 +13,7 @@ from interpolation_grids.config import (
 )
 from interpolation_grids.io.boss_observations import build_boss_observation_hdf5_files
 from interpolation_grids.io.hdf5 import process_hdf5_file
+from interpolation_grids.io.slit_observation_updates import sync_slit_canonical_updates
 from interpolation_grids.io.sigma_tables import (
     build_default_sigma_unit_hdf5_tables,
     repack_legacy_sigma_unit_hdf5_tables_into_bundles,
@@ -69,6 +70,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Copy existing legacy slit sigma-unit HDF5 files into the new per-profile bundle schema without recomputing.",
     )
     parser.add_argument(
+        "--sync-slit-canonical-sigma",
+        action="store_true",
+        help="Preview or apply the combined CSV sigma update plus SL2S merge workflow for the two slit canonical HDF5 files.",
+    )
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        default=None,
+        help="PPXF CSV file used by --sync-slit-canonical-sigma.",
+    )
+    parser.add_argument(
+        "--sl2s-source",
+        type=Path,
+        default=RAW_DATA_DIRECTORY / "observations_deV_with_SL2S_mass_grids.hdf5",
+        help="SL2S source HDF5 used by --sync-slit-canonical-sigma.",
+    )
+    parser.add_argument(
         "--summary-table",
         type=Path,
         default=None,
@@ -93,10 +111,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limit sigma-bundle generation to one observation flavor, or build both.",
     )
     parser.add_argument(
+        "--sigma-definition",
+        choices=("observed_aperture", "within_re", "all"),
+        default="all",
+        help="Limit sigma-bundle generation to observed-aperture leaves, within-Re leaves, or build both.",
+    )
+    parser.add_argument(
         "--legacy-sigma-input-dir",
         type=Path,
         default=None,
         help="Directory containing the old flat sigma-unit HDF5 files when using --repack-legacy-sigma-unit-hdf5.",
+    )
+    parser.add_argument(
+        "--unit-convention",
+        choices=("h_units_v1", "legacy_fixed_kpc"),
+        default="h_units_v1",
+        help="Unit convention for rebuilt mass grids and sigma-unit tables.",
+    )
+    parser.add_argument(
+        "--h-ref",
+        type=float,
+        default=0.7,
+        help="Reference h used when --unit-convention h_units_v1 is selected.",
     )
     return parser
 
@@ -111,6 +147,7 @@ def main() -> int:
         int(args.build_sigma_unit_hdf5)
         + int(args.build_boss_observation_hdf5)
         + int(args.repack_legacy_sigma_unit_hdf5)
+        + int(args.sync_slit_canonical_sigma)
     )
     if selected_build_modes > 1:
         parser.error("Choose only one special build mode at a time.")
@@ -129,6 +166,8 @@ def main() -> int:
     if args.repack_legacy_sigma_unit_hdf5:
         if args.observation_flavor != "all":
             parser.error("--repack-legacy-sigma-unit-hdf5 only supports the existing slit legacy files, so do not pass --observation-flavor.")
+        if args.sigma_definition != "all":
+            parser.error("--repack-legacy-sigma-unit-hdf5 does not support --sigma-definition.")
         output_dir = args.output_dir or EXTERNAL_DATA_DIRECTORY
         # In worktree-based runs the canonical legacy files still live under the
         # main repository's external-data directory. Defaulting the repack input
@@ -146,17 +185,53 @@ def main() -> int:
         return 0
 
     if args.build_sigma_unit_hdf5:
+        if args.sigma_definition == "within_re" and args.observation_flavor != "all":
+            parser.error("--sigma-definition within_re does not accept --observation-flavor because within_re is not an observation flavor.")
         output_dir = args.output_dir or EXTERNAL_DATA_DIRECTORY
         requested_profiles = None if args.profile == "all" else (args.profile,)
         requested_observation_flavors = None if args.observation_flavor == "all" else (args.observation_flavor,)
+        requested_sigma_definitions = None if args.sigma_definition == "all" else (args.sigma_definition,)
         output_paths = build_default_sigma_unit_hdf5_tables(
             output_directory=output_dir,
             profiles=requested_profiles,
             observation_flavors=requested_observation_flavors,
+            sigma_definitions=requested_sigma_definitions,
             workers=args.workers,
+            unit_convention=args.unit_convention,
+            h_ref=args.h_ref,
         )
         for profile_name, output_path in output_paths.items():
             print(f"{profile_name}: wrote {output_path}")
+        return 0
+
+    if args.sync_slit_canonical_sigma:
+        if args.csv is None:
+            parser.error("--sync-slit-canonical-sigma requires --csv.")
+        slit_paths = [RAW_DATA_DIRECTORY / name for name in DEFAULT_INPUT_FILENAMES]
+        results = sync_slit_canonical_updates(
+            csv_path=args.csv,
+            slit_hdf5_paths=slit_paths,
+            sl2s_source_path=args.sl2s_source,
+            overwrite_in_place=args.overwrite_in_place,
+        )
+        mode_text = "WRITE" if args.overwrite_in_place else "PREVIEW"
+        for result in results:
+            print(f"{mode_text} {result.input_path}")
+            print(f"  csv_groups={len(result.csv_group_updates)}")
+            for group_update in result.csv_group_updates:
+                print(
+                    f"    CSV {group_update.group_name}: "
+                    f"{group_update.old_sigma.tolist()}->{group_update.new_sigma.tolist()} "
+                    f"{group_update.old_sigma_err.tolist()}->{group_update.new_sigma_err.tolist()}"
+                )
+            print(f"  sl2s_groups={len(result.sl2s_group_updates)}")
+            for group_update in result.sl2s_group_updates:
+                print(
+                    f"    SL2S {group_update.group_name}: num_sigma={group_update.num_sigma} "
+                    f"shape={group_update.aperture_shape} seeing={group_update.seeing_fwhm_arcsec}"
+                )
+            if result.rebuilt_group_names:
+                print(f"  rebuilt={','.join(result.rebuilt_group_names)}")
         return 0
 
     input_paths: list[Path] = []
@@ -178,6 +253,8 @@ def main() -> int:
             output_path=output_path,
             overwrite_in_place=args.overwrite_in_place,
             group_names=tuple(args.groups) if args.groups else None,
+            unit_convention=args.unit_convention,
+            h_ref=args.h_ref,
         )
         print(
             f"{input_path.name}: groups={summary.total_groups} "

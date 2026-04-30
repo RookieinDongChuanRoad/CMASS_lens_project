@@ -41,17 +41,13 @@ GAMMA_MODE_DEPENDENT_CODE = 0
 GAMMA_MODE_INDEPENDENT_CODE = 1
 GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE = 2
 
-FP_OLS_SUMMARY_SIZE = 10
+FP_OLS_SUMMARY_SIZE = 6
 FP_OLS_COUNT_INDEX = 0
 FP_OLS_SUM_X1_INDEX = 1
-FP_OLS_SUM_X2_INDEX = 2
-FP_OLS_SUM_X1X1_INDEX = 3
-FP_OLS_SUM_X1X2_INDEX = 4
-FP_OLS_SUM_X2X2_INDEX = 5
-FP_OLS_SUM_Y_INDEX = 6
-FP_OLS_SUM_X1Y_INDEX = 7
-FP_OLS_SUM_X2Y_INDEX = 8
-FP_OLS_SUM_YY_INDEX = 9
+FP_OLS_SUM_X1X1_INDEX = 2
+FP_OLS_SUM_Y_INDEX = 3
+FP_OLS_SUM_X1Y_INDEX = 4
+FP_OLS_SUM_YY_INDEX = 5
 
 JAX_LOG_PROB_BLOB_DTYPE = np.dtype(
     [
@@ -239,11 +235,12 @@ def _mu_r(
     mu_r0: float,
     beta_r: float,
     nu_r: float,
+    stellar_mass_pivot: float,
 ) -> jnp.ndarray:
     """Mean size relation for the active profile family."""
 
     sersic_term = nu_r * (jnp.log10(jnp.maximum(n_value, 1.0e-12)) - LOG10_4)
-    return mu_r0 + beta_r * (mstar - 11.4) + jnp.where(use_sersic_index == 1, sersic_term, 0.0)
+    return mu_r0 + beta_r * (mstar - stellar_mass_pivot) + jnp.where(use_sersic_index == 1, sersic_term, 0.0)
 
 
 def _theta_dimension_for_gamma_mode(gamma_mode_code: int) -> int:
@@ -344,6 +341,7 @@ def _theta_ein_arcsec(
     z_grid: jnp.ndarray,
     chi_kpc_grid: jnp.ndarray,
     mass_radius_kpc: float,
+    mass_log_physical_offset: float,
 ) -> jnp.ndarray:
     """
     Einstein radius in arcsec for a projected power-law mass model.
@@ -359,7 +357,7 @@ def _theta_ein_arcsec(
     ds = chi_s / (1.0 + zs)
     dls = (chi_s - chi_l) / (1.0 + zs)
     sigma_crit = (C_KM_S * C_KM_S) / (4.0 * math.pi * G_KPC_KMS2_MSUN) * (ds / (dl * dls))
-    base = (10.0**log_enclosed_mass) / (
+    base = (10.0 ** (log_enclosed_mass + mass_log_physical_offset)) / (
         math.pi * sigma_crit * (mass_radius_kpc ** (3.0 - gamma))
     )
     r_ein = base ** (1.0 / (gamma - 1.0))
@@ -389,6 +387,7 @@ def _draw_population_state(
     gamma_trunc_low: float,
     gamma_trunc_high: float,
     gamma_mode_code: int,
+    stellar_mass_pivot: float,
 ) -> tuple[jnp.ndarray, ...]:
     """Draw one latent parent-population state from one fixed normal row."""
 
@@ -417,15 +416,16 @@ def _draw_population_state(
         nrm[3],
     )
 
-    logn = mu_n0 + beta_n * (mstar - 11.4) + sigma_n * nrm[4]
+    mstar_shift = mstar - stellar_mass_pivot
+    logn = mu_n0 + beta_n * mstar_shift + sigma_n * nrm[4]
     n_draw = 10.0**logn
     n_value = jnp.where(use_sersic_index == 1, n_draw, n_fixed)
-    mu_r_draw = _mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r)
+    mu_r_draw = _mu_r(mstar, n_value, use_sersic_index, mu_r0, beta_r, nu_r, stellar_mass_pivot)
     re_noise_column = jnp.where(use_sersic_index == 1, nrm[5], nrm[4])
     mass_noise_column = jnp.where(use_sersic_index == 1, nrm[6], nrm[5])
     re_draw = mu_r_draw + sigma_r * re_noise_column
     delta_r = re_draw - mu_r_draw
-    log_enclosed_mass = mu5_0 + beta5 * (mstar - 11.4) + xi5 * delta_r + sigma5 * mass_noise_column
+    log_enclosed_mass = mu5_0 + beta5 * mstar_shift + xi5 * delta_r + sigma5 * mass_noise_column
 
     sigma_star_shift9p0 = mstar - LOG10_2PI - 2.0 * re_draw - 9.0
     mu_gamma = _gamma_population_mean(
@@ -433,7 +433,7 @@ def _draw_population_state(
         beta_gamma,
         xi_gamma,
         beta_sigma_star_gamma,
-        mstar - 11.4,
+        mstar_shift,
         delta_r,
         sigma_star_shift9p0,
         gamma_mode_code,
@@ -531,6 +531,8 @@ def _normalization_and_fp_summary_value(
     gamma_trunc_high: float,
     mass_radius_kpc: float,
     gamma_mode_code: int,
+    stellar_mass_pivot: float,
+    mass_log_physical_offset: float,
     fp_enabled: int,
     fp_fit_mstar_min: float,
     fp_pivot_mstar: float,
@@ -585,6 +587,7 @@ def _normalization_and_fp_summary_value(
             gamma_trunc_low=gamma_trunc_low,
             gamma_trunc_high=gamma_trunc_high,
             gamma_mode_code=gamma_mode_code,
+            stellar_mass_pivot=stellar_mass_pivot,
         )
 
         zs = mu_zs + sigma_zs * nrm[1]
@@ -596,6 +599,7 @@ def _normalization_and_fp_summary_value(
             z_grid,
             chi_kpc_grid,
             mass_radius_kpc,
+            mass_log_physical_offset,
         )
         cs = jnp.interp(gamma, cs_gamma_grid, cs_over_theta)
         area = math.pi * (cs * theta_e) ** 2
@@ -626,18 +630,13 @@ def _normalization_and_fp_summary_value(
             & jnp.isfinite(log_sigma_model)
         )
         x1 = mstar - fp_pivot_mstar
-        x2 = delta_r
         fp_row = jnp.asarray(
             [
                 1.0,
                 x1,
-                x2,
                 x1 * x1,
-                x1 * x2,
-                x2 * x2,
                 log_sigma_model,
                 x1 * log_sigma_model,
-                x2 * log_sigma_model,
                 log_sigma_model * log_sigma_model,
             ],
             dtype=jnp.float64,
@@ -686,6 +685,7 @@ def _log_likelihood_value(
     gamma_grid_int: jnp.ndarray,
     mass_radius_kpc: float,
     gamma_mode_code: int,
+    mass_log_physical_offset: float,
 ) -> jnp.ndarray:
     """Vectorized all-lens likelihood equivalent to the legacy numba kernel."""
 
@@ -717,6 +717,7 @@ def _log_likelihood_value(
         z_grid,
         chi_kpc_grid,
         mass_radius_kpc,
+        mass_log_physical_offset,
     )
     area = math.pi * (cs_over_theta_int[None, :] * theta_e) ** 2
     pf = _p_find(theta_e, theta0, loga)
@@ -771,22 +772,20 @@ def _log_likelihood_value(
 
 
 def _solve_fundamental_plane_ols_jax(fp_summary: jnp.ndarray) -> tuple[jnp.ndarray, ...]:
-    """Fit the FP OLS relation from sufficient statistics in JAX."""
+    """
+    Fit the hunit-aware 1D sigma-logM* relation from sufficient statistics.
+
+    The mainline hunit migration changed the FP prior from a two-predictor
+    `(mstar, delta_r)` regression to a one-predictor sigma-logM* summary.  The
+    JAX backend keeps returning the historical `fpfit_xi` diagnostic slot, but
+    fills it with NaN because no radius-slope coefficient is fitted.
+    """
 
     sample_count = fp_summary[FP_OLS_COUNT_INDEX]
     xtx = jnp.asarray(
         [
-            [sample_count, fp_summary[FP_OLS_SUM_X1_INDEX], fp_summary[FP_OLS_SUM_X2_INDEX]],
-            [
-                fp_summary[FP_OLS_SUM_X1_INDEX],
-                fp_summary[FP_OLS_SUM_X1X1_INDEX],
-                fp_summary[FP_OLS_SUM_X1X2_INDEX],
-            ],
-            [
-                fp_summary[FP_OLS_SUM_X2_INDEX],
-                fp_summary[FP_OLS_SUM_X1X2_INDEX],
-                fp_summary[FP_OLS_SUM_X2X2_INDEX],
-            ],
+            [sample_count, fp_summary[FP_OLS_SUM_X1_INDEX]],
+            [fp_summary[FP_OLS_SUM_X1_INDEX], fp_summary[FP_OLS_SUM_X1X1_INDEX]],
         ],
         dtype=jnp.float64,
     )
@@ -794,7 +793,6 @@ def _solve_fundamental_plane_ols_jax(fp_summary: jnp.ndarray) -> tuple[jnp.ndarr
         [
             fp_summary[FP_OLS_SUM_Y_INDEX],
             fp_summary[FP_OLS_SUM_X1Y_INDEX],
-            fp_summary[FP_OLS_SUM_X2Y_INDEX],
         ],
         dtype=jnp.float64,
     )
@@ -802,12 +800,12 @@ def _solve_fundamental_plane_ols_jax(fp_summary: jnp.ndarray) -> tuple[jnp.ndarr
     sse = fp_summary[FP_OLS_SUM_YY_INDEX] - jnp.dot(coefficients, xty)
     sse = jnp.where((sse < 0.0) & (jnp.abs(sse) < 1.0e-12), 0.0, sse)
     scatter = jnp.sqrt(sse / sample_count)
-    valid = (sample_count >= 3.0) & (sse >= 0.0) & jnp.all(jnp.isfinite(coefficients)) & jnp.isfinite(scatter)
+    valid = (sample_count >= 2.0) & (sse >= 0.0) & jnp.all(jnp.isfinite(coefficients)) & jnp.isfinite(scatter)
     nan = jnp.asarray(jnp.nan, dtype=jnp.float64)
     return (
         jnp.where(valid, coefficients[0], nan),
         jnp.where(valid, coefficients[1], nan),
-        jnp.where(valid, coefficients[2], nan),
+        nan,
         jnp.where(valid, scatter, nan),
     )
 
@@ -924,6 +922,8 @@ def _build_log_prob_components_jit(
         fp_mu_v_error = scalar_context[22]
         fp_beta_v_prior = scalar_context[23]
         fp_beta_v_error = scalar_context[24]
+        stellar_mass_pivot = scalar_context[25]
+        mass_log_physical_offset = scalar_context[26]
 
         z_norm, fp_summary = _normalization_and_fp_summary_value(
             theta,
@@ -950,6 +950,8 @@ def _build_log_prob_components_jit(
             gamma_trunc_high=gamma_trunc_high,
             mass_radius_kpc=mass_radius_kpc,
             gamma_mode_code=gamma_mode_code,
+            stellar_mass_pivot=stellar_mass_pivot,
+            mass_log_physical_offset=mass_log_physical_offset,
             fp_enabled=fp_enabled,
             fp_fit_mstar_min=fp_fit_mstar_min,
             fp_pivot_mstar=fp_pivot_mstar,
@@ -983,6 +985,7 @@ def _build_log_prob_components_jit(
             gamma_grid_int=gamma_grid_int,
             mass_radius_kpc=mass_radius_kpc,
             gamma_mode_code=gamma_mode_code,
+            mass_log_physical_offset=mass_log_physical_offset,
         )
         log_fp_prior, fpfit_mu, fpfit_beta, fpfit_xi, fpfit_scatter = _fp_prior_value(
             fp_summary,
@@ -1039,6 +1042,8 @@ def _scalar_context_array(compiled_model: CompiledModel) -> jnp.ndarray:
             context.fp_mu_v_error,
             context.fp_beta_v_prior,
             context.fp_beta_v_error,
+            context.stellar_mass_pivot,
+            context.mass_log_physical_offset,
         ],
         dtype=jnp.float64,
     )
