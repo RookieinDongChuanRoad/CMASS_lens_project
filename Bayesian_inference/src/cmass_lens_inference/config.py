@@ -19,6 +19,7 @@ from .types import (
     FPPriorConfig,
     HyperParams,
     IntegrationConfig,
+    ModelConfig,
     OutputConfig,
     ProfileConfig,
     RuntimeConfig,
@@ -28,6 +29,28 @@ from .types import (
 
 
 DEFAULT_OUTPUT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs")
+DEFAULT_MODEL_COMPONENTS = {
+    "foreground_population": "cmass_fixed_z_skew_mstar",
+    "size_relation": "profile_default",
+    "mass_gamma_distribution": "current_power_law",
+    "source_redshift": "truncated_normal",
+    "selection": "theta_sigmoid_cross_section",
+    "velocity_dispersion": "grid_sigma_unit",
+    "fp_prior": "optional_ols_summary",
+}
+SUPPORTED_MODEL_COMPONENT_KEYS = frozenset(DEFAULT_MODEL_COMPONENTS)
+SUPPORTED_MODEL_PRESETS = {
+    "cmass_current": DEFAULT_MODEL_COMPONENTS,
+    "sonnenfeld2024_slacs": {
+        "foreground_population": "sonnenfeld2024_parent_mstar_redshift",
+        "size_relation": "hyde_bernardi_quadratic",
+        "mass_gamma_distribution": "sonnenfeld2024_m5_gamma",
+        "source_redshift": "effective_truncated_normal",
+        "selection": "sonnenfeld2024_theta_est_sigmoid",
+        "velocity_dispersion": "grid_sigma_unit",
+        "fp_prior": "optional_ols_summary",
+    },
+}
 
 
 def _require_section(data: dict, section_name: str) -> dict:
@@ -88,6 +111,56 @@ def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
     )
 
 
+def _load_model_section(raw_data: dict) -> ModelConfig:
+    """
+    Load the scientific-model component registry selection.
+
+    Why the section is optional:
+    - existing CMASS configs predate the componentized model registry
+    - silently defaulting them to `cmass_current` preserves the current science
+      model while making the chosen components visible in metadata
+    - new models can override only the components that differ from the preset
+    """
+
+    model_raw = raw_data.get("model")
+    if model_raw is None:
+        return ModelConfig(name="cmass_current", components=dict(DEFAULT_MODEL_COMPONENTS))
+    if not isinstance(model_raw, dict):
+        raise TypeError("Config section 'model' must be a mapping.")
+
+    model_name = str(model_raw.get("name", "cmass_current"))
+    if model_name not in SUPPORTED_MODEL_PRESETS:
+        raise ValueError(
+            "Unsupported model preset "
+            f"'{model_name}'. Expected one of: {', '.join(sorted(SUPPORTED_MODEL_PRESETS))}."
+        )
+
+    components = dict(SUPPORTED_MODEL_PRESETS[model_name])
+    component_overrides = model_raw.get("components", {})
+    if component_overrides is None:
+        component_overrides = {}
+    if not isinstance(component_overrides, dict):
+        raise TypeError("Config section 'model.components' must be a mapping.")
+
+    unexpected_component_keys = sorted(set(component_overrides).difference(SUPPORTED_MODEL_COMPONENT_KEYS))
+    if unexpected_component_keys:
+        raise ValueError(
+            "Config section 'model.components' contains unsupported component keys: "
+            f"{', '.join(unexpected_component_keys)}."
+        )
+    for key, value in component_overrides.items():
+        components[key] = str(value)
+
+    missing_component_keys = sorted(SUPPORTED_MODEL_COMPONENT_KEYS.difference(components))
+    if missing_component_keys:
+        raise ValueError(
+            "Config section 'model.components' is missing required component keys: "
+            f"{', '.join(missing_component_keys)}."
+        )
+
+    return ModelConfig(name=model_name, components=components)
+
+
 def _load_box_prior_section(
     path: Path,
     raw_data: dict,
@@ -132,6 +205,7 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
         raise TypeError("Top-level configuration must be a YAML mapping.")
 
     profile_raw = _require_section(raw_data, "profile")
+    model = _load_model_section(raw_data)
     mass_definition_raw = _require_section(raw_data, "mass_definition")
     data_raw = _require_section(raw_data, "data")
     sampling_raw = _require_section(raw_data, "sampling")
@@ -175,6 +249,7 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
 
     return RuntimeConfig(
         profile=ProfileConfig(name=str(profile_raw["name"])),
+        model=model,
         mass_definition=mass_definition,
         gamma_model=gamma_model,
         parameter_schema=parameter_schema,
@@ -191,6 +266,11 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
             random_seed=int(sampling_raw["random_seed"]),
             initial_center=initial_center,
             initial_jitter_scale=float(sampling_raw.get("initial_jitter_scale", 1.0e-3)),
+            num_chains=int(sampling_raw.get("num_chains", 1)),
+            num_samples=int(sampling_raw.get("num_samples", sampling_raw["n_steps"])),
+            num_warmup=int(sampling_raw.get("num_warmup", sampling_raw["warmup"])),
+            thinning=int(sampling_raw.get("thinning", 1)),
+            chain_method=str(sampling_raw.get("chain_method", "sequential")),
         ),
         integration=IntegrationConfig(
             gamma_points=int(integration_raw["gamma_points"]),

@@ -1,8 +1,14 @@
 profile:
   name: devauc
 
+model:
+  name: cmass_current
+
 mass_definition:
   enclosed_radius_kpc: 5
+
+gamma_model:
+  mode: dependent
 
 data:
   observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_BOSS_mass_grids.hdf5
@@ -26,6 +32,11 @@ sampling:
   n_walkers: 24
   n_steps: 10000
   warmup: 2000
+  num_chains: 1
+  num_samples: 10000
+  num_warmup: 2000
+  thinning: 1
+  chain_method: sequential
   random_seed: 7
   initial_jitter_scale: 1.0e-3
   initial_center:

@@ -158,8 +158,36 @@ class FPPriorConfig:
 
 
 @dataclass(frozen=True)
+class ModelConfig:
+    """
+    Configurable scientific-model assembly for the inference backend.
+
+    The previous implementation encoded most modelling choices as Python
+    branches: profile name, gamma mode, FP prior flag, and a fixed selection
+    model.  The JAX/NumPyro migration makes that contract explicit so a future
+    user can switch to a different published model by editing YAML instead of
+    touching numerical kernels.  The component values are registry keys; each
+    key names a concrete implementation that the backend can validate and use.
+    """
+
+    name: str
+    components: dict[str, str]
+
+
+@dataclass(frozen=True)
 class SamplingConfig:
-    """Controls the `emcee` sampler and walker initialization."""
+    """
+    Controls NumPyro sampling and preserves legacy initialization metadata.
+
+    The legacy `n_walkers`, `n_steps`, and `warmup` fields remain present so old
+    configs, tests, and run snapshots can still be read.  New production runs
+    should prefer the NumPyro-native fields:
+    - `num_chains`
+    - `num_samples`
+    - `num_warmup`
+    - `thinning`
+    - `chain_method`
+    """
 
     n_walkers: int
     n_steps: int
@@ -167,6 +195,11 @@ class SamplingConfig:
     random_seed: int
     initial_center: HyperParams
     initial_jitter_scale: float
+    num_chains: int
+    num_samples: int
+    num_warmup: int
+    thinning: int
+    chain_method: str
 
 
 @dataclass(frozen=True)
@@ -220,6 +253,7 @@ class RuntimeConfig:
     """The fully parsed project configuration."""
 
     profile: ProfileConfig
+    model: ModelConfig
     mass_definition: MassDefinition
     gamma_model: GammaModelConfig
     parameter_schema: ParameterSchema
@@ -353,12 +387,12 @@ class RandomBasis:
 @dataclass(frozen=True)
 class CompiledModelContext:
     """
-    Fully array-compiled numerical context consumed by the production kernels.
+    Fully array-compiled numerical context consumed by the numerical kernels.
 
-    Every field in this dataclass is intentionally `numba`-friendly:
-    contiguous ndarrays, scalar flags, or plain floats. The goal is to move all
+    Every field in this dataclass is intentionally backend-friendly: contiguous
+    ndarrays, scalar flags, or plain floats. The goal is to move all
     parameter-independent work out of the hot `log_prob` path so the sampler
-    only pays for kernel execution, not Python object orchestration.
+    only pays for vectorized kernel execution, not Python object orchestration.
     """
 
     z_grid: np.ndarray
@@ -482,7 +516,7 @@ class RuntimeContext:
     observations: list[ObservationRecord]
     prepared_observations: list[PreparedObservation]
     cross_section_grid: CrossSectionGrid
-    random_basis: RandomBasis
+    random_basis: RandomBasis | None
     cosmology: Any
     parallelism: ResolvedParallelism
     compiled_model: CompiledModel | None = None

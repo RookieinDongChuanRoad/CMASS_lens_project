@@ -73,33 +73,30 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
     assert run_result.run_dir.exists()
     assert (run_result.run_dir / "config_snapshot.yaml").exists()
     assert (run_result.run_dir / "metadata.json").exists()
-    assert (run_result.run_dir / "chain.h5").exists()
+    assert (run_result.run_dir / "samples.npz").exists()
+    assert (run_result.run_dir / "posterior.nc").exists()
     assert (run_result.run_dir / "run_result.json").exists()
     assert (run_result.run_dir / "checkpoints" / "latest_step.txt").exists()
+    assert (run_result.run_dir / "checkpoints" / "numpyro_last_state.pkl").exists()
     assert (run_result.run_dir / "logs" / "run.log").exists()
 
     serialized = json.loads((run_result.run_dir / "run_result.json").read_text(encoding="utf-8"))
     assert serialized["profile_name"] == "sersic"
     assert serialized["status"] == "completed"
-    assert serialized["metadata"]["chain_storage"] == "emcee_hdf_backend"
+    assert serialized["metadata"]["chain_storage"] == "numpyro_arviz_netcdf"
     assert serialized["metadata"]["parallelism"]["strategy"] in {"off", "kernel_only", "process_pool"}
     metadata = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
-    assert metadata["chain_storage"] == "emcee_hdf_backend"
+    assert metadata["chain_storage"] == "numpyro_arviz_netcdf"
     assert metadata["config_summary"]["gamma_mode"] == "dependent"
     assert metadata["config_summary"]["box_prior"]["mu5_0"] == [9.0, 12.0]
     assert metadata["parallelism"]["compute_budget"] >= 1
     assert metadata["parallelism"]["cpu_count"] >= metadata["parallelism"]["compute_budget"]
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
     assert "strategy" in run_log_text
-    assert "lp" in run_log_text
-    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"))
-    assert backend.iteration == 3
-    assert backend.get_chain().shape == (3, 24, 12)
-    assert backend.get_log_prob().shape == (3, 24)
-    with h5py.File(run_result.run_dir / "chain.h5", "r") as handle:
-        assert "chain" not in handle
-        assert "log_prob" not in handle
-        assert "mcmc" in handle
+    assert "numpyro complete" in run_log_text
+    with np.load(run_result.run_dir / "samples.npz") as payload:
+        assert payload["samples_by_chain"].shape == (1, 3, 12)
+        assert payload["log_prob_by_chain"].shape == (1, 3)
 
 
 def test_log_prob_blob_dtype_includes_fp_prior_diagnostics() -> None:
@@ -167,21 +164,20 @@ def test_run_inference_serializes_fp_prior_metadata(
     assert run_result_payload["metadata"]["sigma_table_mass_definition"] == runtime_config.mass_definition.label
 
 
-def test_chain_h5_is_readable_by_emcee_hdf_backend(synthetic_config_path: Path) -> None:
+def test_samples_npz_is_readable_as_primary_numpyro_backend(synthetic_config_path: Path) -> None:
     """
-    Downstream analysis notebooks should be able to open `chain.h5` directly
-    with `emcee.backends.HDFBackend` and use `get_chain` / `get_log_prob`.
+    Downstream analysis notebooks should be able to open `samples.npz` directly
+    and recover posterior samples plus log-probability diagnostics.
     """
 
     run_result = run_inference(str(synthetic_config_path))
 
-    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"))
-    samples = backend.get_chain(flat=True)
-    log_prob = backend.get_log_prob(flat=True)
+    with np.load(run_result.run_dir / "samples.npz") as payload:
+        samples = payload["flat_samples"]
+        log_prob = payload["log_prob_by_chain"].reshape(-1)
 
-    assert backend.iteration == 3
-    assert samples.shape == (3 * 24, 12)
-    assert log_prob.shape == (3 * 24,)
+    assert samples.shape == (3, 12)
+    assert log_prob.shape == (3,)
 
 
 def test_run_inference_uses_independent_gamma_parameter_dimension(
@@ -196,8 +192,8 @@ def test_run_inference_uses_independent_gamma_parameter_dimension(
 
     run_result = run_inference(str(synthetic_independent_config_path))
 
-    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"))
-    assert backend.get_chain().shape == (3, 24, 10)
+    with np.load(run_result.run_dir / "samples.npz") as payload:
+        assert payload["samples_by_chain"].shape == (1, 3, 10)
     assert run_result.metadata["gamma_mode"] == "independent"
     assert run_result.metadata["sampling"]["parameter_order"] == [
         "mu5_0",
@@ -225,8 +221,8 @@ def test_run_inference_uses_sigma_star_gamma_parameter_dimension(
 
     run_result = run_inference(str(synthetic_sigma_star_dependent_config_path))
 
-    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"))
-    assert backend.get_chain().shape == (3, 24, 11)
+    with np.load(run_result.run_dir / "samples.npz") as payload:
+        assert payload["samples_by_chain"].shape == (1, 3, 11)
     assert run_result.metadata["gamma_mode"] == "sigma_star_dependent"
     assert run_result.metadata["sampling"]["parameter_order"] == [
         "mu5_0",
@@ -279,8 +275,8 @@ def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path)
     assert run_result.start_step == 5
     assert run_result.completed_steps == 8
     assert run_result.status == "completed"
-    backend = emcee.backends.HDFBackend(str(run_layout.run_dir / "chain.h5"))
-    assert backend.iteration == 8
+    with np.load(run_layout.run_dir / "samples.npz") as payload:
+        assert payload["samples_by_chain"].shape == (1, 3, runtime_config.parameter_schema.n_dim)
 
 
 def test_resume_inference_migrates_legacy_run_snapshot_missing_gamma_mode(
@@ -372,7 +368,7 @@ def test_run_inference_supports_process_pool_strategy(synthetic_config_path: Pat
     run_result = run_inference(str(synthetic_config_path))
 
     assert run_result.metadata["parallelism"]["strategy"] == "process_pool"
-    assert run_result.metadata["parallelism"]["worker_processes"] == 2
+    assert run_result.metadata["parallelism"]["worker_processes"] == 1
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
     assert "strategy process_pool" in run_log_text
 
@@ -396,11 +392,11 @@ def test_run_inference_supports_process_pool_strategy_with_fp_prior(
     run_result = run_inference(str(synthetic_fp_prior_config_path))
 
     assert run_result.metadata["parallelism"]["strategy"] == "process_pool"
-    assert run_result.metadata["parallelism"]["worker_processes"] == 2
+    assert run_result.metadata["parallelism"]["worker_processes"] == 1
     assert run_result.metadata["fp_prior"]["enabled"] is True
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
     assert "strategy process_pool" in run_log_text
-    assert "fp " in run_log_text
+    assert "numpyro complete" in run_log_text
 
 
 def test_run_inference_serializes_m10_mass_definition_metadata(

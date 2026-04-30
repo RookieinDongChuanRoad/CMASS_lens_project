@@ -11,7 +11,7 @@ gamma_model:
   mode: dependent
 
 data:
-  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_BOSS_mass_grids_all.hdf5
+  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
   cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
 
 box_prior:
@@ -74,5 +74,5 @@ runtime:
 
 output:
   root_dir: /Users/liurongfu/Work/CMASS_lens_project/outputs
-  run_label: default
+  run_label: current-jax
   overwrite_latest: true

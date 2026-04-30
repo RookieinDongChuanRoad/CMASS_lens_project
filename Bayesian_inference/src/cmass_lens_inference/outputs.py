@@ -9,6 +9,7 @@ logic rather than path conventions.
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 from dataclasses import asdict
 from datetime import datetime
@@ -17,6 +18,7 @@ from typing import Any
 
 import numpy as np
 import yaml
+import arviz as az
 
 from .types import RunLayout, RunResult
 
@@ -83,6 +85,86 @@ def load_checkpoint(checkpoints_dir: Path) -> tuple[np.ndarray, np.ndarray, int]
     log_prob = np.load(checkpoints_dir / "latest_log_prob.npy")
     step = int((checkpoints_dir / "latest_step.txt").read_text(encoding="utf-8").strip())
     return coords, log_prob, step
+
+
+def save_numpyro_checkpoint(
+    checkpoints_dir: Path,
+    samples_by_chain: np.ndarray,
+    log_prob_by_chain: np.ndarray,
+    step: int,
+    last_state: Any,
+) -> None:
+    """
+    Persist the latest NumPyro state needed for resume.
+
+    The `.npy` files keep a lightweight, human-inspectable summary equivalent
+    to the old walker checkpoint.  The pickled NumPyro state stores the full
+    post-warmup sampler state so a resumed run can continue through NumPyro's
+    supported `post_warmup_state` API.
+    """
+
+    np.save(checkpoints_dir / "latest_samples_by_chain.npy", samples_by_chain)
+    np.save(checkpoints_dir / "latest_log_prob_by_chain.npy", log_prob_by_chain)
+    (checkpoints_dir / "latest_step.txt").write_text(str(step), encoding="utf-8")
+    with (checkpoints_dir / "numpyro_last_state.pkl").open("wb") as handle:
+        pickle.dump(last_state, handle)
+
+
+def load_numpyro_checkpoint(checkpoints_dir: Path) -> tuple[Any, int]:
+    """Load a serialized NumPyro post-warmup sampler state."""
+
+    step = int((checkpoints_dir / "latest_step.txt").read_text(encoding="utf-8").strip())
+    with (checkpoints_dir / "numpyro_last_state.pkl").open("rb") as handle:
+        last_state = pickle.load(handle)
+    return last_state, step
+
+
+def save_numpyro_posterior_artifacts(
+    run_dir: Path,
+    *,
+    samples_by_chain: np.ndarray,
+    log_prob_by_chain: np.ndarray,
+    diagnostics: dict[str, Any],
+    parameter_names: list[str],
+) -> tuple[Path, Path]:
+    """
+    Write NumPyro posterior artifacts in both compact and analysis-friendly forms.
+
+    `samples.npz` is the fastest local format for pipeline code that only needs
+    arrays.  `posterior.nc` is written through ArviZ so external analysis tools
+    can inspect chains, sample stats, and coordinates without knowing this
+    project's internal file conventions.
+    """
+
+    samples_path = run_dir / "samples.npz"
+    np.savez_compressed(
+        samples_path,
+        samples_by_chain=np.asarray(samples_by_chain, dtype=float),
+        flat_samples=np.asarray(samples_by_chain, dtype=float).reshape(-1, samples_by_chain.shape[-1]),
+        log_prob_by_chain=np.asarray(log_prob_by_chain, dtype=float),
+        parameter_names=np.asarray(parameter_names, dtype="U"),
+    )
+
+    posterior_payload = {
+        parameter_name: np.asarray(samples_by_chain[:, :, parameter_index], dtype=float)
+        for parameter_index, parameter_name in enumerate(parameter_names)
+    }
+    sample_stats = {
+        "lp": np.asarray(log_prob_by_chain, dtype=float),
+    }
+    for key, value in diagnostics.get("extra_fields", {}).items():
+        array_value = np.asarray(value)
+        if array_value.shape[:2] == samples_by_chain.shape[:2]:
+            sample_stats[key] = array_value
+
+    inference_data = az.from_dict(
+        posterior=posterior_payload,
+        sample_stats=sample_stats,
+        coords={"parameter": parameter_names},
+    )
+    posterior_path = run_dir / "posterior.nc"
+    inference_data.to_netcdf(posterior_path)
+    return samples_path, posterior_path
 
 
 def write_config_snapshot(run_dir: Path, raw_config_text: str) -> Path:

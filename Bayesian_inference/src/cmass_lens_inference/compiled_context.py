@@ -4,7 +4,8 @@ Build the compiled array context used by the production `log_prob` path.
 The current project keeps rich typed records for readability and schema
 validation, but the hot path should not traverse Python objects. This module
 performs the one-time transformation from `ObservationRecord` instances to the
-contiguous arrays consumed by the `numba` kernels.
+contiguous arrays consumed by the JAX production backend and the retained
+legacy numba regression kernels.
 """
 
 from __future__ import annotations

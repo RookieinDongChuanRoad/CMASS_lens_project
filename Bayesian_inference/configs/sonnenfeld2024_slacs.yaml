@@ -2,7 +2,15 @@ profile:
   name: sersic
 
 model:
-  name: cmass_current
+  name: sonnenfeld2024_slacs
+  components:
+    foreground_population: sonnenfeld2024_parent_mstar_redshift
+    size_relation: hyde_bernardi_quadratic
+    mass_gamma_distribution: sonnenfeld2024_m5_gamma
+    source_redshift: effective_truncated_normal
+    selection: sonnenfeld2024_theta_est_sigmoid
+    velocity_dispersion: grid_sigma_unit
+    fp_prior: optional_ols_summary
 
 mass_definition:
   enclosed_radius_kpc: 5
@@ -11,7 +19,7 @@ gamma_model:
   mode: dependent
 
 data:
-  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_BOSS_mass_grids_all.hdf5
+  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
   cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
 
 box_prior:
@@ -23,8 +31,8 @@ box_prior:
   beta_gamma: [-3.0, 3.0]
   xi_gamma: [-3.0, 3.0]
   sigma_gamma: [0.0, 0.5]
-  mu_zs: [1.0, 3.0]
-  sigma_zs: [0.0, 2.0]
+  mu_zs: [0.1, 3.0]
+  sigma_zs: [1.0e-2, 2.0]
   theta0: [0.0, 3.0]
   loga: [-1.0, 3.0]
 
@@ -40,15 +48,15 @@ sampling:
   random_seed: 7
   initial_jitter_scale: 1.0e-3
   initial_center:
-    mu5_0: 11.32
+    mu5_0: 11.332
     beta5: 0.59
     xi5: -0.11
-    sigma5: 0.06
+    sigma5: 0.064
     mu_gamma_0: 1.99
-    beta_gamma: 0.10
+    beta_gamma: 0.03
     xi_gamma: -0.67
     sigma_gamma: 0.149
-    mu_zs: 1.8
+    mu_zs: 0.48
     sigma_zs: 0.215
     theta0: 0.93
     loga: 1.0
@@ -74,5 +82,5 @@ runtime:
 
 output:
   root_dir: /Users/liurongfu/Work/CMASS_lens_project/outputs
-  run_label: default
+  run_label: sonnenfeld2024-slacs
   overwrite_latest: true
