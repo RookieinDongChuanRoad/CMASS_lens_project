@@ -1,10 +1,10 @@
 """
 NumPyro sampler orchestration for the JAX inference backend.
 
-The old sampler module is intentionally left as a legacy compatibility layer
-for tests and historical runs.  New production inference uses this module:
-NumPyro owns parameter sampling, while `jax_model.log_prob_value` contributes
-the CMASS lens likelihood through a `numpyro.factor`.
+The old sampler module is intentionally left as a legacy test oracle.  New
+production inference uses this module: NumPyro owns parameter sampling, while
+the registry-driven JAX backend contributes the configured model likelihood
+through a `numpyro.factor`.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, init_to_uniform
 
-from .jax_model import log_prob_value
+from .jax_backend.likelihood_engine import log_prob_value
 from .outputs import append_run_log
 from .types import RuntimeContext
 

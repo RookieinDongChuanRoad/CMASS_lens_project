@@ -1,14 +1,13 @@
 profile:
   name: sersic
 
+unit_convention: legacy_fixed_kpc
+
 model:
   name: cmass_current
-
-mass_definition:
-  enclosed_radius_kpc: 5
-
-gamma_model:
-  mode: dependent
+  components:
+    mass_definition: m5
+    gamma_distribution: dependent
 
 data:
   observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5

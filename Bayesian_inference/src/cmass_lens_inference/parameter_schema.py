@@ -1,185 +1,79 @@
 """
-Mode-aware parameter schema definitions for the CMASS lens model.
+Generic sampled-parameter schema.
 
-Why this module exists:
-- the gamma population model now has two public modes with different sampled
-  parameter spaces
-- the inference engine, PPC code, and metadata writers all need one shared
-  source of truth for parameter ordering and bounds
-- keeping this logic outside the kernel files makes the hot numerical path
-  simpler while still leaving the scientific contract explicit and testable
+This module deliberately does not know about CMASS gamma modes, Sonnenfeld
+parameter names, or any other scientific model.  A concrete model module owns
+the scientific meaning of the sampled vector and builds a ``ParameterSchema``
+with:
+
+- the model name and component key used to create it
+- the internal sampler order
+- the public YAML/output order
+- box-prior bounds in the same order
+- optional static integer codes needed by compiled kernels
+
+Keeping this layer generic is what lets future models expose a different
+parameter vector without editing the NumPyro sampler, output writer, or common
+validation code.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Mapping, Sequence
 
 import numpy as np
 
-from .mass_definition import MassDefinition
-
-
-GAMMA_MODE_DEPENDENT = "dependent"
-GAMMA_MODE_INDEPENDENT = "independent"
-GAMMA_MODE_SIGMA_STAR_DEPENDENT = "sigma_star_dependent"
-
-GAMMA_MODE_DEPENDENT_CODE = 0
-GAMMA_MODE_INDEPENDENT_CODE = 1
-GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE = 2
-
-INTERNAL_MASS_PARAMETER_NAMES: tuple[str, ...] = (
-    "mu5_0",
-    "beta5",
-    "xi5",
-    "sigma5",
-)
-
-DEPENDENT_GAMMA_PARAMETER_NAMES: tuple[str, ...] = (
-    "mu_gamma_0",
-    "beta_gamma",
-    "xi_gamma",
-    "sigma_gamma",
-)
-
-INDEPENDENT_GAMMA_PARAMETER_NAMES: tuple[str, ...] = (
-    "mu_gamma_0",
-    "sigma_gamma",
-)
-
-SIGMA_STAR_DEPENDENT_GAMMA_PARAMETER_NAMES: tuple[str, ...] = (
-    "mu_gamma_0",
-    "beta_sigma_star_gamma",
-    "sigma_gamma",
-)
-
-TAIL_PARAMETER_NAMES: tuple[str, ...] = (
-    "mu_zs",
-    "sigma_zs",
-    "theta0",
-    "loga",
-)
-
-DEFAULT_BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME: dict[str, tuple[float, float]] = {
-    "mu5_0": (9.0, 12.0),
-    "beta5": (-3.0, 3.0),
-    "xi5": (-3.0, 3.0),
-    "sigma5": (1.0e-2, 0.2),
-    "mu_gamma_0": (1.5, 2.5),
-    "beta_gamma": (-3.0, 3.0),
-    "xi_gamma": (-3.0, 3.0),
-    "beta_sigma_star_gamma": (-3.0, 3.0),
-    "sigma_gamma": (0.0, 0.5),
-    "mu_zs": (1.0, 3.0),
-    "sigma_zs": (0.0, 2.0),
-    "theta0": (0.0, 3.0),
-    "loga": (-1.0, 3.0),
-}
-
-_REMOVED_INDEPENDENT_GAMMA_KEYS = frozenset({"beta_gamma", "xi_gamma"})
-_REMOVED_SIGMA_STAR_GAMMA_KEYS = frozenset({"beta_gamma", "xi_gamma"})
-
-
-@dataclass(frozen=True)
-class GammaModelConfig:
-    """Validated gamma population-mode configuration."""
-
-    mode: str
-
-    def __post_init__(self) -> None:
-        if self.mode not in {
-            GAMMA_MODE_DEPENDENT,
-            GAMMA_MODE_INDEPENDENT,
-            GAMMA_MODE_SIGMA_STAR_DEPENDENT,
-        }:
-            raise ValueError(
-                f"Unsupported gamma model mode '{self.mode}'. Expected "
-                f"'{GAMMA_MODE_DEPENDENT}', '{GAMMA_MODE_INDEPENDENT}', or "
-                f"'{GAMMA_MODE_SIGMA_STAR_DEPENDENT}'."
-            )
-
-    @property
-    def code(self) -> int:
-        """Return the integer code passed into the hot numba kernels."""
-
-        if self.mode == GAMMA_MODE_DEPENDENT:
-            return GAMMA_MODE_DEPENDENT_CODE
-        if self.mode == GAMMA_MODE_INDEPENDENT:
-            return GAMMA_MODE_INDEPENDENT_CODE
-        return GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE
-
-
-def _resolve_parameter_name_contract(
-    gamma_model: GammaModelConfig,
-    mass_definition: MassDefinition,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return the internal/public parameter-name families for one run."""
-
-    if gamma_model.mode == GAMMA_MODE_DEPENDENT:
-        internal_parameter_names = (
-            INTERNAL_MASS_PARAMETER_NAMES
-            + DEPENDENT_GAMMA_PARAMETER_NAMES
-            + TAIL_PARAMETER_NAMES
-        )
-        public_parameter_names = (
-            mass_definition.public_parameter_names
-            + DEPENDENT_GAMMA_PARAMETER_NAMES
-            + TAIL_PARAMETER_NAMES
-        )
-    elif gamma_model.mode == GAMMA_MODE_INDEPENDENT:
-        internal_parameter_names = (
-            INTERNAL_MASS_PARAMETER_NAMES
-            + INDEPENDENT_GAMMA_PARAMETER_NAMES
-            + TAIL_PARAMETER_NAMES
-        )
-        public_parameter_names = (
-            mass_definition.public_parameter_names
-            + INDEPENDENT_GAMMA_PARAMETER_NAMES
-            + TAIL_PARAMETER_NAMES
-        )
-    else:
-        internal_parameter_names = (
-            INTERNAL_MASS_PARAMETER_NAMES
-            + SIGMA_STAR_DEPENDENT_GAMMA_PARAMETER_NAMES
-            + TAIL_PARAMETER_NAMES
-        )
-        public_parameter_names = (
-            mass_definition.public_parameter_names
-            + SIGMA_STAR_DEPENDENT_GAMMA_PARAMETER_NAMES
-            + TAIL_PARAMETER_NAMES
-        )
-
-    return internal_parameter_names, public_parameter_names
-
 
 @dataclass(frozen=True)
 class ParameterSchema:
     """
-    Public/internal parameter contract for one run configuration.
+    Public/internal parameter contract for one configured model.
 
-    The first four internal names remain the historical mass-parameter slots so
-    the mass-definition translation logic continues to work without duplicating
-    the scientific model.
+    Parameters
+    ----------
+    model_name:
+        Registry name of the scientific model that produced the schema.
+    model_component_key:
+        Short component summary, such as ``dependent`` for the CMASS gamma
+        distribution.  The field is intentionally generic so non-CMASS models
+        can store their own primary variant without inheriting CMASS naming.
+    internal_parameter_names:
+        Canonical order used by NumPyro, JAX kernels, checkpoints, and compact
+        array outputs.
+    public_parameter_names:
+        User-facing order used by YAML config and metadata.  It may differ from
+        the internal names when a model exposes unit-aware names such as
+        ``mu5h_0`` while reusing an internal slot name.
+    prior_bounds:
+        Inclusive box-prior bounds in ``internal_parameter_names`` order.
+    static_codes:
+        Optional small integer switches required by JIT-compiled kernels.  The
+        current CMASS model stores ``{"gamma_mode": ...}``; other models may
+        leave this empty or use different keys.
+    model_metadata:
+        JSON-friendly explanatory payload written into outputs and useful for
+        debugging.  It should not be required by hot numerical kernels.
     """
 
-    gamma_model: GammaModelConfig
-    mass_definition: MassDefinition
+    model_name: str
+    model_component_key: str
     internal_parameter_names: tuple[str, ...]
     public_parameter_names: tuple[str, ...]
     prior_bounds: tuple[tuple[float, float], ...]
+    static_codes: Mapping[str, int] = field(default_factory=dict)
+    model_metadata: Mapping[str, str | float | int | bool] = field(default_factory=dict)
 
-    @property
-    def gamma_mode(self) -> str:
-        """Expose the mode string directly for readability at call sites."""
-
-        return self.gamma_model.mode
-
-    @property
-    def gamma_mode_code(self) -> int:
-        """Expose the compact integer representation used inside kernels."""
-
-        return self.gamma_model.code
+    def __post_init__(self) -> None:
+        if len(self.internal_parameter_names) != len(self.public_parameter_names):
+            raise ValueError("Internal and public parameter name lists must have identical length.")
+        if len(self.internal_parameter_names) != len(self.prior_bounds):
+            raise ValueError("Prior bounds must have one entry per sampled parameter.")
+        if len(set(self.internal_parameter_names)) != len(self.internal_parameter_names):
+            raise ValueError("Internal parameter names must be unique.")
+        if len(set(self.public_parameter_names)) != len(self.public_parameter_names):
+            raise ValueError("Public parameter names must be unique.")
 
     @property
     def n_dim(self) -> int:
@@ -187,13 +81,44 @@ class ParameterSchema:
 
         return len(self.internal_parameter_names)
 
+    @property
+    def gamma_mode(self) -> str:
+        """
+        Return the CMASS gamma-distribution key when present.
+
+        This property is a narrow bridge for retained legacy numerical oracle
+        code.  New production code should use ``model_component_key`` or
+        ``model_metadata`` rather than treating every model as a gamma-mode
+        variant.
+        """
+
+        value = self.model_metadata.get("gamma_distribution", self.model_component_key)
+        return str(value)
+
+    @property
+    def gamma_mode_code(self) -> int:
+        """
+        Return the CMASS gamma-mode integer code when the active model has one.
+
+        The compiled context still feeds the retained numba oracle and the
+        migrated CMASS JAX kernel through this compact code.  A non-CMASS model
+        that does not use this code should fail explicitly if that path is
+        called before its backend has been implemented.
+        """
+
+        if "gamma_mode" not in self.static_codes:
+            raise KeyError(
+                f"Model '{self.model_name}' does not define a 'gamma_mode' static code."
+            )
+        return int(self.static_codes["gamma_mode"])
+
     def validate_theta_shape(self, theta: np.ndarray) -> None:
         """Raise a clear error if the provided theta vector has the wrong size."""
 
         if theta.shape != (self.n_dim,):
             raise ValueError(
                 f"Hyper-parameter vector must contain exactly {self.n_dim} values "
-                f"for gamma mode '{self.gamma_mode}'."
+                f"for model '{self.model_name}' component '{self.model_component_key}'."
             )
 
     def _validate_public_parameter_keys(
@@ -203,42 +128,28 @@ class ParameterSchema:
         label: str,
     ) -> None:
         """
-        Validate one public-name mapping against the active schema contract.
+        Validate one public-name mapping against the active model contract.
 
-        The same key-set rules apply to `sampling.initial_center` and the new
-        top-level `box_prior` section, so this helper keeps those errors
-        consistent and mode-aware.
+        Concrete models decide which names exist.  The generic schema only
+        checks that a YAML mapping is complete and has no unexpected keys.
         """
 
         public_key_set = set(public_keys)
-        if self.gamma_mode == GAMMA_MODE_INDEPENDENT:
-            forbidden = sorted(_REMOVED_INDEPENDENT_GAMMA_KEYS.intersection(public_key_set))
-            if forbidden:
-                raise ValueError(
-                    "Independent gamma mode does not accept removed gamma slope "
-                    f"parameters: {', '.join(forbidden)}."
-                )
-        elif self.gamma_mode == GAMMA_MODE_SIGMA_STAR_DEPENDENT:
-            forbidden = sorted(_REMOVED_SIGMA_STAR_GAMMA_KEYS.intersection(public_key_set))
-            if forbidden:
-                raise ValueError(
-                    "Sigma-star gamma mode does not accept the dependent-mode "
-                    f"gamma slope parameters: {', '.join(forbidden)}."
-                )
-
         expected_names = set(self.public_parameter_names)
         unexpected = sorted(public_key_set.difference(expected_names))
         if unexpected:
             raise ValueError(
-                f"{label} contains parameters that are not part of the "
-                f"'{self.gamma_mode}' gamma-mode schema: {', '.join(unexpected)}."
+                f"{label} contains parameters that are not part of model "
+                f"'{self.model_name}' component '{self.model_component_key}': "
+                f"{', '.join(unexpected)}."
             )
 
         missing = sorted(expected_names.difference(public_key_set))
         if missing:
             raise ValueError(
-                f"{label} is missing required parameters for the "
-                f"'{self.gamma_mode}' gamma-mode schema: {', '.join(missing)}."
+                f"{label} is missing required parameters for model "
+                f"'{self.model_name}' component '{self.model_component_key}': "
+                f"{', '.join(missing)}."
             )
 
     def normalize_public_values(
@@ -248,9 +159,9 @@ class ParameterSchema:
         """
         Convert public config keys into the internal parameter-name family.
 
-        The independent gamma mode removes `beta_gamma` and `xi_gamma`
-        completely. Rejecting them explicitly is important because silently
-        ignoring them would hide a model mismatch in the input config.
+        The returned mapping is keyed by ``internal_parameter_names`` so callers
+        can build sampler vectors without knowing any model-specific public
+        naming convention.
         """
 
         self._validate_public_parameter_keys(
@@ -319,7 +230,7 @@ class ParameterSchema:
         *,
         label: str,
     ) -> None:
-        """Raise a clear error if one parameter falls outside the configured box prior."""
+        """Raise a clear error if one parameter falls outside the box prior."""
 
         self.validate_theta_shape(theta)
         for public_name, value, (lower, upper) in zip(
@@ -338,21 +249,8 @@ class ParameterSchema:
     def serialize_public_values(
         self,
         internal_values: Mapping[str, float],
-        mass_definition: MassDefinition | None = None,
     ) -> dict[str, float]:
-        """
-        Expose internal values under the mode-aware public naming surface.
-
-        The optional `mass_definition` argument keeps the older call sites
-        source-compatible while still validating that callers do not mix the
-        schema with a different mass-definition family.
-        """
-
-        if mass_definition is not None and mass_definition != self.mass_definition:
-            raise ValueError(
-                "Cannot serialize parameters with a different mass definition "
-                "from the one stored in the parameter schema."
-            )
+        """Expose internal values under the model-specific public names."""
 
         serialized: dict[str, float] = {}
         for internal_name, public_name in zip(
@@ -362,61 +260,3 @@ class ParameterSchema:
         ):
             serialized[public_name] = float(internal_values[internal_name])
         return serialized
-
-
-def default_public_box_prior(
-    gamma_model: GammaModelConfig,
-    mass_definition: MassDefinition,
-) -> dict[str, list[float]]:
-    """Expose the historical default box prior under the active public names."""
-
-    internal_parameter_names, public_parameter_names = _resolve_parameter_name_contract(
-        gamma_model=gamma_model,
-        mass_definition=mass_definition,
-    )
-    return {
-        public_name: [
-            float(DEFAULT_BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME[internal_name][0]),
-            float(DEFAULT_BOX_PRIOR_BOUNDS_BY_INTERNAL_NAME[internal_name][1]),
-        ]
-        for internal_name, public_name in zip(
-            internal_parameter_names,
-            public_parameter_names,
-            strict=True,
-        )
-    }
-
-
-def build_parameter_schema(
-    gamma_model: GammaModelConfig,
-    mass_definition: MassDefinition,
-    public_box_prior: Mapping[str, Sequence[float]] | None = None,
-) -> ParameterSchema:
-    """Build the single authoritative parameter schema for one run."""
-
-    internal_parameter_names, public_parameter_names = _resolve_parameter_name_contract(
-        gamma_model=gamma_model,
-        mass_definition=mass_definition,
-    )
-    template_schema = ParameterSchema(
-        gamma_model=gamma_model,
-        mass_definition=mass_definition,
-        internal_parameter_names=internal_parameter_names,
-        public_parameter_names=public_parameter_names,
-        prior_bounds=(),
-    )
-    normalized_prior_bounds = template_schema.normalize_public_box_prior(
-        public_box_prior
-        if public_box_prior is not None
-        else default_public_box_prior(
-            gamma_model=gamma_model,
-            mass_definition=mass_definition,
-        )
-    )
-    return ParameterSchema(
-        gamma_model=gamma_model,
-        mass_definition=mass_definition,
-        internal_parameter_names=internal_parameter_names,
-        public_parameter_names=public_parameter_names,
-        prior_bounds=normalized_prior_bounds,
-    )

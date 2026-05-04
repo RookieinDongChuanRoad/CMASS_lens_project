@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from .mass_definition import MassDefinition
-from .parameter_schema import GammaModelConfig, ParameterSchema
+from .parameter_schema import ParameterSchema
 
 
 def _serialize_json_friendly(value: Any) -> Any:
@@ -110,14 +110,13 @@ class HyperParams:
         """
         Serialize the hyper-parameters using the selected public name family.
 
-        The mass-definition argument stays optional so older call sites can keep
-        passing it while the schema itself remains the single source of truth.
+        The optional mass-definition argument is accepted by a few nearby call
+        sites while the codebase is being split into registry-backed models.
+        It is intentionally ignored here because the schema already stores the
+        exact model-specific public naming surface.
         """
 
-        return self.parameter_schema.serialize_public_values(
-            self.to_dict(),
-            mass_definition=mass_definition,
-        )
+        return self.parameter_schema.serialize_public_values(self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -257,7 +256,6 @@ class RuntimeConfig:
     profile: ProfileConfig
     model: ModelConfig
     mass_definition: MassDefinition
-    gamma_model: GammaModelConfig
     parameter_schema: ParameterSchema
     fp_prior: FPPriorConfig
     data: DataConfig

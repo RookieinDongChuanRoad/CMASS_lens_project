@@ -110,7 +110,7 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
     assert serialized["metadata"]["parallelism"]["strategy"] in {"off", "kernel_only", "process_pool"}
     metadata = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["chain_storage"] == "numpyro_arviz_netcdf"
-    assert metadata["config_summary"]["gamma_mode"] == "dependent"
+    assert metadata["config_summary"]["model"]["components"]["gamma_distribution"] == "dependent"
     assert metadata["config_summary"]["box_prior"]["mu5_0"] == [9.0, 12.0]
     assert metadata["parallelism"]["compute_budget"] >= 1
     assert metadata["parallelism"]["cpu_count"] >= metadata["parallelism"]["compute_budget"]
@@ -236,7 +236,7 @@ def test_run_inference_uses_independent_gamma_parameter_dimension(
 
     with np.load(run_result.run_dir / "samples.npz") as payload:
         assert payload["samples_by_chain"].shape == (1, 3, 10)
-    assert run_result.metadata["gamma_mode"] == "independent"
+    assert run_result.metadata["model"]["components"]["gamma_distribution"] == "independent"
     assert run_result.metadata["sampling"]["parameter_order"] == [
         "mu5_0",
         "beta5",
@@ -266,7 +266,7 @@ def test_run_inference_uses_sigma_star_gamma_parameter_dimension(
 
     with np.load(run_result.run_dir / "samples.npz") as payload:
         assert payload["samples_by_chain"].shape == (1, 3, 11)
-    assert run_result.metadata["gamma_mode"] == "sigma_star_dependent"
+    assert run_result.metadata["model"]["components"]["gamma_distribution"] == "sigma_star_dependent"
     assert run_result.metadata["sampling"]["parameter_order"] == [
         "mu5_0",
         "beta5",
@@ -323,15 +323,10 @@ def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path)
         assert payload["samples_by_chain"].shape == (1, 3, runtime_config.parameter_schema.n_dim)
 
 
-def test_resume_inference_migrates_legacy_run_snapshot_missing_gamma_mode(
+def test_resume_inference_rejects_run_snapshot_missing_box_prior(
     synthetic_config_path: Path,
 ) -> None:
-    """
-    Resume should auto-migrate historical run snapshots that predate gamma mode.
-
-    The migration is intentionally limited to the run-local snapshot so users
-    can continue to resume older runs without mutating their source configs.
-    """
+    """Resume should use the same explicit config contract as fresh runs."""
 
     _force_single_chain_for_orchestration_test(synthetic_config_path)
     runtime_config = load_runtime_config(synthetic_config_path)
@@ -354,19 +349,14 @@ def test_resume_inference_migrates_legacy_run_snapshot_missing_gamma_mode(
         step=5,
     )
     legacy_config_payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
-    legacy_config_payload.pop("gamma_model")
     legacy_config_payload.pop("box_prior")
     (run_layout.run_dir / "config_snapshot.yaml").write_text(
         yaml.safe_dump(legacy_config_payload, sort_keys=False),
         encoding="utf-8",
     )
 
-    run_result = resume_inference(str(run_layout.run_dir))
-
-    assert run_result.status == "completed"
-    migrated_snapshot = yaml.safe_load((run_layout.run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
-    assert migrated_snapshot["gamma_model"]["mode"] == "dependent"
-    assert migrated_snapshot["box_prior"]["mu5_0"] == [9.0, 12.0]
+    with pytest.raises(KeyError, match="Missing required config section: box_prior"):
+        resume_inference(str(run_layout.run_dir))
 
 
 def test_cli_run_command_executes_minimal_pipeline(synthetic_config_path: Path) -> None:

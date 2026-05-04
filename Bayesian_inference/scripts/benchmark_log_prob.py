@@ -30,7 +30,7 @@ if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.jax_model import build_jax_model, log_prob
+from cmass_lens_inference.jax_backend.likelihood_engine import build_compiled_model, log_prob
 from cmass_lens_inference.runner import run_inference
 
 
@@ -55,7 +55,7 @@ def benchmark_jax_log_prob(config_path: Path, repeats: int) -> dict[str, float |
     """
 
     runtime_config = load_runtime_config(config_path)
-    compiled_model = build_jax_model(runtime_config)
+    compiled_model = build_compiled_model(runtime_config)
     theta = runtime_config.sampling.initial_center.to_array()
 
     first_started = time.perf_counter()
@@ -104,12 +104,11 @@ def run_numpyro_smoke(config_path: Path, smoke_samples: int, smoke_warmup: int) 
 
     config_payload = {
         "profile": {"name": runtime_config.profile.name},
+        "unit_convention": runtime_config.unit_convention,
         "model": {
             "name": runtime_config.model.name,
             "components": runtime_config.model.components,
         },
-        "mass_definition": {"enclosed_radius_kpc": runtime_config.mass_definition.radius_kpc},
-        "gamma_model": {"mode": runtime_config.gamma_model.mode},
         "data": {
             "observation_path": str(runtime_config.data.observation_path),
             "cross_section_path": str(runtime_config.data.cross_section_path),
@@ -125,9 +124,7 @@ def run_numpyro_smoke(config_path: Path, smoke_samples: int, smoke_warmup: int) 
             "thinning": runtime_config.sampling.thinning,
             "chain_method": runtime_config.sampling.chain_method,
             "random_seed": runtime_config.sampling.random_seed,
-            "initial_center": runtime_config.sampling.initial_center.to_public_dict(
-                runtime_config.mass_definition
-            ),
+            "initial_center": runtime_config.sampling.initial_center.to_public_dict(),
             "initial_jitter_scale": runtime_config.sampling.initial_jitter_scale,
         },
         "integration": {

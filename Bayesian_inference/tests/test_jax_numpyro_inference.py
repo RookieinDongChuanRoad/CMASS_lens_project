@@ -17,7 +17,10 @@ import pytest
 import yaml
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.jax_model import build_jax_model, log_prob as jax_log_prob
+from cmass_lens_inference.jax_backend.likelihood_engine import (
+    build_compiled_model as build_jax_model,
+    log_prob as jax_log_prob,
+)
 from cmass_lens_inference.model import build_compiled_model, log_prob as legacy_log_prob
 from cmass_lens_inference.numpyro_sampler import _build_jittered_initial_strategy
 from cmass_lens_inference.runner import run_inference
@@ -64,13 +67,11 @@ def test_config_loads_model_components_and_numpyro_sampling_aliases(
     synthetic_config_path: Path,
 ) -> None:
     """
-    Existing configs should migrate to the default component model implicitly.
+    New configs should expose model components and NumPyro sampling aliases.
 
     Why this matters:
-    - real user configs should not break only because the backend moved from
-      emcee to NumPyro
-    - the new component model surface must be visible on RuntimeConfig so
-      switching to the Sonnenfeld 2024 model can be done through YAML alone
+    - the component model surface must be visible on RuntimeConfig so switching
+      to future models can be done through YAML alone
     - NumPyro uses chain/sample/warmup terminology, but legacy fixture configs
       still carry walker/step/warmup fields
     """
@@ -79,13 +80,8 @@ def test_config_loads_model_components_and_numpyro_sampling_aliases(
 
     assert runtime_config.model.name == "cmass_current"
     assert runtime_config.model.components == {
-        "foreground_population": "cmass_fixed_z_skew_mstar",
-        "size_relation": "profile_default",
-        "mass_gamma_distribution": "current_power_law",
-        "source_redshift": "truncated_normal",
-        "selection": "theta_sigmoid_cross_section",
-        "velocity_dispersion": "grid_sigma_unit",
-        "fp_prior": "optional_ols_summary",
+        "mass_definition": "m5",
+        "gamma_distribution": "dependent",
     }
     assert runtime_config.sampling.num_chains == 2 * runtime_config.parameter_schema.n_dim
     assert runtime_config.sampling.num_samples == runtime_config.sampling.n_steps
@@ -204,7 +200,7 @@ def test_jax_log_prob_matches_legacy_kernel_for_h_unit_current_model(
     payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
     payload["unit_convention"] = "h_units_v1"
     payload["data"]["observation_path"] = str(_write_h_unit_observation_file(tmp_path / "h_units_observations.hdf5"))
-    payload["mass_definition"] = {"aperture_hinv_kpc": 5}
+    payload["model"]["components"]["mass_definition"] = "m5_hinvkpc"
     payload["box_prior"] = {
         "mu5h_0": [9.0, 12.0],
         "beta5h": [-3.0, 3.0],

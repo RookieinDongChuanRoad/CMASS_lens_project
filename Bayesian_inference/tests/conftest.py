@@ -85,6 +85,24 @@ def _default_box_prior_config(
     }
 
 
+def _cmass_model_config(*, mass_definition: str, gamma_distribution: str) -> dict:
+    """
+    Return the new registry-backed CMASS model section for fixtures.
+
+    Keeping this helper local to the test harness makes every fixture use the
+    same breaking-change config surface: no top-level ``mass_definition`` and
+    no top-level ``gamma_model``.
+    """
+
+    return {
+        "name": "cmass_current",
+        "components": {
+            "mass_definition": mass_definition,
+            "gamma_distribution": gamma_distribution,
+        },
+    }
+
+
 def _write_synthetic_sigma_table(
     path: Path,
     *,
@@ -572,8 +590,8 @@ def synthetic_config_path(
     path = tmp_path / "synthetic_sersic.yaml"
     config = {
         "profile": {"name": "sersic"},
-        "mass_definition": {"enclosed_radius_kpc": 5},
-        "gamma_model": {"mode": "dependent"},
+        "unit_convention": "legacy_fixed_kpc",
+        "model": _cmass_model_config(mass_definition="m5", gamma_distribution="dependent"),
         "data": {
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
@@ -645,8 +663,8 @@ def synthetic_m10_config_path(
     path = tmp_path / "synthetic_sersic_m10.yaml"
     config = {
         "profile": {"name": "sersic"},
-        "mass_definition": {"enclosed_radius_kpc": 10},
-        "gamma_model": {"mode": "dependent"},
+        "unit_convention": "legacy_fixed_kpc",
+        "model": _cmass_model_config(mass_definition="m10", gamma_distribution="dependent"),
         "data": {
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
@@ -719,8 +737,8 @@ def synthetic_independent_config_path(
     path = tmp_path / "synthetic_sersic_gamma_independent.yaml"
     config = {
         "profile": {"name": "sersic"},
-        "mass_definition": {"enclosed_radius_kpc": 5},
-        "gamma_model": {"mode": "independent"},
+        "unit_convention": "legacy_fixed_kpc",
+        "model": _cmass_model_config(mass_definition="m5", gamma_distribution="independent"),
         "data": {
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
@@ -792,8 +810,8 @@ def synthetic_sigma_star_dependent_config_path(
     path = tmp_path / "synthetic_sersic_gamma_sigma_star.yaml"
     config = {
         "profile": {"name": "sersic"},
-        "mass_definition": {"enclosed_radius_kpc": 5},
-        "gamma_model": {"mode": "sigma_star_dependent"},
+        "unit_convention": "legacy_fixed_kpc",
+        "model": _cmass_model_config(mass_definition="m5", gamma_distribution="sigma_star_dependent"),
         "data": {
             "observation_path": str(synthetic_observation_file),
             "cross_section_path": str(synthetic_cross_section_file),
@@ -906,8 +924,8 @@ def synthetic_devauc_fp_prior_config_path(
     path = tmp_path / "synthetic_devauc_fp_prior.yaml"
     config = {
         "profile": {"name": "devauc"},
-        "mass_definition": {"enclosed_radius_kpc": 5},
-        "gamma_model": {"mode": "dependent"},
+        "unit_convention": "legacy_fixed_kpc",
+        "model": _cmass_model_config(mass_definition="m5", gamma_distribution="dependent"),
         "fp_prior": {"enabled": True},
         "data": {
             "observation_path": str(synthetic_devauc_observation_file),

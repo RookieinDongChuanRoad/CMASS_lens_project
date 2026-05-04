@@ -179,8 +179,14 @@ def _write_corner_config(
 
     config = {
         "profile": {"name": profile_name},
-        "mass_definition": {"enclosed_radius_kpc": mass_radius_kpc},
-        "gamma_model": {"mode": gamma_mode},
+        "unit_convention": "legacy_fixed_kpc",
+        "model": {
+            "name": "cmass_current",
+            "components": {
+                "mass_definition": "m10" if mass_radius_kpc == 10 else "m5",
+                "gamma_distribution": gamma_mode,
+            },
+        },
         "data": {
             "observation_path": str(output_root / f"{profile_name}_observations.hdf5"),
             "cross_section_path": str(output_root / "cs_grid_power.h5"),

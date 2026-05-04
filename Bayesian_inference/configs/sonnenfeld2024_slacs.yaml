@@ -1,6 +1,8 @@
 profile:
   name: sersic
 
+unit_convention: legacy_fixed_kpc
+
 model:
   name: sonnenfeld2024_slacs
   components:
@@ -11,12 +13,6 @@ model:
     selection: sonnenfeld2024_theta_est_sigmoid
     velocity_dispersion: grid_sigma_unit
     fp_prior: optional_ols_summary
-
-mass_definition:
-  enclosed_radius_kpc: 5
-
-gamma_model:
-  mode: dependent
 
 data:
   observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5

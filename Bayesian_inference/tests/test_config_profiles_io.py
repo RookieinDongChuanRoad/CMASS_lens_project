@@ -90,7 +90,10 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
 
     assert runtime_config.profile.name == "sersic"
     assert runtime_config.mass_definition == get_mass_definition(5)
-    assert runtime_config.gamma_model.mode == "dependent"
+    assert runtime_config.model.components == {
+        "mass_definition": "m5",
+        "gamma_distribution": "dependent",
+    }
     assert runtime_config.cosmology.h0 == 70.0
     assert runtime_config.cosmology.omega_m == 0.3
     assert runtime_config.sampling.n_walkers == 24
@@ -112,7 +115,7 @@ def test_load_runtime_config_builds_h_unit_mass_definition(synthetic_config_path
 
     payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
     payload["unit_convention"] = "h_units_v1"
-    payload["mass_definition"] = {"aperture_hinv_kpc": 5}
+    payload["model"]["components"]["mass_definition"] = "m5_hinvkpc"
     payload["box_prior"] = {
         "mu5h_0": [9.0, 12.0],
         "beta5h": [-3.0, 3.0],
@@ -204,13 +207,10 @@ def test_load_runtime_config_builds_fp_prior_config_when_enabled(
     assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.011)
 
 
-def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Path) -> None:
+def test_load_runtime_config_requires_model_components_for_gamma_distribution(tmp_path: Path) -> None:
     """
-    New source configurations must declare the gamma parameterization mode.
-
-    The implementation is allowed to auto-migrate legacy run snapshots during
-    resume/PPC entrypoints, but fresh source YAML should fail fast if the
-    model mode is omitted.
+    New source configurations must declare the gamma parameterization through
+    ``model.components`` rather than the removed top-level ``gamma_model``.
     """
 
     missing_gamma_model_path = tmp_path / "missing_gamma_model.yaml"
@@ -218,7 +218,11 @@ def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Pat
         yaml.safe_dump(
             {
                 "profile": {"name": "sersic"},
-                "mass_definition": {"enclosed_radius_kpc": 5},
+                "unit_convention": "legacy_fixed_kpc",
+                "model": {
+                    "name": "cmass_current",
+                    "components": {"mass_definition": "m5"},
+                },
                 "data": {
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
@@ -274,7 +278,7 @@ def test_load_runtime_config_requires_explicit_gamma_model_section(tmp_path: Pat
         encoding="utf-8",
     )
 
-    with pytest.raises(KeyError, match="Missing required config section: gamma_model"):
+    with pytest.raises(ValueError, match="gamma_distribution"):
         load_runtime_config(missing_gamma_model_path)
 
 
@@ -291,7 +295,14 @@ def test_load_runtime_config_requires_explicit_cosmology_section(tmp_path: Path)
         yaml.safe_dump(
             {
                 "profile": {"name": "sersic"},
-                "mass_definition": {"enclosed_radius_kpc": 5},
+                "unit_convention": "legacy_fixed_kpc",
+                "model": {
+                    "name": "cmass_current",
+                    "components": {
+                        "mass_definition": "m5",
+                        "gamma_distribution": "dependent",
+                    },
+                },
                 "data": {
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
@@ -357,8 +368,14 @@ def test_load_runtime_config_requires_explicit_box_prior_section(tmp_path: Path)
         yaml.safe_dump(
             {
                 "profile": {"name": "sersic"},
-                "mass_definition": {"enclosed_radius_kpc": 5},
-                "gamma_model": {"mode": "dependent"},
+                "unit_convention": "legacy_fixed_kpc",
+                "model": {
+                    "name": "cmass_current",
+                    "components": {
+                        "mass_definition": "m5",
+                        "gamma_distribution": "dependent",
+                    },
+                },
                 "data": {
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
@@ -417,16 +434,22 @@ def test_load_runtime_config_requires_explicit_box_prior_section(tmp_path: Path)
         load_runtime_config(missing_box_prior_path)
 
 
-def test_load_runtime_config_migrates_legacy_run_snapshot_missing_box_prior(tmp_path: Path) -> None:
-    """Historical run snapshots should gain explicit box-prior bounds on load."""
+def test_load_runtime_config_rejects_run_snapshot_missing_box_prior(tmp_path: Path) -> None:
+    """Run snapshots use the same explicit box-prior contract as source configs."""
 
     snapshot_path = tmp_path / "config_snapshot.yaml"
     snapshot_path.write_text(
         yaml.safe_dump(
             {
                 "profile": {"name": "sersic"},
-                "mass_definition": {"enclosed_radius_kpc": 5},
-                "gamma_model": {"mode": "dependent"},
+                "unit_convention": "legacy_fixed_kpc",
+                "model": {
+                    "name": "cmass_current",
+                    "components": {
+                        "mass_definition": "m5",
+                        "gamma_distribution": "dependent",
+                    },
+                },
                 "data": {
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
@@ -481,11 +504,8 @@ def test_load_runtime_config_migrates_legacy_run_snapshot_missing_box_prior(tmp_
         encoding="utf-8",
     )
 
-    runtime_config = load_runtime_config(snapshot_path)
-    migrated_snapshot = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
-
-    assert runtime_config.parameter_schema.prior_bounds[0] == pytest.approx((9.0, 12.0))
-    assert migrated_snapshot["box_prior"] == _default_box_prior_payload(mass_radius_kpc=5)
+    with pytest.raises(KeyError, match="Missing required config section: box_prior"):
+        load_runtime_config(snapshot_path)
 
 
 def test_load_runtime_config_maps_m10_public_parameter_names_to_internal_vector(
@@ -516,12 +536,10 @@ def test_load_runtime_config_builds_independent_gamma_parameter_vector(
 
     runtime_config = load_runtime_config(synthetic_independent_config_path)
 
-    assert runtime_config.gamma_model.mode == "independent"
+    assert runtime_config.model.components["gamma_distribution"] == "independent"
     parameter_vector = runtime_config.sampling.initial_center.to_array()
     assert parameter_vector.shape == (10,)
-    public_center = runtime_config.sampling.initial_center.to_public_dict(
-        runtime_config.mass_definition,
-    )
+    public_center = runtime_config.sampling.initial_center.to_public_dict()
     assert "beta_gamma" not in public_center
     assert "xi_gamma" not in public_center
     assert set(public_center) == {
@@ -551,8 +569,14 @@ def test_load_runtime_config_rejects_gamma_slopes_in_independent_mode(tmp_path: 
         yaml.safe_dump(
             {
                 "profile": {"name": "sersic"},
-                "mass_definition": {"enclosed_radius_kpc": 5},
-                "gamma_model": {"mode": "independent"},
+                "unit_convention": "legacy_fixed_kpc",
+                "model": {
+                    "name": "cmass_current",
+                    "components": {
+                        "mass_definition": "m5",
+                        "gamma_distribution": "independent",
+                    },
+                },
                 "data": {
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
@@ -617,8 +641,14 @@ def test_load_runtime_config_rejects_incomplete_box_prior_mapping(tmp_path: Path
     path = tmp_path / "incomplete_box_prior.yaml"
     payload = {
         "profile": {"name": "sersic"},
-        "mass_definition": {"enclosed_radius_kpc": 5},
-        "gamma_model": {"mode": "dependent"},
+        "unit_convention": "legacy_fixed_kpc",
+        "model": {
+            "name": "cmass_current",
+            "components": {
+                "mass_definition": "m5",
+                "gamma_distribution": "dependent",
+            },
+        },
         "data": {
             "observation_path": str(tmp_path / "observations.hdf5"),
             "cross_section_path": str(tmp_path / "cross_section.h5"),
@@ -689,12 +719,10 @@ def test_load_runtime_config_builds_sigma_star_gamma_parameter_vector(
 
     runtime_config = load_runtime_config(synthetic_sigma_star_dependent_config_path)
 
-    assert runtime_config.gamma_model.mode == "sigma_star_dependent"
+    assert runtime_config.model.components["gamma_distribution"] == "sigma_star_dependent"
     parameter_vector = runtime_config.sampling.initial_center.to_array()
     assert parameter_vector.shape == (11,)
-    public_center = runtime_config.sampling.initial_center.to_public_dict(
-        runtime_config.mass_definition,
-    )
+    public_center = runtime_config.sampling.initial_center.to_public_dict()
     assert "beta_gamma" not in public_center
     assert "xi_gamma" not in public_center
     assert public_center["beta_sigma_star_gamma"] == pytest.approx(0.24)
@@ -726,8 +754,14 @@ def test_load_runtime_config_rejects_legacy_gamma_slopes_in_sigma_star_mode(tmp_
         yaml.safe_dump(
             {
                 "profile": {"name": "sersic"},
-                "mass_definition": {"enclosed_radius_kpc": 5},
-                "gamma_model": {"mode": "sigma_star_dependent"},
+                "unit_convention": "legacy_fixed_kpc",
+                "model": {
+                    "name": "cmass_current",
+                    "components": {
+                        "mass_definition": "m5",
+                        "gamma_distribution": "sigma_star_dependent",
+                    },
+                },
                 "data": {
                     "observation_path": str(tmp_path / "observations.hdf5"),
                     "cross_section_path": str(tmp_path / "cross_section.h5"),

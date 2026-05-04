@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .config import load_runtime_config
 from .io import WITHIN_RE_SIGMA_DEFINITION
-from .jax_model import build_jax_model
+from .jax_backend.likelihood_engine import build_compiled_model as build_jax_compiled_model
 from .mass_definition import mass_definition_metadata
 from .numpyro_sampler import run_numpyro_sampler
 from .outputs import (
@@ -34,7 +34,7 @@ from .types import RunResult, RuntimeContext
 def _build_runtime_context(runtime_config) -> RuntimeContext:
     """Assemble the shared runtime objects needed by the sampler."""
 
-    compiled_model = build_jax_model(runtime_config)
+    compiled_model = build_jax_compiled_model(runtime_config)
     return RuntimeContext(
         config=runtime_config,
         profile=compiled_model.profile,
@@ -69,7 +69,6 @@ def _run_with_layout(
         },
         "unit_convention": runtime_context.config.unit_convention,
         "h_ref": runtime_context.config.h_ref,
-        "gamma_mode": runtime_context.config.gamma_model.mode,
         "mass_definition": mass_definition_metadata(runtime_context.config.mass_definition),
         "sampling": {
             "num_chains": runtime_context.config.sampling.num_chains,
@@ -78,9 +77,7 @@ def _run_with_layout(
             "thinning": runtime_context.config.sampling.thinning,
             "chain_method": runtime_context.config.sampling.chain_method,
             "parameter_order": list(runtime_context.config.parameter_schema.public_parameter_names),
-            "initial_center": runtime_context.config.sampling.initial_center.to_public_dict(
-                runtime_context.config.mass_definition
-            ),
+            "initial_center": runtime_context.config.sampling.initial_center.to_public_dict(),
         },
         "box_prior": runtime_context.config.parameter_schema.serialize_public_box_prior(),
         "integration": {

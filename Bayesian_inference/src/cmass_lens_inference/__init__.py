@@ -12,7 +12,8 @@ import jax
 # Scientific inference in this package compares JAX results against legacy
 # NumPy/numba double-precision kernels and uses small likelihood tolerances.
 # Enabling x64 at package import makes that precision contract independent of
-# whether callers enter through `runner`, `numpyro_sampler`, or `jax_model`.
+# whether callers enter through `runner`, `numpyro_sampler`, or the registry
+# driven JAX backend.
 jax.config.update("jax_enable_x64", True)
 
 from .runner import resume_inference, run_inference
