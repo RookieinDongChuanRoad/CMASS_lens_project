@@ -27,7 +27,23 @@ import numpy as np
 import yaml
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
+
+
+LEGACY_EMCEE_BLOB_DTYPE = np.dtype(
+    [
+        ("total_log_prob_seconds", np.float64),
+        ("likelihood_seconds", np.float64),
+        ("normalization_seconds", np.float64),
+        ("fp_prior_seconds", np.float64),
+        ("normalization_value", np.float64),
+        ("fp_prior_log_term", np.float64),
+        ("fpfit_mu", np.float64),
+        ("fpfit_beta", np.float64),
+        ("fpfit_xi", np.float64),
+        ("fpfit_scatter", np.float64),
+        ("parallel_strategy", "S16"),
+    ]
+)
 
 
 def _box_prior_for_gamma_mode(
@@ -193,9 +209,9 @@ def _write_corner_config(
         },
         "box_prior": _box_prior_for_gamma_mode(mass_radius_kpc, gamma_mode),
         "sampling": {
-            "n_walkers": 24,
-            "n_steps": 5,
-            "warmup": warmup,
+            "num_chains": 24,
+            "num_samples": 5,
+            "num_warmup": warmup,
             "random_seed": 7,
             "initial_center": _initial_center_for_gamma_mode(mass_initial_center, gamma_mode),
             "initial_jitter_scale": 1.0e-3,
@@ -232,8 +248,8 @@ def _write_corner_config(
 def _seed_corner_backend(
     chain_path: Path,
     parameter_center: np.ndarray,
-    n_steps: int = 5,
-    n_walkers: int = 24,
+    sample_count: int = 5,
+    walker_count: int = 24,
 ) -> None:
     """
     Create a deterministic backend chain with small but non-degenerate spread.
@@ -243,19 +259,19 @@ def _seed_corner_backend(
     """
 
     backend = emcee.backends.HDFBackend(str(chain_path))
-    backend.reset(n_walkers, parameter_center.shape[0])
-    blobs = np.zeros(n_walkers, dtype=LOG_PROB_BLOB_DTYPE)
+    backend.reset(walker_count, parameter_center.shape[0])
+    blobs = np.zeros(walker_count, dtype=LEGACY_EMCEE_BLOB_DTYPE)
     blobs["parallel_strategy"] = b"off"
-    backend.grow(n_steps, blobs)
+    backend.grow(sample_count, blobs)
     random_state = np.random.RandomState(123).get_state()
 
-    for step_index in range(n_steps):
-        coords = np.tile(parameter_center, (n_walkers, 1))
+    for step_index in range(sample_count):
+        coords = np.tile(parameter_center, (walker_count, 1))
         coords += 1.0e-3 * step_index
-        coords += np.linspace(0.0, 2.0e-4, n_walkers, dtype=float)[:, None]
-        log_prob = np.full(n_walkers, -5.0 + 0.1 * step_index, dtype=float)
+        coords += np.linspace(0.0, 2.0e-4, walker_count, dtype=float)[:, None]
+        log_prob = np.full(walker_count, -5.0 + 0.1 * step_index, dtype=float)
         state = emcee.State(coords, log_prob=log_prob, blobs=blobs.copy(), random_state=random_state)
-        backend.save_step(state, np.ones(n_walkers, dtype=bool))
+        backend.save_step(state, np.ones(walker_count, dtype=bool))
 
 
 def _build_corner_run(
@@ -263,7 +279,7 @@ def _build_corner_run(
     profile_name: str,
     mass_radius_kpc: int = 10,
     warmup: int = 2,
-    n_steps: int = 5,
+    sample_count: int = 5,
     gamma_mode: str = "dependent",
 ) -> Path:
     """Create a minimal completed run directory for the corner-plot tests."""
@@ -281,7 +297,7 @@ def _build_corner_run(
     _seed_corner_backend(
         run_dir / "chain.h5",
         parameter_center=_parameter_center_for_gamma_mode(mass_radius_kpc, gamma_mode),
-        n_steps=n_steps,
+        sample_count=sample_count,
     )
     return run_dir
 

@@ -96,8 +96,6 @@ def run_numpyro_smoke(config_path: Path, smoke_samples: int, smoke_warmup: int) 
             num_samples=int(smoke_samples),
             num_warmup=int(smoke_warmup),
             chain_method="sequential",
-            n_steps=int(smoke_samples),
-            warmup=int(smoke_warmup),
         ),
         output=replace(runtime_config.output, run_label=f"numpyro_smoke_{runtime_config.profile.name}"),
     )
@@ -115,9 +113,6 @@ def run_numpyro_smoke(config_path: Path, smoke_samples: int, smoke_warmup: int) 
         },
         "box_prior": runtime_config.parameter_schema.serialize_public_box_prior(),
         "sampling": {
-            "n_walkers": runtime_config.sampling.n_walkers,
-            "n_steps": runtime_config.sampling.n_steps,
-            "warmup": runtime_config.sampling.warmup,
             "num_chains": runtime_config.sampling.num_chains,
             "num_samples": runtime_config.sampling.num_samples,
             "num_warmup": runtime_config.sampling.num_warmup,

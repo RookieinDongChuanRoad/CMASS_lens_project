@@ -59,10 +59,10 @@ def _minimal_new_model_config(tmp_path: Path) -> dict:
             "loga": [-1.0, 3.0],
         },
         "sampling": {
-            "n_walkers": 24,
-            "n_steps": 3,
-            "warmup": 1,
             "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
             "initial_center": {
                 "mu5_0": 11.32,
                 "beta5": 0.59,
@@ -132,6 +132,24 @@ def test_legacy_top_level_model_sections_are_rejected(tmp_path: Path) -> None:
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(ValueError, match="mass_definition.*gamma_model"):
+        load_runtime_config(config_path)
+
+
+def test_legacy_sampling_fields_are_rejected(tmp_path: Path) -> None:
+    """The NumPyro-only config parser should reject emcee-era sampling names."""
+
+    payload = _minimal_new_model_config(tmp_path)
+    payload["sampling"].update(
+        {
+            "n_walkers": 24,
+            "n_steps": 3,
+            "warmup": 1,
+        }
+    )
+    config_path = tmp_path / "legacy_sampling.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="n_walkers.*n_steps.*warmup"):
         load_runtime_config(config_path)
 
 

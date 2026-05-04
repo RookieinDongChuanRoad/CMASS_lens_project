@@ -28,9 +28,6 @@ box_prior:
   loga: [-1.0, 3.0]
 
 sampling:
-  n_walkers: 24
-  n_steps: 10000
-  warmup: 2000
   num_chains: 24
   num_samples: 10000
   num_warmup: 2000

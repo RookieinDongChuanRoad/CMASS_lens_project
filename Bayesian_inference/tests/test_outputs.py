@@ -15,7 +15,8 @@ import numpy as np
 from cmass_lens_inference.outputs import (
     create_run_layout,
     refresh_latest_pointer,
-    save_checkpoint,
+    load_numpyro_checkpoint,
+    save_numpyro_checkpoint,
 )
 
 
@@ -68,10 +69,12 @@ def test_refresh_latest_pointer_falls_back_to_text_file_when_symlink_fails(
     assert latest_file.read_text(encoding="utf-8").strip() == run_layout.run_id
 
 
-def test_save_checkpoint_writes_all_required_files(tmp_path: Path) -> None:
+def test_save_numpyro_checkpoint_writes_all_required_files(tmp_path: Path) -> None:
     """
-    The checkpoint writer should persist walker coordinates, log-probabilities,
-    and the latest step number using the required filenames.
+    The checkpoint writer should persist NumPyro chain arrays and sampler state.
+
+    The legacy emcee walker checkpoint files were removed with the old backend.
+    This test now locks the active resume contract used by `runner.py`.
     """
 
     run_layout = create_run_layout(
@@ -81,11 +84,22 @@ def test_save_checkpoint_writes_all_required_files(tmp_path: Path) -> None:
         timestamp_text="20260308_170000",
     )
 
-    coords = np.ones((4, 3))
-    log_prob = np.array([0.1, 0.2, 0.3, 0.4])
-    save_checkpoint(run_layout.checkpoints_dir, coords, log_prob, step=9)
+    samples_by_chain = np.ones((2, 4, 3))
+    log_prob_by_chain = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]])
+    last_state = {"sampler": "numpyro", "step": 9}
+    save_numpyro_checkpoint(
+        run_layout.checkpoints_dir,
+        samples_by_chain=samples_by_chain,
+        log_prob_by_chain=log_prob_by_chain,
+        step=9,
+        last_state=last_state,
+    )
 
-    assert (run_layout.checkpoints_dir / "latest_coords.npy").exists()
-    assert (run_layout.checkpoints_dir / "latest_log_prob.npy").exists()
+    assert (run_layout.checkpoints_dir / "latest_samples_by_chain.npy").exists()
+    assert (run_layout.checkpoints_dir / "latest_log_prob_by_chain.npy").exists()
     assert (run_layout.checkpoints_dir / "latest_step.txt").read_text(encoding="utf-8").strip() == "9"
+    assert (run_layout.checkpoints_dir / "numpyro_last_state.pkl").exists()
 
+    loaded_state, loaded_step = load_numpyro_checkpoint(run_layout.checkpoints_dir)
+    assert loaded_state == last_state
+    assert loaded_step == 9

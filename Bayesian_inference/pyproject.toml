@@ -28,7 +28,6 @@ dev = [
 ]
 legacy = [
   "emcee>=3.1",
-  "numba>=0.60",
 ]
 
 [project.scripts]

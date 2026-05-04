@@ -1,10 +1,9 @@
 """
-Regression tests for the JAX/NumPyro inference migration.
+Regression tests for the JAX/NumPyro inference backend.
 
-These tests intentionally describe the new production contract before the
-implementation exists.  The old numba/emcee path remains useful as a numerical
-oracle during migration, but the public run path must now produce NumPyro-style
-posterior artifacts.
+The legacy numba/emcee backend has been removed from the production package, so
+these tests now lock the active JAX contract directly: model-registry dispatch,
+finite posterior evaluation, hunit-aware context values, and NumPyro artifacts.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from cmass_lens_inference.jax_backend.likelihood_engine import (
     build_compiled_model as build_jax_model,
     log_prob as jax_log_prob,
 )
-from cmass_lens_inference.model import build_compiled_model, log_prob as legacy_log_prob
 from cmass_lens_inference.numpyro_sampler import _build_jittered_initial_strategy
 from cmass_lens_inference.runner import run_inference
 
@@ -63,17 +61,16 @@ def _write_h_unit_observation_file(path: Path) -> Path:
     return path
 
 
-def test_config_loads_model_components_and_numpyro_sampling_aliases(
+def test_config_loads_model_components_and_numpyro_sampling_fields(
     synthetic_config_path: Path,
 ) -> None:
     """
-    New configs should expose model components and NumPyro sampling aliases.
+    New configs should expose model components and NumPyro sampling fields.
 
     Why this matters:
     - the component model surface must be visible on RuntimeConfig so switching
       to future models can be done through YAML alone
-    - NumPyro uses chain/sample/warmup terminology, but legacy fixture configs
-      still carry walker/step/warmup fields
+    - NumPyro chain/sample/warmup names are the only accepted sampling contract
     """
 
     runtime_config = load_runtime_config(synthetic_config_path)
@@ -83,8 +80,8 @@ def test_config_loads_model_components_and_numpyro_sampling_aliases(
         "mass_definition": "m5",
         "gamma_distribution": "dependent",
     }
-    assert runtime_config.sampling.num_chains == 2 * runtime_config.parameter_schema.n_dim
-    assert runtime_config.sampling.num_samples == runtime_config.sampling.n_steps
+    assert runtime_config.sampling.num_chains == 24
+    assert runtime_config.sampling.num_samples == 3
     assert runtime_config.sampling.num_warmup == runtime_config.sampling.warmup
     assert runtime_config.sampling.thinning == 1
     assert runtime_config.sampling.chain_method == "sequential"
@@ -133,58 +130,56 @@ def test_numpyro_jittered_initial_strategy_uses_independent_bounded_chain_values
         "synthetic_sigma_star_dependent_config_path",
     ],
 )
-def test_jax_log_prob_matches_legacy_kernel_for_current_model(
+def test_jax_log_prob_is_finite_for_current_model(
     request: pytest.FixtureRequest,
     fixture_name: str,
 ) -> None:
     """
-    The first migration milestone is numerical equivalence for current models.
+    The active JAX backend should evaluate every supported CMASS component set.
 
-    The legacy numba implementation is used here only as a reference oracle.
-    The new JAX path must return the same posterior value for all supported
-    gamma parameterizations before NumPyro sampling is trusted.
+    Removing the legacy oracle means this test now protects the dispatch and
+    numerical-health contract directly: a valid initial point must produce a
+    finite posterior and the returned diagnostic blob must identify the JAX
+    backend.
     """
 
     runtime_config = load_runtime_config(request.getfixturevalue(fixture_name))
     theta = runtime_config.sampling.initial_center.to_array()
 
-    legacy_model = build_compiled_model(runtime_config)
     jax_model = build_jax_model(runtime_config)
 
-    legacy_value, _ = legacy_log_prob(theta, legacy_model)
     jax_value, blob = jax_log_prob(theta, jax_model)
 
     assert np.isfinite(jax_value)
-    assert jax_value == pytest.approx(legacy_value, rel=1.0e-8, abs=1.0e-8)
     assert blob["backend"].decode("utf-8").rstrip("\x00") == "jax"
+    assert np.isfinite(float(blob["normalization_value"]))
 
 
-def test_jax_fp_prior_log_prob_matches_legacy_kernel(
+def test_jax_fp_prior_log_prob_is_finite(
     synthetic_fp_prior_config_path: Path,
 ) -> None:
     """
-    The JAX migration must preserve the optional FP-prior posterior term.
+    FP-enabled JAX evaluation should expose finite FP diagnostics.
 
-    This specifically guards the population-summary path, which is the most
-    complex part of the old normalization kernel because it simultaneously
-    estimates the selection normalization and sufficient statistics for the
-    Fundamental Plane prior.
+    This specifically guards the population-summary path because it estimates
+    both selection normalization and sufficient statistics for the Fundamental
+    Plane prior.
     """
 
     runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
 
-    legacy_model = build_compiled_model(runtime_config)
     jax_model = build_jax_model(runtime_config)
 
-    legacy_value, _ = legacy_log_prob(theta, legacy_model)
-    jax_value, _ = jax_log_prob(theta, jax_model)
+    jax_value, blob = jax_log_prob(theta, jax_model)
 
     assert np.isfinite(jax_value)
-    assert jax_value == pytest.approx(legacy_value, rel=1.0e-8, abs=1.0e-8)
+    assert np.isfinite(float(blob["fp_prior_log_term"]))
+    assert np.isfinite(float(blob["fpfit_mu"]))
+    assert np.isfinite(float(blob["fpfit_beta"]))
 
 
-def test_jax_log_prob_matches_legacy_kernel_for_h_unit_current_model(
+def test_jax_log_prob_uses_h_unit_current_model_context(
     tmp_path: Path,
     synthetic_config_path: Path,
 ) -> None:
@@ -235,18 +230,16 @@ def test_jax_log_prob_matches_legacy_kernel_for_h_unit_current_model(
     runtime_config = load_runtime_config(h_unit_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
 
-    legacy_model = build_compiled_model(runtime_config)
     jax_model = build_jax_model(runtime_config)
 
-    legacy_value, _ = legacy_log_prob(theta, legacy_model)
-    jax_value, _ = jax_log_prob(theta, jax_model)
+    jax_value, blob = jax_log_prob(theta, jax_model)
 
     assert runtime_config.mass_definition.label == "m5_hinvkpc"
     assert jax_model.context.stellar_mass_pivot == pytest.approx(11.4 + 2.0 * np.log10(0.7))
     assert jax_model.context.mass_radius_kpc == pytest.approx(5.0 / 0.7)
     assert jax_model.context.mass_log_physical_offset == pytest.approx(np.log10(0.7**-1))
     assert np.isfinite(jax_value)
-    assert jax_value == pytest.approx(legacy_value, rel=1.0e-8, abs=1.0e-8)
+    assert blob["backend"].decode("utf-8").rstrip("\x00") == "jax"
 
 
 def test_run_inference_writes_numpyro_posterior_artifacts(

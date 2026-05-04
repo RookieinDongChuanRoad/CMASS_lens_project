@@ -96,7 +96,9 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     }
     assert runtime_config.cosmology.h0 == 70.0
     assert runtime_config.cosmology.omega_m == 0.3
-    assert runtime_config.sampling.n_walkers == 24
+    assert runtime_config.sampling.num_chains == 24
+    assert runtime_config.sampling.num_samples == 3
+    assert runtime_config.sampling.num_warmup == 1
     assert runtime_config.integration.normalization_samples == 128
     assert runtime_config.output.run_label == "synthetic"
     assert runtime_config.output.root_dir == synthetic_config_path.parent / "outputs"
@@ -229,10 +231,10 @@ def test_load_runtime_config_requires_model_components_for_gamma_distribution(tm
                 },
                 "box_prior": _default_box_prior_payload(mass_radius_kpc=5),
                 "sampling": {
-                    "n_walkers": 24,
-                    "n_steps": 3,
-                    "warmup": 1,
                     "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
                     "initial_center": {
                         "mu5_0": 11.32,
                         "beta5": 0.59,
@@ -309,10 +311,10 @@ def test_load_runtime_config_requires_explicit_cosmology_section(tmp_path: Path)
                 },
                 "box_prior": _default_box_prior_payload(mass_radius_kpc=5),
                 "sampling": {
-                    "n_walkers": 24,
-                    "n_steps": 3,
-                    "warmup": 1,
                     "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
                     "initial_center": {
                         "mu5_0": 11.32,
                         "beta5": 0.59,
@@ -381,10 +383,10 @@ def test_load_runtime_config_requires_explicit_box_prior_section(tmp_path: Path)
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
                 },
                 "sampling": {
-                    "n_walkers": 24,
-                    "n_steps": 3,
-                    "warmup": 1,
                     "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
                     "initial_center": {
                         "mu5_0": 11.32,
                         "beta5": 0.59,
@@ -455,10 +457,10 @@ def test_load_runtime_config_rejects_run_snapshot_missing_box_prior(tmp_path: Pa
                     "cross_section_path": str(tmp_path / "cross_section.h5"),
                 },
                 "sampling": {
-                    "n_walkers": 24,
-                    "n_steps": 3,
-                    "warmup": 1,
                     "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
                     "initial_center": {
                         "mu5_0": 11.32,
                         "beta5": 0.59,
@@ -583,10 +585,10 @@ def test_load_runtime_config_rejects_gamma_slopes_in_independent_mode(tmp_path: 
                 },
                 "box_prior": _default_box_prior_payload(mass_radius_kpc=5, gamma_mode="independent"),
                 "sampling": {
-                    "n_walkers": 24,
-                    "n_steps": 3,
-                    "warmup": 1,
                     "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
                     "initial_center": {
                         "mu5_0": 11.32,
                         "beta5": 0.59,
@@ -655,10 +657,10 @@ def test_load_runtime_config_rejects_incomplete_box_prior_mapping(tmp_path: Path
         },
         "box_prior": _default_box_prior_payload(mass_radius_kpc=5),
         "sampling": {
-            "n_walkers": 24,
-            "n_steps": 3,
-            "warmup": 1,
             "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
             "initial_center": {
                 "mu5_0": 11.32,
                 "beta5": 0.59,
@@ -768,10 +770,10 @@ def test_load_runtime_config_rejects_legacy_gamma_slopes_in_sigma_star_mode(tmp_
                 },
                 "box_prior": _default_box_prior_payload(mass_radius_kpc=5, gamma_mode="sigma_star_dependent"),
                 "sampling": {
-                    "n_walkers": 24,
-                    "n_steps": 3,
-                    "warmup": 1,
                     "random_seed": 7,
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
                     "initial_center": {
                         "mu5_0": 11.32,
                         "beta5": 0.59,

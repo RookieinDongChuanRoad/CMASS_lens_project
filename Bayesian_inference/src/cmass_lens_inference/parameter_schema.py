@@ -100,10 +100,10 @@ class ParameterSchema:
         """
         Return the CMASS gamma-mode integer code when the active model has one.
 
-        The compiled context still feeds the retained numba oracle and the
-        migrated CMASS JAX kernel through this compact code.  A non-CMASS model
-        that does not use this code should fail explicitly if that path is
-        called before its backend has been implemented.
+        The compiled context feeds the CMASS JAX kernel through this compact
+        code.  A non-CMASS model that does not use this code should fail
+        explicitly if that path is called before its backend has been
+        implemented.
         """
 
         if "gamma_mode" not in self.static_codes:

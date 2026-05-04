@@ -23,9 +23,6 @@ box_prior:
   theta0: [0.0, 3.0]
   loga: [-1.0, 3.0]
 sampling:
-  n_walkers: 24
-  n_steps: 4
-  warmup: 0
   random_seed: 7
   initial_center:
     mu5_0: 11.32

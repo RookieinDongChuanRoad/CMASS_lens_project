@@ -150,10 +150,8 @@ def _build_jittered_initial_strategy(runtime_context: RuntimeContext):
     """
     Build the NUTS initialization strategy for this run.
 
-    The legacy emcee path needed a large walker cloud to avoid poor ensemble
-    conditioning. NUTS does not use an ensemble geometry, but multi-chain runs
-    still benefit from independent, valid initial points for convergence
-    diagnostics.
+    NUTS does not use an ensemble geometry, but multi-chain runs still benefit
+    from independent, valid initial points for convergence diagnostics.
     """
 
     runtime_config = getattr(runtime_context, "config", runtime_context)

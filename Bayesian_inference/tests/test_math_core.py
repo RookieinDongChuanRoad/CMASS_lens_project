@@ -16,7 +16,6 @@ import pytest
 from cmass_lens_inference.cosmology import FlatLambdaCDM
 from cmass_lens_inference.interpolation import clipped_linear_interp
 from cmass_lens_inference.mass_definition import convert_log_enclosed_mass
-from cmass_lens_inference.normalization import apply_normalization_guard
 
 
 def test_clipped_linear_interp_clips_to_boundary_values() -> None:
@@ -88,8 +87,8 @@ def test_flat_lcdm_builds_its_distance_table_from_astropy() -> None:
     """
     The wrapper should delegate the base comoving-distance grid to astropy.
 
-    That guarantees the Python helpers and the `numba` kernels both consume the
-    same cosmology source of truth instead of a hand-maintained approximation.
+    That guarantees Python helpers and the JAX backend consume the same
+    cosmology source of truth instead of a hand-maintained approximation.
     """
 
     cosmology = FlatLambdaCDM(h0=70.0, omega_m=0.3)
@@ -114,13 +113,3 @@ def test_angular_diameter_distance_between_clips_non_physical_ordering_to_zero()
     cosmology = FlatLambdaCDM(h0=70.0, omega_m=0.3)
 
     assert cosmology.angular_diameter_distance_between_mpc(1.0, 0.9) == 0.0
-
-
-def test_apply_normalization_guard_rejects_tiny_normalization_values() -> None:
-    """
-    The normalization guard enforces the hard rejection threshold from the
-    requirements document.
-    """
-
-    assert apply_normalization_guard(1.0e-12) == -np.inf
-    assert apply_normalization_guard(1.0e-3) == 0.0

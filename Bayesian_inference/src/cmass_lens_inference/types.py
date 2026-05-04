@@ -176,21 +176,15 @@ class ModelConfig:
 @dataclass(frozen=True)
 class SamplingConfig:
     """
-    Controls NumPyro sampling and preserves legacy initialization metadata.
+    Controls NumPyro sampling for the production inference path.
 
-    The legacy `n_walkers`, `n_steps`, and `warmup` fields remain present so old
-    configs, tests, and run snapshots can still be read.  New production runs
-    should prefer the NumPyro-native fields:
-    - `num_chains`
-    - `num_samples`
-    - `num_warmup`
-    - `thinning`
-    - `chain_method`
+    The sampler vocabulary is intentionally NumPyro-native.  The old emcee
+    walker/step fields were removed with the legacy backend so new configs have
+    one unambiguous contract.  A read-only `warmup` compatibility property is
+    retained because `posterior_corner.py` still reads historical run snapshots
+    in this cleanup pass; it is not accepted from YAML.
     """
 
-    n_walkers: int
-    n_steps: int
-    warmup: int
     random_seed: int
     initial_center: HyperParams
     initial_jitter_scale: float
@@ -199,6 +193,19 @@ class SamplingConfig:
     num_warmup: int
     thinning: int
     chain_method: str
+
+    @property
+    def warmup(self) -> int:
+        """
+        Return the NumPyro warmup count for legacy read-only consumers.
+
+        This property deliberately has no corresponding dataclass field and no
+        YAML parser support.  It exists only so the untouched posterior-corner
+        legacy-chain reader can continue to resolve `burn_in="auto"` until that
+        module is tightened in a separate change.
+        """
+
+        return self.num_warmup
 
 
 @dataclass(frozen=True)

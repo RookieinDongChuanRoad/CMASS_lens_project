@@ -32,6 +32,7 @@ from .types import (
 
 DEFAULT_OUTPUT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs")
 REMOVED_TOP_LEVEL_MODEL_SECTIONS = ("mass_definition", "gamma_model")
+REMOVED_SAMPLING_FIELDS = ("n_walkers", "n_steps", "warmup")
 
 
 def _require_section(data: dict, section_name: str) -> dict:
@@ -125,6 +126,24 @@ def _load_box_prior_section(raw_data: dict) -> dict:
     return _require_section(raw_data, "box_prior")
 
 
+def _reject_removed_sampling_fields(sampling_raw: dict) -> None:
+    """
+    Reject emcee-era sampling names before building `SamplingConfig`.
+
+    The production sampler is now NumPyro/NUTS only.  Accepting both old and new
+    names would make run snapshots ambiguous, especially when `n_steps` and
+    `num_samples` disagree.  Failing early gives users a direct migration path.
+    """
+
+    removed_present = [name for name in REMOVED_SAMPLING_FIELDS if name in sampling_raw]
+    if removed_present:
+        raise ValueError(
+            "Sampling fields n_walkers, n_steps, and warmup are no longer supported. "
+            "Use num_chains, num_samples, and num_warmup instead. "
+            f"Removed fields present: {', '.join(removed_present)}."
+        )
+
+
 def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     """
     Load, validate, and normalize the project YAML configuration.
@@ -146,6 +165,7 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     model, model_definition = _load_model_section(raw_data)
     data_raw = _require_section(raw_data, "data")
     sampling_raw = _require_section(raw_data, "sampling")
+    _reject_removed_sampling_fields(sampling_raw)
     integration_raw = _require_section(raw_data, "integration")
     cosmology_raw = _require_section(raw_data, "cosmology")
     runtime_raw = _require_section(raw_data, "runtime")
@@ -183,10 +203,6 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
         label="Initial center",
     )
 
-    n_steps = int(sampling_raw.get("n_steps", sampling_raw.get("num_samples", 0)))
-    warmup = int(sampling_raw.get("warmup", sampling_raw.get("num_warmup", 0)))
-    n_walkers = int(sampling_raw.get("n_walkers", sampling_raw.get("num_chains", 1)))
-
     return RuntimeConfig(
         unit_convention=unit_convention,
         h_ref=h_ref,
@@ -201,15 +217,12 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
             sigma_table_path=sigma_table_path,
         ),
         sampling=SamplingConfig(
-            n_walkers=n_walkers,
-            n_steps=n_steps,
-            warmup=warmup,
             random_seed=int(sampling_raw["random_seed"]),
             initial_center=initial_center,
             initial_jitter_scale=float(sampling_raw.get("initial_jitter_scale", 1.0e-3)),
             num_chains=int(sampling_raw.get("num_chains", max(1, 2 * parameter_schema.n_dim))),
-            num_samples=int(sampling_raw.get("num_samples", n_steps)),
-            num_warmup=int(sampling_raw.get("num_warmup", warmup)),
+            num_samples=int(sampling_raw["num_samples"]),
+            num_warmup=int(sampling_raw["num_warmup"]),
             thinning=int(sampling_raw.get("thinning", 1)),
             chain_method=str(sampling_raw.get("chain_method", "sequential")),
         ),

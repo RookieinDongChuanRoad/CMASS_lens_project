@@ -137,7 +137,7 @@ FP_OLS_SUM_Y_INDEX = 3
 FP_OLS_SUM_X1Y_INDEX = 4
 FP_OLS_SUM_YY_INDEX = 5
 
-JAX_LOG_PROB_BLOB_DTYPE = np.dtype(
+JAX_DIAGNOSTIC_BLOB_DTYPE = np.dtype(
     [
         ("total_log_prob_seconds", np.float64),
         ("likelihood_seconds", np.float64),
@@ -387,7 +387,7 @@ def _build_timing_blob(
             float(fpfit_scatter),
             b"jax",
         ),
-        dtype=JAX_LOG_PROB_BLOB_DTYPE,
+        dtype=JAX_DIAGNOSTIC_BLOB_DTYPE,
     )[()]
 
 
@@ -754,7 +754,7 @@ def _log_likelihood_value(
     gamma_mode_code: int,
     mass_log_physical_offset: float,
 ) -> jnp.ndarray:
-    """Vectorized all-lens likelihood equivalent to the legacy numba kernel."""
+    """Vectorized all-lens likelihood for the CMASS current JAX model."""
 
     theta_parts = _unpack_model_theta(theta, gamma_mode_code)
     (
@@ -1121,7 +1121,7 @@ def log_prob_value(theta: jnp.ndarray, compiled_model: CompiledModel) -> tuple[j
     Return JAX posterior components for use inside NumPyro models.
 
     This helper intentionally returns JAX arrays and performs no timing or
-    conversion to Python scalars.  `log_prob()` wraps it for emcee-compatible
+    conversion to Python scalars.  `log_prob()` wraps it for lightweight
     diagnostic tests and command-line timing summaries.
     """
 
@@ -1260,7 +1260,7 @@ __all__ = [
     "GAMMA_DISTRIBUTION_DEPENDENT",
     "GAMMA_DISTRIBUTION_INDEPENDENT",
     "GAMMA_DISTRIBUTION_SIGMA_STAR_DEPENDENT",
-    "JAX_LOG_PROB_BLOB_DTYPE",
+    "JAX_DIAGNOSTIC_BLOB_DTYPE",
     "build_compiled_jax_model",
     "build_parameter_schema",
     "default_public_box_prior",

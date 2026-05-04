@@ -70,23 +70,6 @@ def refresh_latest_pointer(profile_dir: Path, run_id: str) -> None:
         (profile_dir / "LATEST_RUN").write_text(f"{run_id}\n", encoding="utf-8")
 
 
-def save_checkpoint(checkpoints_dir: Path, coords: np.ndarray, log_prob: np.ndarray, step: int) -> None:
-    """Persist the latest walker state so a run can be resumed later."""
-
-    np.save(checkpoints_dir / "latest_coords.npy", coords)
-    np.save(checkpoints_dir / "latest_log_prob.npy", log_prob)
-    (checkpoints_dir / "latest_step.txt").write_text(str(step), encoding="utf-8")
-
-
-def load_checkpoint(checkpoints_dir: Path) -> tuple[np.ndarray, np.ndarray, int]:
-    """Load the latest persisted walker state."""
-
-    coords = np.load(checkpoints_dir / "latest_coords.npy")
-    log_prob = np.load(checkpoints_dir / "latest_log_prob.npy")
-    step = int((checkpoints_dir / "latest_step.txt").read_text(encoding="utf-8").strip())
-    return coords, log_prob, step
-
-
 def save_numpyro_checkpoint(
     checkpoints_dir: Path,
     samples_by_chain: np.ndarray,

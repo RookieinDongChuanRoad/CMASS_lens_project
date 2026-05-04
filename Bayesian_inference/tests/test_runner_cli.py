@@ -14,18 +14,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import emcee
-import h5py
 import numpy as np
 import pytest
 import yaml
 
 from cmass_lens_inference.cli import build_argument_parser
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
-from cmass_lens_inference.outputs import create_run_layout, save_checkpoint
 from cmass_lens_inference.runner import resume_inference, run_inference
-from cmass_lens_inference.sampler import _summarize_recent_blobs
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,8 +31,8 @@ def _force_single_chain_for_orchestration_test(config_path: Path) -> None:
     Keep runner/CLI orchestration tests intentionally small.
 
     The production default is now `2 * ndim` chains so real runs keep the same
-    broad initialization convention as the historical emcee workflow.  These
-    integration tests are different: they only need to prove that run/resume,
+    broad initialization convention.  These integration tests are different:
+    they only need to prove that run/resume,
     metadata, checkpoints, and output files are wired correctly.  Pinning one
     sequential chain here prevents those contract tests from becoming expensive
     implicit sampler-quality tests.
@@ -51,35 +46,6 @@ def _force_single_chain_for_orchestration_test(config_path: Path) -> None:
         }
     )
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-
-
-def _seed_backend_with_steps(chain_path: Path, n_walkers: int, n_dim: int, n_steps: int) -> None:
-    """
-    Create a minimal but real `emcee` backend file for resume tests.
-
-    Why this helper exists:
-    - The production code is expected to treat `chain.h5` as the source of
-      truth during resume.
-    - A manually created top-level HDF5 dataset is no longer sufficient once
-      the project standardizes on pure `emcee.backends.HDFBackend` output.
-    - Using the backend's own `reset/grow/save_step` APIs keeps the fixture
-      faithful to the on-disk format that real runs now produce.
-    """
-
-    backend = emcee.backends.HDFBackend(str(chain_path))
-    backend.reset(n_walkers, n_dim)
-    blobs = np.zeros(n_walkers, dtype=LOG_PROB_BLOB_DTYPE)
-    blobs["parallel_strategy"] = b"kernel_only"
-    backend.grow(n_steps, blobs)
-    random_state = np.random.RandomState(123).get_state()
-
-    for step_index in range(n_steps):
-        walker_offsets = np.linspace(0.0, 1.0e-3, n_walkers, dtype=float)[:, None]
-        coords = np.full((n_walkers, n_dim), 1.0 + step_index, dtype=float) + walker_offsets
-        log_prob = np.full(n_walkers, -float(step_index), dtype=float)
-        blobs["total_log_prob_seconds"] = 1.0e-6 * (step_index + 1)
-        state = emcee.State(coords, log_prob=log_prob, blobs=blobs.copy(), random_state=random_state)
-        backend.save_step(state, np.ones(n_walkers, dtype=bool))
 
 
 def test_run_inference_creates_required_output_files(synthetic_config_path: Path) -> None:
@@ -120,49 +86,6 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
     with np.load(run_result.run_dir / "samples.npz") as payload:
         assert payload["samples_by_chain"].shape == (1, 3, 12)
         assert payload["log_prob_by_chain"].shape == (1, 3)
-
-
-def test_log_prob_blob_dtype_includes_fp_prior_diagnostics() -> None:
-    """The sampler blob schema should reserve stable fields for FP diagnostics."""
-
-    assert set(LOG_PROB_BLOB_DTYPE.names or ()) >= {
-        "fp_prior_seconds",
-        "fp_prior_log_term",
-        "fpfit_mu",
-        "fpfit_beta",
-        "fpfit_xi",
-        "fpfit_scatter",
-    }
-
-
-def test_progress_summary_includes_fp_prior_stage_timing() -> None:
-    """
-    Stage-timing summaries should expose FP time as a separate number.
-
-    The performance regression that motivated this refactor was hard to diagnose
-    because FP summary work was silently folded into the generic normalization
-    bucket. Keeping `fp` visible in the run log makes future regressions much
-    easier to localize.
-    """
-
-    class ParallelismStub:
-        worker_processes = 0
-        kernel_threads_per_process = 12
-        strategy = "kernel_only"
-
-    blobs = np.zeros(2, dtype=LOG_PROB_BLOB_DTYPE)
-    blobs["total_log_prob_seconds"] = [1.0, 2.0]
-    blobs["likelihood_seconds"] = [0.2, 0.4]
-    blobs["normalization_seconds"] = [0.3, 0.5]
-    blobs["fp_prior_seconds"] = [0.7, 0.9]
-
-    summary_line = _summarize_recent_blobs(list(blobs), 25, 100, ParallelismStub())
-
-    assert "lp 1.50s" in summary_line
-    assert "lens 0.30s" in summary_line
-    assert "norm 0.40s" in summary_line
-    assert "fp 0.80s" in summary_line
-    assert "strategy kernel_only" in summary_line
 
 
 def test_run_inference_serializes_fp_prior_metadata(
@@ -289,37 +212,16 @@ def test_resume_inference_reads_existing_checkpoint(synthetic_config_path: Path)
     """
 
     _force_single_chain_for_orchestration_test(synthetic_config_path)
-    runtime_config = load_runtime_config(synthetic_config_path)
-    run_layout = create_run_layout(
-        root_dir=runtime_config.output.root_dir,
-        profile_name=runtime_config.profile.name,
-        run_label=runtime_config.output.run_label,
-        timestamp_text="20260308_180000",
-    )
-    _seed_backend_with_steps(
-        run_layout.run_dir / "chain.h5",
-        runtime_config.sampling.n_walkers,
-        runtime_config.parameter_schema.n_dim,
-        5,
-    )
-    save_checkpoint(
-        run_layout.checkpoints_dir,
-        coords=np.ones((runtime_config.sampling.n_walkers, runtime_config.parameter_schema.n_dim)),
-        log_prob=np.zeros(runtime_config.sampling.n_walkers),
-        step=5,
-    )
-    (run_layout.run_dir / "config_snapshot.yaml").write_text(
-        synthetic_config_path.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    first_result = run_inference(str(synthetic_config_path))
+    runtime_config = load_runtime_config(first_result.run_dir / "config_snapshot.yaml")
 
-    run_result = resume_inference(str(run_layout.run_dir))
+    run_result = resume_inference(str(first_result.run_dir))
 
-    assert run_result.run_dir == run_layout.run_dir
-    assert run_result.start_step == 5
-    assert run_result.completed_steps == 8
+    assert run_result.run_dir == first_result.run_dir
+    assert run_result.start_step == 3
+    assert run_result.completed_steps == 6
     assert run_result.status == "completed"
-    with np.load(run_layout.run_dir / "samples.npz") as payload:
+    with np.load(first_result.run_dir / "samples.npz") as payload:
         assert payload["samples_by_chain"].shape == (1, 3, runtime_config.parameter_schema.n_dim)
 
 
@@ -329,34 +231,16 @@ def test_resume_inference_rejects_run_snapshot_missing_box_prior(
     """Resume should use the same explicit config contract as fresh runs."""
 
     _force_single_chain_for_orchestration_test(synthetic_config_path)
-    runtime_config = load_runtime_config(synthetic_config_path)
-    run_layout = create_run_layout(
-        root_dir=runtime_config.output.root_dir,
-        profile_name=runtime_config.profile.name,
-        run_label=runtime_config.output.run_label,
-        timestamp_text="20260308_181500",
-    )
-    _seed_backend_with_steps(
-        run_layout.run_dir / "chain.h5",
-        runtime_config.sampling.n_walkers,
-        runtime_config.parameter_schema.n_dim,
-        5,
-    )
-    save_checkpoint(
-        run_layout.checkpoints_dir,
-        coords=np.ones((runtime_config.sampling.n_walkers, runtime_config.parameter_schema.n_dim)),
-        log_prob=np.zeros(runtime_config.sampling.n_walkers),
-        step=5,
-    )
+    first_result = run_inference(str(synthetic_config_path))
     legacy_config_payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
     legacy_config_payload.pop("box_prior")
-    (run_layout.run_dir / "config_snapshot.yaml").write_text(
+    (first_result.run_dir / "config_snapshot.yaml").write_text(
         yaml.safe_dump(legacy_config_payload, sort_keys=False),
         encoding="utf-8",
     )
 
     with pytest.raises(KeyError, match="Missing required config section: box_prior"):
-        resume_inference(str(run_layout.run_dir))
+        resume_inference(str(first_result.run_dir))
 
 
 def test_cli_run_command_executes_minimal_pipeline(synthetic_config_path: Path) -> None:
