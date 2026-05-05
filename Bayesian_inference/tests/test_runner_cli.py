@@ -76,15 +76,16 @@ def test_run_inference_creates_required_output_files(synthetic_config_path: Path
     assert serialized["metadata"]["parallelism"]["strategy"] in {"off", "kernel_only", "process_pool"}
     metadata = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["chain_storage"] == "numpyro_arviz_netcdf"
-    assert metadata["config_summary"]["model"]["components"]["gamma_distribution"] == "dependent"
-    assert metadata["config_summary"]["box_prior"]["mu5_0"] == [9.0, 12.0]
+    assert metadata["config_summary"]["model"]["name"] == "cmass"
+    assert metadata["config_summary"]["model"]["metadata"]["gamma_distribution"] == "sigma_star_dependent"
+    assert metadata["config_summary"]["box_prior"]["mu5h_0"] == [9.0, 12.0]
     assert metadata["parallelism"]["compute_budget"] >= 1
     assert metadata["parallelism"]["cpu_count"] >= metadata["parallelism"]["compute_budget"]
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
     assert "strategy" in run_log_text
     assert "numpyro complete" in run_log_text
     with np.load(run_result.run_dir / "samples.npz") as payload:
-        assert payload["samples_by_chain"].shape == (1, 3, 12)
+        assert payload["samples_by_chain"].shape == (1, 3, 11)
         assert payload["log_prob_by_chain"].shape == (1, 3)
 
 
@@ -92,12 +93,11 @@ def test_run_inference_serializes_fp_prior_metadata(
     synthetic_fp_prior_config_path: Path,
 ) -> None:
     """
-    FP-enabled runs should persist the within-Re sigma contract in metadata.
+    FP-enabled runs should persist canonical within-Re sigma provenance.
 
-    The top-level `sigma_table_path` remains useful for provenance, but it no
-    longer describes the actual FP prior aperture on its own. The persisted
-    metadata must therefore record that the FP path uses the `/within_re/<mass>`
-    bundle leaf.
+    Sigma-table paths are no longer production inputs.  The run metadata should
+    instead point at the canonical dataset and record that the dataset exposes
+    the FP-within-Re capability used by the prior.
     """
 
     _force_single_chain_for_orchestration_test(synthetic_fp_prior_config_path)
@@ -108,23 +108,22 @@ def test_run_inference_serializes_fp_prior_metadata(
     run_result_payload = json.loads((run_result.run_dir / "run_result.json").read_text(encoding="utf-8"))
 
     assert run_result.metadata["fp_prior"]["enabled"] is True
-    assert run_result.metadata["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
-    assert run_result.metadata["sigma_table_mass_definition"] == runtime_config.mass_definition.label
+    assert run_result.metadata["data"]["inference_dataset_path"] == str(runtime_config.data.inference_dataset_path)
+    assert "velocity_dispersion.fp_within_re.v1" in run_result.metadata["data"]["canonical_capabilities"]
     assert run_result.metadata["fp_sigma_definition"] == "within_re"
-    assert run_result.metadata["fp_sigma_table_leaf_path"] == f"/within_re/{runtime_config.mass_definition.label}"
+    assert run_result.metadata["fp_sigma_table_leaf_path"] == "/velocity_dispersion_grids/fp_within_re"
     assert metadata_payload["fp_prior"]["enabled"] is True
-    assert metadata_payload["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
-    assert metadata_payload["sigma_table_mass_definition"] == runtime_config.mass_definition.label
+    assert metadata_payload["input_inference_dataset_path"] == str(runtime_config.data.inference_dataset_path)
+    assert "velocity_dispersion.fp_within_re.v1" in metadata_payload["canonical_capabilities"]
     assert metadata_payload["fp_sigma_definition"] == "within_re"
-    assert metadata_payload["fp_sigma_table_leaf_path"] == f"/within_re/{runtime_config.mass_definition.label}"
+    assert metadata_payload["fp_sigma_table_leaf_path"] == "/velocity_dispersion_grids/fp_within_re"
     assert run_result_payload["metadata"]["fp_prior"]["enabled"] is True
-    assert run_result_payload["metadata"]["sigma_table_path"] == str(runtime_config.data.sigma_table_path)
-    assert run_result_payload["metadata"]["sigma_table_mass_definition"] == runtime_config.mass_definition.label
-    assert run_result_payload["metadata"]["fp_sigma_definition"] == "within_re"
-    assert (
-        run_result_payload["metadata"]["fp_sigma_table_leaf_path"]
-        == f"/within_re/{runtime_config.mass_definition.label}"
+    assert run_result_payload["metadata"]["data"]["inference_dataset_path"] == str(
+        runtime_config.data.inference_dataset_path
     )
+    assert "velocity_dispersion.fp_within_re.v1" in run_result_payload["metadata"]["data"]["canonical_capabilities"]
+    assert run_result_payload["metadata"]["fp_sigma_definition"] == "within_re"
+    assert run_result_payload["metadata"]["fp_sigma_table_leaf_path"] == "/velocity_dispersion_grids/fp_within_re"
 
 
 def test_samples_npz_is_readable_as_primary_numpyro_backend(synthetic_config_path: Path) -> None:
@@ -140,61 +139,26 @@ def test_samples_npz_is_readable_as_primary_numpyro_backend(synthetic_config_pat
         samples = payload["flat_samples"]
         log_prob = payload["log_prob_by_chain"].reshape(-1)
 
-    assert samples.shape == (3, 12)
+    assert samples.shape == (3, 11)
     assert log_prob.shape == (3,)
 
 
-def test_run_inference_uses_independent_gamma_parameter_dimension(
-    synthetic_independent_config_path: Path,
+def test_run_inference_uses_default_cmass_parameter_dimension(
+    synthetic_config_path: Path,
 ) -> None:
-    """
-    Independent gamma mode should shrink the persisted chain dimension to 10.
+    """The default CMASS model should persist an 11D h-unit parameter chain."""
 
-    This test locks the public sampler/backend contract so downstream tooling
-    reads the exact parameter vector implied by the chosen gamma mode.
-    """
-
-    _force_single_chain_for_orchestration_test(synthetic_independent_config_path)
-    run_result = run_inference(str(synthetic_independent_config_path))
-
-    with np.load(run_result.run_dir / "samples.npz") as payload:
-        assert payload["samples_by_chain"].shape == (1, 3, 10)
-    assert run_result.metadata["model"]["components"]["gamma_distribution"] == "independent"
-    assert run_result.metadata["sampling"]["parameter_order"] == [
-        "mu5_0",
-        "beta5",
-        "xi5",
-        "sigma5",
-        "mu_gamma_0",
-        "sigma_gamma",
-        "mu_zs",
-        "sigma_zs",
-        "theta0",
-        "loga",
-    ]
-
-
-def test_run_inference_uses_sigma_star_gamma_parameter_dimension(
-    synthetic_sigma_star_dependent_config_path: Path,
-) -> None:
-    """
-    Sigma-star gamma mode should persist an 11D chain and public parameter order.
-
-    This locks the backend contract for downstream post-processing: chain shape
-    and serialized metadata must agree on the third gamma parameterization.
-    """
-
-    _force_single_chain_for_orchestration_test(synthetic_sigma_star_dependent_config_path)
-    run_result = run_inference(str(synthetic_sigma_star_dependent_config_path))
+    _force_single_chain_for_orchestration_test(synthetic_config_path)
+    run_result = run_inference(str(synthetic_config_path))
 
     with np.load(run_result.run_dir / "samples.npz") as payload:
         assert payload["samples_by_chain"].shape == (1, 3, 11)
-    assert run_result.metadata["model"]["components"]["gamma_distribution"] == "sigma_star_dependent"
+    assert run_result.metadata["model"]["metadata"]["gamma_distribution"] == "sigma_star_dependent"
     assert run_result.metadata["sampling"]["parameter_order"] == [
-        "mu5_0",
-        "beta5",
-        "xi5",
-        "sigma5",
+        "mu5h_0",
+        "beta5h",
+        "xi5h",
+        "sigma5h",
         "mu_gamma_0",
         "beta_sigma_star_gamma",
         "sigma_gamma",
@@ -319,32 +283,6 @@ def test_run_inference_supports_process_pool_strategy_with_fp_prior(
     run_log_text = (run_result.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
     assert "strategy process_pool" in run_log_text
     assert "numpyro complete" in run_log_text
-
-
-def test_run_inference_serializes_m10_mass_definition_metadata(
-    synthetic_m10_config_path: Path,
-) -> None:
-    """
-    Metadata and run-result payloads should expose the public `m10` naming surface.
-
-    Downstream PPC and trend code use these serialized payloads to decide which
-    sigma tables, labels, and result keys to load. This contract must therefore
-    be explicit and definition-aware.
-    """
-
-    _force_single_chain_for_orchestration_test(synthetic_m10_config_path)
-    run_result = run_inference(str(synthetic_m10_config_path))
-
-    assert run_result.metadata["mass_definition"]["label"] == "m10"
-    assert run_result.metadata["mass_definition"]["enclosed_radius_kpc"] == 10.0
-    assert "mu10_0" in run_result.metadata["sampling"]["initial_center"]
-    assert "mu5_0" not in run_result.metadata["sampling"]["initial_center"]
-
-    metadata = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
-    assert metadata["config_summary"]["mass_definition"]["label"] == "m10"
-    assert metadata["config_summary"]["mass_definition"]["enclosed_radius_kpc"] == 10.0
-    assert "mu10_0" in metadata["config_summary"]["sampling"]["initial_center"]
-    assert "mu5_0" not in metadata["config_summary"]["sampling"]["initial_center"]
 
 
 def test_cli_no_longer_exposes_ppt_family_commands() -> None:

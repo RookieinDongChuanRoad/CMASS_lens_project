@@ -1,0 +1,205 @@
+"""Tests for canonical inference dataset construction.
+
+The writer is deliberately data-preparation-only: it converts the current
+CMASS-style observation, mass-grid, and cross-section files into one canonical
+HDF5 input product.  Bayesian inference readers and validators are out of
+scope for this package-level migration.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import h5py
+import numpy as np
+import pytest
+
+from prepare_dataset.config import H_UNITS_V1
+from prepare_dataset.dataset_schema.canonical import (
+    CAPABILITY_LENS_OBSERVATIONS_V1,
+    CAPABILITY_LENSING_CROSS_SECTION_THETA_GAMMA_V1,
+    CAPABILITY_LENSING_MASS_GRIDS_V1,
+    CAPABILITY_VELOCITY_DISPERSION_PER_LENS_S2_V1,
+    TOP_LEVEL_BLOCKS,
+)
+from prepare_dataset.dataset_schema.writer import write_canonical_inference_dataset
+
+
+def _write_observation_file(path: Path, *, omit_required_s2: bool = False) -> Path:
+    """Create a two-lens hunit observation file with one sigma-free lens."""
+
+    gamma_grid = np.asarray([1.2, 2.0, 2.8], dtype=float)
+    with h5py.File(path, "w") as handle:
+        handle.attrs["unit_convention"] = H_UNITS_V1
+        handle.attrs["h_ref"] = 0.7
+        handle.attrs["mass_definition_label"] = "m5_hinvkpc"
+        for index, lens_id in enumerate(("lens_with_sigma", "lens_without_sigma")):
+            group = handle.create_group(lens_id)
+            group.attrs["unit_convention"] = H_UNITS_V1
+            group.attrs["h_ref"] = 0.7
+            group.attrs["zd"] = 0.5 + 0.1 * index
+            group.attrs["zs"] = 1.5 + 0.1 * index
+            group.attrs["logmchab_h2"] = 11.1 + 0.1 * index
+            group.attrs["logmchab_err"] = 0.08
+            group.attrs["log10_re_hinv_kpc"] = 0.7 + 0.1 * index
+            group.attrs["nser"] = 4.0 + index
+            group.attrs["rein_arcsec"] = 1.0 + 0.1 * index
+            group.attrs["num_sigma"] = 1 if index == 0 else 0
+            group.attrs["sigma"] = np.asarray([250.0 + index], dtype=float)
+            group.attrs["sigma_err"] = np.asarray([20.0], dtype=float)
+            group.create_dataset("gamma_grid", data=gamma_grid)
+            mass_root = group.create_group("mass_definitions")
+            mass_group = mass_root.create_group("m5_hinvkpc")
+            mass_group.attrs["unit_convention"] = H_UNITS_V1
+            mass_group.attrs["h_ref"] = 0.7
+            mass_group.attrs["mass_definition_label"] = "m5_hinvkpc"
+            mass_group.attrs["mass_radius_kpc"] = 5.0
+            mass_group.create_dataset("mass_grid", data=np.asarray([10.0, 10.2, 10.4]) + index)
+            mass_group.create_dataset("dmass_dthetaein_grid", data=np.asarray([0.9, 1.0, 1.1]))
+            if index == 0 and not omit_required_s2:
+                mass_group.create_dataset("s2_grid", data=np.asarray([1.0, 1.2, 1.4]) * 1.0e-5)
+    return path
+
+
+def _write_cross_section_file(path: Path) -> Path:
+    """Create the legacy one-dimensional CMASS cross-section input."""
+
+    with h5py.File(path, "w") as handle:
+        compressed = handle.create_group("compressed_grids")
+        compressed.create_dataset("gamma_grid", data=np.asarray([1.2, 2.0, 2.8], dtype=float))
+        compressed.create_dataset("cs_over_theta_ein", data=np.asarray([0.2, 0.3, 0.4], dtype=float))
+    return path
+
+
+def _write_fibre_cross_section_file(path: Path) -> Path:
+    """Create a Sonnenfeld-style two-dimensional finite-fibre cross-section input."""
+
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("tein_grid", data=np.asarray([0.0, 1.0], dtype=float))
+        handle.create_dataset("gamma_grid", data=np.asarray([1.2, 2.0, 2.8], dtype=float))
+        handle.create_dataset(
+            "mufibre2_cs_grid",
+            data=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 2.0, 3.0],
+                ],
+                dtype=float,
+            ),
+        )
+        handle.create_dataset(
+            "mufibre3_cs_grid",
+            data=np.asarray(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.5, 1.0, 1.5],
+                ],
+                dtype=float,
+            ),
+        )
+        handle.create_dataset("ycaust_grid", data=np.asarray([[0.0, 0.0, 0.0], [0.1, 0.2, 0.3]], dtype=float))
+        handle.attrs["generator_name"] = "prepare_dataset.fibre_cross_section"
+    return path
+
+
+def test_write_canonical_inference_dataset_creates_expected_schema_blocks(tmp_path: Path) -> None:
+    """The writer should emit the agreed top-level canonical HDF5 blocks."""
+
+    observation_path = _write_observation_file(tmp_path / "observations.hdf5")
+    cross_section_path = _write_cross_section_file(tmp_path / "cross_section.h5")
+    output_path = write_canonical_inference_dataset(
+        observation_path=observation_path,
+        cross_section_path=cross_section_path,
+        output_path=tmp_path / "inference_dataset.hdf5",
+        profile_name="sersic",
+        mass_definition_label="m5_hinvkpc",
+        unit_convention=H_UNITS_V1,
+        h_ref=0.7,
+        theta_e_axis=np.asarray([0.5, 1.0, 2.0], dtype=float),
+    )
+
+    with h5py.File(output_path, "r") as handle:
+        assert set(handle.keys()) == set(TOP_LEVEL_BLOCKS)
+        metadata = handle["metadata"]
+        assert metadata.attrs["schema_version"] == "canonical_inference_dataset_v1"
+        assert metadata.attrs["unit_convention"] == H_UNITS_V1
+        assert metadata.attrs["h_ref"] == pytest.approx(0.7)
+        assert metadata.attrs["profile_name"] == "sersic"
+        assert metadata.attrs["mass_definition_label"] == "m5_hinvkpc"
+        capabilities = {
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in metadata["capabilities"][()]
+        }
+        assert {
+            CAPABILITY_LENS_OBSERVATIONS_V1,
+            CAPABILITY_LENSING_MASS_GRIDS_V1,
+            CAPABILITY_LENSING_CROSS_SECTION_THETA_GAMMA_V1,
+            CAPABILITY_VELOCITY_DISPERSION_PER_LENS_S2_V1,
+        }.issubset(capabilities)
+
+        lenses = handle["lenses"]
+        assert lenses["z_d"].shape == (2,)
+        assert lenses["sigma_obs"].shape == (2, 2)
+        np.testing.assert_array_equal(lenses["num_sigma"][()], np.asarray([1, 0]))
+
+        mass_grids = handle["lensing_mass_grids"]
+        assert mass_grids["log_enclosed_mass_grid"].shape == (2, 3)
+        assert mass_grids["s2_grid"].shape == (2, 3)
+        np.testing.assert_array_equal(mass_grids["has_s2"][()], np.asarray([1, 0]))
+
+        cross_section = handle["lensing_cross_section"]
+        assert cross_section["cross_section_grid"].shape == (3, 3)
+        expected = np.pi * (np.asarray([0.5, 1.0, 2.0])[:, None] * np.asarray([0.2, 0.3, 0.4])[None, :]) ** 2
+        np.testing.assert_allclose(cross_section["cross_section_grid"][()], expected)
+
+        per_lens_s2 = handle["velocity_dispersion_grids"]["per_lens_s2"]
+        assert per_lens_s2["s2_grid"].shape == (2, 3)
+        np.testing.assert_array_equal(per_lens_s2["has_s2"][()], np.asarray([1, 0]))
+
+
+def test_write_canonical_inference_dataset_accepts_fibre_cross_section_grid(tmp_path: Path) -> None:
+    """The canonical writer should preserve Sonnenfeld finite-fibre area grids directly."""
+
+    observation_path = _write_observation_file(tmp_path / "observations.hdf5")
+    cross_section_path = _write_fibre_cross_section_file(tmp_path / "fibre_crosssect_grid.hdf5")
+    output_path = write_canonical_inference_dataset(
+        observation_path=observation_path,
+        cross_section_path=cross_section_path,
+        output_path=tmp_path / "inference_dataset_fibre.hdf5",
+        profile_name="sersic",
+        mass_definition_label="m5_hinvkpc",
+        unit_convention=H_UNITS_V1,
+        h_ref=0.7,
+        theta_e_axis=np.asarray([0.2, 0.4], dtype=float),
+    )
+
+    with h5py.File(output_path, "r") as handle:
+        cross_section = handle["lensing_cross_section"]
+        np.testing.assert_allclose(cross_section["theta_e_axis"][()], np.asarray([0.0, 1.0]))
+        np.testing.assert_allclose(cross_section["gamma_axis"][()], np.asarray([1.2, 2.0, 2.8]))
+        np.testing.assert_allclose(
+            cross_section["cross_section_grid"][()],
+            np.asarray([[0.0, 0.0, 0.0], [0.5, 1.0, 1.5]], dtype=float),
+        )
+        assert cross_section.attrs["source"] == "mufibre3_cs_grid"
+
+
+def test_write_canonical_inference_dataset_rejects_sigma_lens_without_s2_grid(tmp_path: Path) -> None:
+    """A sigma-bearing lens without `s2_grid` should fail before writing output."""
+
+    observation_path = _write_observation_file(tmp_path / "observations_missing_s2.hdf5", omit_required_s2=True)
+    cross_section_path = _write_cross_section_file(tmp_path / "cross_section.h5")
+    output_path = tmp_path / "bad_inference_dataset.hdf5"
+
+    with pytest.raises(ValueError, match="num_sigma.*s2_grid"):
+        write_canonical_inference_dataset(
+            observation_path=observation_path,
+            cross_section_path=cross_section_path,
+            output_path=output_path,
+            profile_name="sersic",
+            mass_definition_label="m5_hinvkpc",
+            unit_convention=H_UNITS_V1,
+            h_ref=0.7,
+        )
+
+    assert not output_path.exists()

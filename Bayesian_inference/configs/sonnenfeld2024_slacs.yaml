@@ -1,31 +1,21 @@
 profile:
   name: sersic
 
-unit_convention: legacy_fixed_kpc
+unit_convention: h_units_v1
 
 model:
   name: sonnenfeld2024_slacs
-  components:
-    foreground_population: sonnenfeld2024_parent_mstar_redshift
-    size_relation: hyde_bernardi_quadratic
-    mass_gamma_distribution: sonnenfeld2024_m5_gamma
-    source_redshift: effective_truncated_normal
-    selection: sonnenfeld2024_theta_est_sigmoid
-    velocity_dispersion: grid_sigma_unit
-    fp_prior: optional_ols_summary
 
 data:
-  observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
-  cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
+  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_sonnenfeld2024_slacs_m5_hunits_v1.hdf5
 
 box_prior:
-  mu5_0: [9.0, 12.0]
-  beta5: [-3.0, 3.0]
-  xi5: [-3.0, 3.0]
-  sigma5: [1.0e-2, 0.2]
+  mu5h_0: [9.0, 12.0]
+  beta5h: [-3.0, 3.0]
+  xi5h: [-3.0, 3.0]
+  sigma5h: [1.0e-2, 0.2]
   mu_gamma_0: [1.5, 2.5]
-  beta_gamma: [-3.0, 3.0]
-  xi_gamma: [-3.0, 3.0]
+  beta_sigma_star_gamma: [-3.0, 3.0]
   sigma_gamma: [0.0, 0.5]
   mu_zs: [0.1, 3.0]
   sigma_zs: [1.0e-2, 2.0]
@@ -41,13 +31,12 @@ sampling:
   random_seed: 7
   initial_jitter_scale: 1.0e-3
   initial_center:
-    mu5_0: 11.332
-    beta5: 0.59
-    xi5: -0.11
-    sigma5: 0.064
+    mu5h_0: 11.332
+    beta5h: 0.59
+    xi5h: -0.11
+    sigma5h: 0.064
     mu_gamma_0: 1.99
-    beta_gamma: 0.03
-    xi_gamma: -0.67
+    beta_sigma_star_gamma: 0.03
     sigma_gamma: 0.149
     mu_zs: 0.48
     sigma_zs: 0.215

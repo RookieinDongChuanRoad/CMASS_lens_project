@@ -42,3 +42,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "real_data: tests that require locally synced data/ products",
+  "slow: tests that run heavier numerical checks than synthetic unit tests",
+]

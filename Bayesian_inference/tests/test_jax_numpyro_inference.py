@@ -24,62 +24,92 @@ from cmass_lens_inference.numpyro_sampler import _build_jittered_initial_strateg
 from cmass_lens_inference.runner import run_inference
 
 
-def _write_h_unit_observation_file(path: Path) -> Path:
+def _write_minimal_canonical_dataset(path: Path) -> Path:
     """
-    Write the minimal h-units observation schema needed by the JAX regression.
+    Write a tiny canonical dataset that can drive the CMASS JAX runtime.
 
-    The fixture is intentionally local to this test module because it is not a
-    generic data-builder.  It exists to exercise the exact boundary between the
-    merged hunit I/O contract and the JAX posterior: h-unit stellar mass,
-    h-unit size, and the `m5_hinvkpc` mass-definition subgroup.
+    This fixture intentionally bypasses legacy observation/cross-section files:
+    the test asserts that inference can start from the canonical schema itself.
     """
 
     gamma_grid = np.linspace(1.3, 2.7, 17)
+    theta_e_axis = np.linspace(0.0, 5.0, 64)
+    cs_over_theta = np.linspace(0.6, 1.4, gamma_grid.size)
+    string_dtype = h5py.string_dtype(encoding="utf-8")
     with h5py.File(path, "w") as handle:
-        handle.attrs["unit_convention"] = "h_units_v1"
-        handle.attrs["h_ref"] = 0.7
+        metadata = handle.create_group("metadata")
+        metadata.attrs["schema_version"] = "canonical_inference_dataset_v1"
+        metadata.attrs["unit_convention"] = "h_units_v1"
+        metadata.attrs["h_ref"] = 0.7
+        metadata.attrs["profile_name"] = "sersic"
+        metadata.attrs["mass_definition_label"] = "m5_hinvkpc"
+        metadata.attrs["mass_radius_kpc"] = 5.0
+        metadata.attrs["cosmology_h0"] = 70.0
+        metadata.attrs["cosmology_omega_m"] = 0.3
+        metadata.create_dataset(
+            "capabilities",
+            data=np.asarray(
+                [
+                    "lens_observations.v1",
+                    "lensing_mass_grids.v1",
+                    "lensing_cross_section.theta_gamma_grid.v1",
+                    "velocity_dispersion.per_lens_s2.v1",
+                ],
+                dtype=object,
+            ),
+            dtype=string_dtype,
+        )
 
-        group = handle.create_group("lens-h")
-        group.attrs["unit_convention"] = "h_units_v1"
-        group.attrs["h_ref"] = 0.7
-        group.attrs["zd"] = 0.55
-        group.attrs["zs"] = 1.75
-        group.attrs["logmchab_h2"] = 10.99
-        group.attrs["logmchab_err"] = 0.05
-        group.attrs["log10_re_hinv_kpc"] = 0.64
-        group.attrs["nser"] = 4.2
-        group.attrs["rein_arcsec"] = 1.3
-        group.attrs["num_sigma"] = 0
-        group.create_dataset("gamma_grid", data=gamma_grid)
+        lenses = handle.create_group("lenses")
+        lenses.create_dataset("lens_id", data=np.asarray(["lens-canonical"], dtype=object), dtype=string_dtype)
+        lenses.create_dataset("z_d", data=np.asarray([0.55], dtype=float))
+        lenses.create_dataset("z_s", data=np.asarray([1.75], dtype=float))
+        lenses.create_dataset("log_mstar_obs", data=np.asarray([10.99], dtype=float))
+        lenses.create_dataset("log_mstar_err", data=np.asarray([0.05], dtype=float))
+        lenses.create_dataset("log_re_obs", data=np.asarray([0.64], dtype=float))
+        lenses.create_dataset("n_obs", data=np.asarray([4.2], dtype=float))
+        lenses.create_dataset("theta_e_obs", data=np.asarray([1.3], dtype=float))
+        lenses.create_dataset("num_sigma", data=np.asarray([1], dtype=np.int64))
+        lenses.create_dataset("sigma_obs", data=np.asarray([[320000.0, 0.0]], dtype=float))
+        lenses.create_dataset("sigma_err", data=np.asarray([[20000.0, 1.0]], dtype=float))
 
-        mass_group = group.create_group("mass_definitions").create_group("m5_hinvkpc")
-        mass_group.attrs["unit_convention"] = "h_units_v1"
-        mass_group.attrs["h_ref"] = 0.7
-        mass_group.create_dataset("mass_grid", data=np.linspace(11.7, 10.9, 17))
-        mass_group.create_dataset("dmass_dthetaein_grid", data=np.linspace(-2.0, -1.0, 17))
+        mass_grids = handle.create_group("lensing_mass_grids")
+        mass_grids.create_dataset("gamma_grid", data=gamma_grid[None, :])
+        mass_grids.create_dataset("log_enclosed_mass_grid", data=np.linspace(11.7, 10.9, 17)[None, :])
+        mass_grids.create_dataset("dmass_dthetaein_grid", data=np.linspace(-2.0, -1.0, 17)[None, :])
+        mass_grids.create_dataset("s2_grid", data=np.linspace(0.8, 1.2, 17)[None, :])
+        mass_grids.create_dataset("has_s2", data=np.asarray([1], dtype=np.int64))
+
+        cross_section = handle.create_group("lensing_cross_section")
+        cross_section.create_dataset("theta_e_axis", data=theta_e_axis)
+        cross_section.create_dataset("gamma_axis", data=gamma_grid)
+        cross_section.create_dataset(
+            "cross_section_grid",
+            data=np.pi * (theta_e_axis[:, None] * cs_over_theta[None, :]) ** 2,
+        )
+        cross_section.attrs["boundary_policy"] = "zero_outside_theta_clip_gamma"
+
+        velocity = handle.create_group("velocity_dispersion_grids")
+        per_lens_s2 = velocity.create_group("per_lens_s2")
+        per_lens_s2.create_dataset("s2_grid", data=np.linspace(0.8, 1.2, 17)[None, :])
+        per_lens_s2.create_dataset("has_s2", data=np.asarray([1], dtype=np.int64))
 
     return path
 
 
-def test_config_loads_model_components_and_numpyro_sampling_fields(
+def test_config_loads_cmass_model_and_numpyro_sampling_fields(
     synthetic_config_path: Path,
 ) -> None:
     """
-    New configs should expose model components and NumPyro sampling fields.
-
-    Why this matters:
-    - the component model surface must be visible on RuntimeConfig so switching
-      to future models can be done through YAML alone
-    - NumPyro chain/sample/warmup names are the only accepted sampling contract
+    New configs should expose one concrete model and NumPyro sampling fields.
     """
 
     runtime_config = load_runtime_config(synthetic_config_path)
 
-    assert runtime_config.model.name == "cmass_current"
-    assert runtime_config.model.components == {
-        "mass_definition": "m5",
-        "gamma_distribution": "dependent",
-    }
+    assert runtime_config.model.name == "cmass"
+    assert not hasattr(runtime_config.model, "components")
+    assert runtime_config.parameter_schema.model_metadata["gamma_distribution"] == "sigma_star_dependent"
+    assert runtime_config.mass_definition.label == "m5_hinvkpc"
     assert runtime_config.sampling.num_chains == 24
     assert runtime_config.sampling.num_samples == 3
     assert runtime_config.sampling.num_warmup == runtime_config.sampling.warmup
@@ -122,28 +152,14 @@ def test_numpyro_jittered_initial_strategy_uses_independent_bounded_chain_values
     assert first_value != pytest.approx(second_value)
 
 
-@pytest.mark.parametrize(
-    "fixture_name",
-    [
-        "synthetic_config_path",
-        "synthetic_independent_config_path",
-        "synthetic_sigma_star_dependent_config_path",
-    ],
-)
-def test_jax_log_prob_is_finite_for_current_model(
-    request: pytest.FixtureRequest,
-    fixture_name: str,
+def test_jax_log_prob_is_finite_for_cmass_model(
+    synthetic_config_path: Path,
 ) -> None:
     """
-    The active JAX backend should evaluate every supported CMASS component set.
-
-    Removing the legacy oracle means this test now protects the dispatch and
-    numerical-health contract directly: a valid initial point must produce a
-    finite posterior and the returned diagnostic blob must identify the JAX
-    backend.
+    A valid initial point should produce a finite posterior through backend dispatch.
     """
 
-    runtime_config = load_runtime_config(request.getfixturevalue(fixture_name))
+    runtime_config = load_runtime_config(synthetic_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
 
     jax_model = build_jax_model(runtime_config)
@@ -152,6 +168,31 @@ def test_jax_log_prob_is_finite_for_current_model(
 
     assert np.isfinite(jax_value)
     assert blob["backend"].decode("utf-8").rstrip("\x00") == "jax"
+    assert np.isfinite(float(blob["normalization_value"]))
+
+
+def test_jax_log_prob_is_finite_for_canonical_dataset(
+    tmp_path: Path,
+    synthetic_config_path: Path,
+) -> None:
+    """The CMASS runtime should be able to start from canonical dataset input."""
+
+    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
+    payload["data"] = {
+        "inference_dataset_path": str(_write_minimal_canonical_dataset(tmp_path / "canonical.hdf5")),
+    }
+    canonical_config_path = tmp_path / "canonical_config.yaml"
+    canonical_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    runtime_config = load_runtime_config(canonical_config_path)
+    theta = runtime_config.sampling.initial_center.to_array()
+    jax_model = build_jax_model(runtime_config)
+
+    jax_value, blob = jax_log_prob(theta, jax_model)
+
+    assert runtime_config.data.inference_dataset_path is not None
+    assert jax_model.context.cs_cross_section_grid.shape == (64, 17)
+    assert np.isfinite(jax_value)
     assert np.isfinite(float(blob["normalization_value"]))
 
 
@@ -180,7 +221,6 @@ def test_jax_fp_prior_log_prob_is_finite(
 
 
 def test_jax_log_prob_uses_h_unit_current_model_context(
-    tmp_path: Path,
     synthetic_config_path: Path,
 ) -> None:
     """
@@ -192,42 +232,7 @@ def test_jax_log_prob_uses_h_unit_current_model_context(
     offset exported by that context.
     """
 
-    payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
-    payload["unit_convention"] = "h_units_v1"
-    payload["data"]["observation_path"] = str(_write_h_unit_observation_file(tmp_path / "h_units_observations.hdf5"))
-    payload["model"]["components"]["mass_definition"] = "m5_hinvkpc"
-    payload["box_prior"] = {
-        "mu5h_0": [9.0, 12.0],
-        "beta5h": [-3.0, 3.0],
-        "xi5h": [-3.0, 3.0],
-        "sigma5h": [1.0e-2, 0.2],
-        "mu_gamma_0": [1.5, 2.5],
-        "beta_gamma": [-3.0, 3.0],
-        "xi_gamma": [-3.0, 3.0],
-        "sigma_gamma": [0.0, 0.5],
-        "mu_zs": [1.0, 3.0],
-        "sigma_zs": [0.0, 2.0],
-        "theta0": [0.0, 3.0],
-        "loga": [-1.0, 3.0],
-    }
-    payload["sampling"]["initial_center"] = {
-        "mu5h_0": 11.17,
-        "beta5h": 0.59,
-        "xi5h": -0.11,
-        "sigma5h": 0.06,
-        "mu_gamma_0": 1.99,
-        "beta_gamma": 0.10,
-        "xi_gamma": -0.67,
-        "sigma_gamma": 0.149,
-        "mu_zs": 1.8,
-        "sigma_zs": 0.215,
-        "theta0": 0.93,
-        "loga": 1.0,
-    }
-
-    h_unit_config_path = tmp_path / "h_unit_jax.yaml"
-    h_unit_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-    runtime_config = load_runtime_config(h_unit_config_path)
+    runtime_config = load_runtime_config(synthetic_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
 
     jax_model = build_jax_model(runtime_config)

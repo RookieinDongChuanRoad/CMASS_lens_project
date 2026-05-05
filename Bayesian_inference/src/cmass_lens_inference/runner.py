@@ -13,9 +13,9 @@ import os
 from pathlib import Path
 
 from .config import load_runtime_config
-from .io import WITHIN_RE_SIGMA_DEFINITION
 from .jax_backend.likelihood_engine import build_compiled_model as build_jax_compiled_model
 from .mass_definition import mass_definition_metadata
+from .canonical_dataset import CAPABILITY_VELOCITY_DISPERSION_FP_WITHIN_RE_V1
 from .numpyro_sampler import run_numpyro_sampler
 from .outputs import (
     append_run_log,
@@ -61,11 +61,22 @@ def _run_with_layout(
     if runtime_context.config.runtime.disable_hdf5_file_locking:
         os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
+    if runtime_context.config.data.inference_dataset_path is None:
+        raise ValueError("Production inference requires data.inference_dataset_path.")
+
+    data_metadata = (
+        dict(runtime_context.compiled_model.data_metadata)
+        if runtime_context.compiled_model is not None
+        else {}
+    )
+    canonical_capabilities = list(data_metadata.get("canonical_capabilities", ()))
+    has_fp_within_re = CAPABILITY_VELOCITY_DISPERSION_FP_WITHIN_RE_V1 in set(canonical_capabilities)
+
     config_summary = {
         "profile": runtime_context.config.profile.name,
         "model": {
             "name": runtime_context.config.model.name,
-            "components": runtime_context.config.model.components,
+            "metadata": dict(runtime_context.config.parameter_schema.model_metadata),
         },
         "unit_convention": runtime_context.config.unit_convention,
         "h_ref": runtime_context.config.h_ref,
@@ -85,6 +96,13 @@ def _run_with_layout(
             "mstar_points": runtime_context.config.integration.mstar_points,
             "normalization_samples": runtime_context.config.integration.normalization_samples,
         },
+        "data": {
+            "inference_dataset_path": str(runtime_context.config.data.inference_dataset_path),
+            "canonical_capabilities": canonical_capabilities,
+            "canonical_schema_version": data_metadata.get("canonical_schema_version"),
+            "canonical_profile_name": data_metadata.get("canonical_profile_name"),
+            "canonical_mass_definition_label": data_metadata.get("canonical_mass_definition_label"),
+        },
         "fp_prior": {
             "enabled": runtime_context.config.fp_prior.enabled,
             "fit_mstar_min": runtime_context.config.fp_prior.fit_mstar_min,
@@ -96,24 +114,14 @@ def _run_with_layout(
             "beta_v_prior": runtime_context.config.fp_prior.beta_v_prior,
             "beta_v_error": runtime_context.config.fp_prior.beta_v_error,
         },
-        "sigma_table_path": (
-            str(runtime_context.config.data.sigma_table_path)
-            if runtime_context.config.data.sigma_table_path is not None
-            else None
-        ),
-        "sigma_table_mass_definition": (
-            runtime_context.config.mass_definition.label
-            if runtime_context.config.data.sigma_table_path is not None
-            else None
-        ),
         "fp_sigma_definition": (
-            WITHIN_RE_SIGMA_DEFINITION
-            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
+            "within_re"
+            if runtime_context.config.fp_prior.enabled and has_fp_within_re
             else None
         ),
         "fp_sigma_table_leaf_path": (
-            f"/{WITHIN_RE_SIGMA_DEFINITION}/{runtime_context.config.mass_definition.label}"
-            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
+            "/velocity_dispersion_grids/fp_within_re"
+            if runtime_context.config.fp_prior.enabled and has_fp_within_re
             else None
         ),
         "parallelism": runtime_context.parallelism.to_dict(),
@@ -124,7 +132,7 @@ def _run_with_layout(
         run_layout.run_dir,
         profile_name=runtime_context.config.profile.name,
         config_path=config_path,
-        observation_path=runtime_context.config.data.observation_path,
+        inference_dataset_path=runtime_context.config.data.inference_dataset_path,
         output_root_dir=runtime_context.config.output.root_dir,
         random_seed=runtime_context.config.sampling.random_seed,
         config_summary=config_summary,
@@ -168,7 +176,8 @@ def _run_with_layout(
         completed_steps=completed_steps,
         acceptance_fraction_mean=sampler_result.acceptance_fraction_mean,
         config_path=config_path,
-        input_observation_path=runtime_context.config.data.observation_path,
+        input_inference_dataset_path=runtime_context.config.data.inference_dataset_path,
+        input_observation_path=None,
         output_root_dir=runtime_context.config.output.root_dir,
         checkpoint_step=completed_steps,
         metadata={

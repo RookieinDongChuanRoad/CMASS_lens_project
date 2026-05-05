@@ -22,15 +22,20 @@ import yaml
 # keeps the test harness simple and avoids requiring an editable install just
 # to exercise the package during local development.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = PROJECT_ROOT.parent
 SOURCE_ROOT = PROJECT_ROOT / "src"
+PREPARE_DATASET_ROOT = REPOSITORY_ROOT / "prepare_dataset"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
+if PREPARE_DATASET_ROOT.exists() and str(PREPARE_DATASET_ROOT) not in sys.path:
+    sys.path.insert(0, str(PREPARE_DATASET_ROOT))
 
 
 def _default_box_prior_config(
     *,
-    mass_radius_kpc: int,
-    gamma_mode: str = "dependent",
+    mass_radius_kpc: int = 5,
+    gamma_mode: str = "sigma_star_dependent",
+    h_units: bool = True,
 ) -> dict[str, list[float]]:
     """
     Return one full public-name box-prior mapping for synthetic config fixtures.
@@ -39,12 +44,26 @@ def _default_box_prior_config(
     enforce the same contract that real user-authored config files now follow.
     """
 
-    if mass_radius_kpc == 10:
+    if mass_radius_kpc == 10 and h_units:
+        mass_bounds = {
+            "mu10h_0": [9.0, 12.0],
+            "beta10h": [-3.0, 3.0],
+            "xi10h": [-3.0, 3.0],
+            "sigma10h": [1.0e-2, 0.2],
+        }
+    elif mass_radius_kpc == 10:
         mass_bounds = {
             "mu10_0": [9.0, 12.0],
             "beta10": [-3.0, 3.0],
             "xi10": [-3.0, 3.0],
             "sigma10": [1.0e-2, 0.2],
+        }
+    elif h_units:
+        mass_bounds = {
+            "mu5h_0": [9.0, 12.0],
+            "beta5h": [-3.0, 3.0],
+            "xi5h": [-3.0, 3.0],
+            "sigma5h": [1.0e-2, 0.2],
         }
     else:
         mass_bounds = {
@@ -85,7 +104,7 @@ def _default_box_prior_config(
     }
 
 
-def _cmass_model_config(*, mass_definition: str, gamma_distribution: str) -> dict:
+def _cmass_model_config(*, mass_definition: str = "m5_hinvkpc", gamma_distribution: str = "sigma_star_dependent") -> dict:
     """
     Return the new registry-backed CMASS model section for fixtures.
 
@@ -94,13 +113,42 @@ def _cmass_model_config(*, mass_definition: str, gamma_distribution: str) -> dic
     no top-level ``gamma_model``.
     """
 
-    return {
-        "name": "cmass_current",
-        "components": {
-            "mass_definition": mass_definition,
-            "gamma_distribution": gamma_distribution,
-        },
-    }
+    del mass_definition, gamma_distribution
+    return {"name": "cmass"}
+
+
+def _write_canonical_dataset_from_legacy_inputs(
+    *,
+    output_path: Path,
+    observation_path: Path,
+    cross_section_path: Path,
+    profile_name: str,
+    sigma_bundle_path: Path | None = None,
+) -> Path:
+    """
+    Convert tiny legacy-style test inputs into the canonical inference schema.
+
+    Production config parsing is now canonical-only.  The fixture layer still
+    creates compact legacy observation/cross-section files because they are easy
+    to read in tests and are also useful for direct I/O-unit tests.  This helper
+    draws the boundary explicitly: synthetic production configs always point at
+    the canonical output, while raw files remain local test ingredients.
+    """
+
+    from prepare_dataset.dataset_schema.writer import write_canonical_inference_dataset
+
+    return write_canonical_inference_dataset(
+        observation_path=observation_path,
+        cross_section_path=cross_section_path,
+        output_path=output_path,
+        profile_name=profile_name,
+        mass_definition_label="m5_hinvkpc",
+        unit_convention="h_units_v1",
+        h_ref=0.7,
+        theta_e_axis=np.linspace(0.0, 5.0, 64, dtype=float),
+        sigma_bundle_path=sigma_bundle_path,
+        overwrite=True,
+    )
 
 
 def _write_synthetic_sigma_table(
@@ -178,6 +226,9 @@ def _write_synthetic_sigma_bundle(
         handle.create_dataset("profile_name", data=np.bytes_(profile_name))
         handle.attrs["schema_version"] = "sigma_unit_bundle_hdf5_v2"
         handle.attrs["quantity_name"] = "S_unit"
+        if mass_definition_label.endswith("_hinvkpc"):
+            handle.attrs["unit_convention"] = "h_units_v1"
+            handle.attrs["h_ref"] = 0.7
 
         slit_group = handle.create_group("slit")
         boss_group = handle.create_group("boss")
@@ -189,6 +240,9 @@ def _write_synthetic_sigma_bundle(
         leaf.attrs["mass_definition_label"] = mass_definition_label
         leaf.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
         leaf.attrs["units"] = f"km2 s-2 per 10**{mass_definition_label}"
+        if mass_definition_label.endswith("_hinvkpc"):
+            leaf.attrs["unit_convention"] = "h_units_v1"
+            leaf.attrs["h_ref"] = 0.7
         leaf.attrs["observation_flavor"] = observation_flavor
         if observation_flavor == "boss":
             values = np.linspace(
@@ -224,6 +278,9 @@ def _write_synthetic_sigma_bundle(
             within_re_leaf.attrs["mass_definition_label"] = mass_definition_label
             within_re_leaf.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
             within_re_leaf.attrs["units"] = f"km2 s-2 per 10**{mass_definition_label}"
+            if mass_definition_label.endswith("_hinvkpc"):
+                within_re_leaf.attrs["unit_convention"] = "h_units_v1"
+                within_re_leaf.attrs["h_ref"] = 0.7
             within_re_leaf.attrs["sigma_definition"] = "within_re"
             within_re_leaf.attrs["aperture_shape"] = "circular"
             within_re_leaf.attrs["aperture_radius_mode"] = "effective_radius"
@@ -297,6 +354,43 @@ def synthetic_observation_file(tmp_path: Path) -> Path:
         m10_group.create_dataset("mass_grid", data=m10_grid)
         m10_group.create_dataset("dmass_dthetaein_grid", data=dm5_dthetaein_grid)
         m10_group.create_dataset("s2_grid", data=s2_m10_grid)
+
+    return path
+
+
+@pytest.fixture
+def synthetic_hunit_observation_file(tmp_path: Path) -> Path:
+    """Create a one-lens h-units observation file for the default CMASS model."""
+
+    path = tmp_path / "synthetic_hunit_observations.hdf5"
+    gamma_grid = np.linspace(1.3, 2.7, 17)
+    mass_grid = np.linspace(11.7, 10.9, 17)
+    dmass_dthetaein_grid = np.linspace(-2.0, -1.0, 17)
+    s2_grid = np.linspace(0.8, 1.2, 17)
+
+    with h5py.File(path, "w") as handle:
+        handle.attrs["unit_convention"] = "h_units_v1"
+        handle.attrs["h_ref"] = 0.7
+        group = handle.create_group("lens-hunit")
+        group.attrs["unit_convention"] = "h_units_v1"
+        group.attrs["h_ref"] = 0.7
+        group.attrs["zd"] = 0.55
+        group.attrs["zs"] = 1.75
+        group.attrs["logmchab_h2"] = 10.99
+        group.attrs["logmchab_err"] = 0.05
+        group.attrs["log10_re_hinv_kpc"] = 0.64
+        group.attrs["nser"] = 4.2
+        group.attrs["rein_arcsec"] = 1.3
+        group.attrs["num_sigma"] = 1
+        group.attrs["sigma"] = 320000.0
+        group.attrs["sigma_err"] = 20000.0
+        group.create_dataset("gamma_grid", data=gamma_grid)
+        mass_group = group.create_group("mass_definitions").create_group("m5_hinvkpc")
+        mass_group.attrs["unit_convention"] = "h_units_v1"
+        mass_group.attrs["h_ref"] = 0.7
+        mass_group.create_dataset("mass_grid", data=mass_grid)
+        mass_group.create_dataset("dmass_dthetaein_grid", data=dmass_dthetaein_grid)
+        mass_group.create_dataset("s2_grid", data=s2_grid)
 
     return path
 
@@ -542,12 +636,42 @@ def synthetic_bad_boss_sigma_bundle_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def synthetic_hunit_sigma_bundle_without_within_re_file(tmp_path: Path) -> Path:
+    """Create an h-units sigma bundle that lacks the required within-Re leaf."""
+
+    return _write_synthetic_sigma_bundle(
+        tmp_path / "synthetic_hunit_no_within_re_sigma_bundle.h5",
+        profile_name="sersic",
+        mass_definition_label="m5_hinvkpc",
+        mass_radius_kpc=5.0,
+        observation_flavor="slit",
+        seeing_fwhm_arcsec=0.9,
+        include_within_re=False,
+    )
+
+
+@pytest.fixture
 def synthetic_within_re_sigma_bundle_file(tmp_path: Path) -> Path:
     """Create a tiny bundle with an explicit within-Re leaf for loader tests."""
 
     return _write_synthetic_sigma_bundle(
         tmp_path / "synthetic_within_re_sigma_bundle.h5",
         profile_name="sersic",
+        observation_flavor="slit",
+        seeing_fwhm_arcsec=0.9,
+        include_within_re=True,
+    )
+
+
+@pytest.fixture
+def synthetic_hunit_within_re_sigma_bundle_file(tmp_path: Path) -> Path:
+    """Create a tiny h-units within-Re bundle for default CMASS FP tests."""
+
+    return _write_synthetic_sigma_bundle(
+        tmp_path / "synthetic_hunit_within_re_sigma_bundle.h5",
+        profile_name="sersic",
+        mass_definition_label="m5_hinvkpc",
+        mass_radius_kpc=5.0,
         observation_flavor="slit",
         seeing_fwhm_arcsec=0.9,
         include_within_re=True,
@@ -576,7 +700,7 @@ def synthetic_devauc_within_re_sigma_bundle_file(tmp_path: Path) -> Path:
 @pytest.fixture
 def synthetic_config_path(
     tmp_path: Path,
-    synthetic_observation_file: Path,
+    synthetic_hunit_observation_file: Path,
     synthetic_cross_section_file: Path,
 ) -> Path:
     """
@@ -588,28 +712,32 @@ def synthetic_config_path(
     """
 
     path = tmp_path / "synthetic_sersic.yaml"
+    canonical_dataset_path = _write_canonical_dataset_from_legacy_inputs(
+        output_path=tmp_path / "synthetic_sersic_canonical.hdf5",
+        observation_path=synthetic_hunit_observation_file,
+        cross_section_path=synthetic_cross_section_file,
+        profile_name="sersic",
+    )
     config = {
         "profile": {"name": "sersic"},
-        "unit_convention": "legacy_fixed_kpc",
-        "model": _cmass_model_config(mass_definition="m5", gamma_distribution="dependent"),
+        "unit_convention": "h_units_v1",
+        "model": _cmass_model_config(),
         "data": {
-            "observation_path": str(synthetic_observation_file),
-            "cross_section_path": str(synthetic_cross_section_file),
+            "inference_dataset_path": str(canonical_dataset_path),
         },
-        "box_prior": _default_box_prior_config(mass_radius_kpc=5, gamma_mode="dependent"),
+        "box_prior": _default_box_prior_config(),
         "sampling": {
             "random_seed": 7,
             "num_chains": 24,
             "num_samples": 3,
             "num_warmup": 1,
             "initial_center": {
-                "mu5_0": 11.32,
-                "beta5": 0.59,
-                "xi5": -0.11,
-                "sigma5": 0.06,
+                "mu5h_0": 11.17,
+                "beta5h": 0.59,
+                "xi5h": -0.11,
+                "sigma5h": 0.06,
                 "mu_gamma_0": 1.99,
-                "beta_gamma": 0.1,
-                "xi_gamma": -0.67,
+                "beta_sigma_star_gamma": 0.24,
                 "sigma_gamma": 0.149,
                 "mu_zs": 1.8,
                 "sigma_zs": 0.215,
@@ -869,12 +997,21 @@ def synthetic_sigma_star_dependent_config_path(
 @pytest.fixture
 def synthetic_fp_prior_config_path(
     synthetic_config_path: Path,
-    synthetic_within_re_sigma_bundle_file: Path,
+    synthetic_hunit_observation_file: Path,
+    synthetic_cross_section_file: Path,
+    synthetic_hunit_within_re_sigma_bundle_file: Path,
 ) -> Path:
     """Create a `sersic + m5` config with the optional FP prior enabled."""
 
     payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
-    payload["data"]["sigma_table_path"] = str(synthetic_within_re_sigma_bundle_file)
+    canonical_dataset_path = _write_canonical_dataset_from_legacy_inputs(
+        output_path=synthetic_config_path.parent / "synthetic_sersic_fp_canonical.hdf5",
+        observation_path=synthetic_hunit_observation_file,
+        cross_section_path=synthetic_cross_section_file,
+        profile_name="sersic",
+        sigma_bundle_path=synthetic_hunit_within_re_sigma_bundle_file,
+    )
+    payload["data"] = {"inference_dataset_path": str(canonical_dataset_path)}
     payload["fp_prior"] = {"enabled": True}
     path = synthetic_config_path.parent / "synthetic_sersic_fp_prior.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

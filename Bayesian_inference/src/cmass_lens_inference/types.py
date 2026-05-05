@@ -128,10 +128,18 @@ class ProfileConfig:
 
 @dataclass(frozen=True)
 class DataConfig:
-    """Input file locations required by the inference pipeline."""
+    """
+    Input file locations used by inference and legacy oracle utilities.
 
-    observation_path: Path
-    cross_section_path: Path
+    `inference_dataset_path` is the only path loaded from production YAML.  The
+    raw-path fields remain on the dataclass so tests and migration utilities can
+    still construct legacy oracle contexts explicitly without reopening that
+    deprecated config surface.
+    """
+
+    inference_dataset_path: Path | None = None
+    observation_path: Path | None = None
+    cross_section_path: Path | None = None
     sigma_table_path: Path | None = None
 
 
@@ -159,18 +167,14 @@ class FPPriorConfig:
 @dataclass(frozen=True)
 class ModelConfig:
     """
-    Configurable scientific-model assembly for the inference backend.
+    Scientific-model selection for the inference backend.
 
-    The previous implementation encoded most modelling choices as Python
-    branches: profile name, gamma mode, FP prior flag, and a fixed selection
-    model.  The JAX/NumPyro migration makes that contract explicit so a future
-    user can switch to a different published model by editing YAML instead of
-    touching numerical kernels.  The component values are registry keys; each
-    key names a concrete implementation that the backend can validate and use.
+    A model name now identifies one concrete model implementation.  Variants
+    such as gamma parameterization or mass aperture are model-owned constants,
+    not configurable component switches inside this generic config type.
     """
 
     name: str
-    components: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -397,77 +401,6 @@ class RandomBasis:
 
 
 @dataclass(frozen=True)
-class CompiledModelContext:
-    """
-    Fully array-compiled numerical context consumed by the numerical kernels.
-
-    Every field in this dataclass is intentionally backend-friendly: contiguous
-    ndarrays, scalar flags, or plain floats. The goal is to move all
-    parameter-independent work out of the hot `log_prob` path so the sampler
-    only pays for vectorized kernel execution, not Python object orchestration.
-    """
-
-    z_grid: np.ndarray
-    chi_kpc_grid: np.ndarray
-    cs_gamma_grid: np.ndarray
-    cs_over_theta_grid: np.ndarray
-    cs_over_theta_int: np.ndarray
-    gamma_grid_int: np.ndarray
-    mass_grid_int: np.ndarray
-    dmass_dthetaein_grid_int: np.ndarray
-    s2_grid_int: np.ndarray
-    has_s2: np.ndarray
-    num_sigma: np.ndarray
-    sigma_obs: np.ndarray
-    sigma_err: np.ndarray
-    zd: np.ndarray
-    zs: np.ndarray
-    p_zd_fixed: np.ndarray
-    mstar_grid: np.ndarray
-    mstar_shift11p4: np.ndarray
-    stellar_mass_pivot: float
-    sigma_star_shift9p0_grid: np.ndarray
-    mstar_integrand_base: np.ndarray
-    delta_r_grid: np.ndarray
-    base_normals: np.ndarray
-    mass_radius_kpc: float
-    mass_log_physical_offset: float
-    use_sersic_index: int
-    n_fixed: float
-    mu_n0: float
-    beta_n: float
-    sigma_n: float
-    mass_function_loc: float
-    mass_function_scale: float
-    mass_function_alpha: float
-    mu_r0: float
-    beta_r: float
-    sigma_r: float
-    nu_r: float
-    mu_d: float
-    sigma_d: float
-    gamma_trunc_low: float
-    gamma_trunc_high: float
-    normalization_min_value: float
-    gamma_mode_code: int
-    fp_enabled: int
-    fp_fit_mstar_min: float
-    fp_pivot_mstar: float
-    fp_fiducial_scatter: float
-    fp_scatter_error: float
-    fp_mu_v_prior: float
-    fp_mu_v_error: float
-    fp_beta_v_prior: float
-    fp_beta_v_error: float
-    fp_gamma_axis: np.ndarray
-    fp_zd_axis: np.ndarray
-    fp_log_re_kpc_axis: np.ndarray
-    fp_n_axis: np.ndarray
-    fp_sigma_unit_grid: np.ndarray
-    fp_has_n_axis: int
-
-
-@dataclass(frozen=True)
 class CompiledModel:
     """
     High-level container for the production `log_prob` entrypoint.
@@ -482,7 +415,8 @@ class CompiledModel:
     cross_section_grid: CrossSectionGrid
     cosmology: Any
     parallelism: ResolvedParallelism
-    context: CompiledModelContext
+    context: Any
+    data_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -548,6 +482,7 @@ class RunResult:
     completed_steps: int
     acceptance_fraction_mean: float
     config_path: Path | None = None
+    input_inference_dataset_path: Path | None = None
     input_observation_path: Path | None = None
     output_root_dir: Path | None = None
     checkpoint_step: int | None = None

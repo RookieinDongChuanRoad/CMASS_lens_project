@@ -24,7 +24,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent
 LOCAL_IMPORT_ROOTS = (
     REPOSITORY_ROOT / "Bayesian_inference" / "src",
     REPOSITORY_ROOT / "Posterior_predictive_test" / "src",
-    REPOSITORY_ROOT / "prepare_intepolation_grids",
+    REPOSITORY_ROOT / "prepare_dataset",
     REPOSITORY_ROOT / "key_tests",
 )
 

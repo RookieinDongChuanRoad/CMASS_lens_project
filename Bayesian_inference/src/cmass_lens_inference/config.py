@@ -3,8 +3,8 @@ Configuration parsing.
 
 The loader converts YAML into typed dataclasses immediately so downstream code
 works with validated, explicit objects rather than raw nested dictionaries.
-Scientific model choices are now resolved exclusively through
-``model.name``/``model.components`` and the model registry.
+Scientific model choices are resolved exclusively through ``model.name`` and
+the model registry.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from .types import (
 DEFAULT_OUTPUT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs")
 REMOVED_TOP_LEVEL_MODEL_SECTIONS = ("mass_definition", "gamma_model")
 REMOVED_SAMPLING_FIELDS = ("n_walkers", "n_steps", "warmup")
+REMOVED_RAW_DATA_FIELDS = ("observation_path", "cross_section_path", "sigma_table_path")
 
 
 def _require_section(data: dict, section_name: str) -> dict:
@@ -60,8 +61,8 @@ def _reject_removed_model_sections(raw_data: dict) -> None:
     if removed_present:
         raise ValueError(
             "Top-level mass_definition and gamma_model sections are no longer supported. "
-            "Move model-specific choices under model.components, for example "
-            "model.components.mass_definition and model.components.gamma_distribution. "
+            "Use model.name to select one concrete model, for example "
+            "model.name: cmass. "
             f"Removed sections present: {', '.join(removed_present)}."
         )
 
@@ -105,25 +106,64 @@ def _load_model_section(raw_data: dict) -> tuple[ModelConfig, object]:
     """
     Load and normalize the scientific model registry selection.
 
-    A model definition owns its allowed component keys.  The config layer only
-    requires ``model.name`` and delegates component validation to the registry.
+    One model name now selects one concrete model.  Component switches are not
+    accepted by the generic parser because they belong in separate model files.
     """
 
     model_raw = _require_section(raw_data, "model")
     model_name = str(model_raw["name"])
     model_definition = get_model_definition(model_name)
 
-    component_overrides = model_raw.get("components")
-    if component_overrides is not None and not isinstance(component_overrides, dict):
-        raise TypeError("Config section 'model.components' must be a mapping.")
-    components = model_definition.normalize_components(component_overrides)
-    return ModelConfig(name=model_name, components=components), model_definition
+    if "components" in model_raw:
+        raise ValueError(
+            "Config section 'model.components' is no longer supported. "
+            "Select one concrete model with model.name, for example 'cmass'."
+        )
+    return ModelConfig(name=model_name), model_definition
 
 
 def _load_box_prior_section(raw_data: dict) -> dict:
     """Load the required explicit box-prior mapping."""
 
     return _require_section(raw_data, "box_prior")
+
+
+def _resolve_optional_path(raw_path: object) -> Path | None:
+    """Resolve an optional filesystem path from YAML."""
+
+    if raw_path is None:
+        return None
+    return Path(raw_path).expanduser().resolve()
+
+
+def _load_data_config(data_raw: dict) -> DataConfig:
+    """
+    Load the production inference data section.
+
+    Production inference now starts from one schema-validated canonical HDF5
+    product.  Raw observation, cross-section, and sigma-bundle inputs belong to
+    data preparation or legacy oracle tests; accepting them here would make it
+    unclear whether a run is using the canonical contract or old ad-hoc HDF5
+    normalization.
+    """
+
+    removed_present = [name for name in REMOVED_RAW_DATA_FIELDS if name in data_raw]
+    if removed_present:
+        raise ValueError(
+            "Raw data fields data.observation_path, data.cross_section_path, "
+            "and data.sigma_table_path are no longer accepted by production "
+            "inference configs. Prepare one canonical dataset first and set "
+            "data.inference_dataset_path. "
+            f"Removed fields present: {', '.join(removed_present)}."
+        )
+
+    inference_dataset_path = _resolve_optional_path(data_raw.get("inference_dataset_path"))
+    if inference_dataset_path is None:
+        raise KeyError("Config section 'data' must contain inference_dataset_path.")
+
+    return DataConfig(
+        inference_dataset_path=inference_dataset_path,
+    )
 
 
 def _reject_removed_sampling_fields(sampling_raw: dict) -> None:
@@ -172,24 +212,13 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     output_raw = _require_section(raw_data, "output")
     unit_convention = _load_unit_convention(raw_data)
     h_ref = validate_h_ref(float(cosmology_raw["h0"]) / 100.0)
-    mass_definition = model_definition.resolve_mass_definition(
-        model.components,
-        unit_convention,
-    )
+    mass_definition = model_definition.resolve_mass_definition(unit_convention)
     box_prior_raw = _load_box_prior_section(raw_data)
     fp_prior = _load_fp_prior_section(raw_data)
 
-    sigma_table_path_raw = data_raw.get("sigma_table_path")
-    sigma_table_path = (
-        Path(sigma_table_path_raw).expanduser().resolve()
-        if sigma_table_path_raw is not None
-        else None
-    )
-    if fp_prior.enabled and sigma_table_path is None:
-        raise ValueError("FP prior requires data.sigma_table_path when fp_prior.enabled is true.")
+    data_config = _load_data_config(data_raw)
 
     parameter_schema = model_definition.build_parameter_schema(
-        components=model.components,
         mass_definition=mass_definition,
         public_box_prior=box_prior_raw,
     )
@@ -212,9 +241,10 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
         parameter_schema=parameter_schema,
         fp_prior=fp_prior,
         data=DataConfig(
-            observation_path=Path(data_raw["observation_path"]).expanduser().resolve(),
-            cross_section_path=Path(data_raw["cross_section_path"]).expanduser().resolve(),
-            sigma_table_path=sigma_table_path,
+            inference_dataset_path=data_config.inference_dataset_path,
+            observation_path=data_config.observation_path,
+            cross_section_path=data_config.cross_section_path,
+            sigma_table_path=data_config.sigma_table_path,
         ),
         sampling=SamplingConfig(
             random_seed=int(sampling_raw["random_seed"]),

@@ -158,6 +158,52 @@ def theta_ein_arcsec(
     return jnp.where(valid, theta, 0.0)
 
 
+def interp_cross_section_theta_gamma(
+    theta_e: jnp.ndarray,
+    gamma: jnp.ndarray,
+    theta_e_axis: jnp.ndarray,
+    gamma_axis: jnp.ndarray,
+    cross_section_grid: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Bilinear interpolation for the canonical theta_E x gamma cross-section.
+
+    The canonical boundary policy used by the first schema version is
+    `zero_outside_theta_clip_gamma`: theta_E outside the prepared range has no
+    valid cross-section, while gamma is clipped to the closest tabulated plane.
+    This matches the schema document and keeps selection math independent of
+    whether the grid came from CMASS's old separable approximation or a future
+    Sonnenfeld finite-fibre calculation.
+    """
+
+    theta_inside = (theta_e >= theta_e_axis[0]) & (theta_e <= theta_e_axis[-1])
+    theta_clipped = jnp.clip(theta_e, theta_e_axis[0], theta_e_axis[-1])
+    gamma_clipped = jnp.clip(gamma, gamma_axis[0], gamma_axis[-1])
+
+    def bracket(x: jnp.ndarray, axis: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        size = axis.shape[0]
+        hi = jnp.clip(jnp.searchsorted(axis, x, side="right"), 1, size - 1)
+        lo = hi - 1
+        lo = jnp.where(x <= axis[0], 0, lo)
+        hi = jnp.where(x <= axis[0], 0, hi)
+        lo = jnp.where(x >= axis[-1], size - 1, lo)
+        hi = jnp.where(x >= axis[-1], size - 1, hi)
+        denominator = jnp.where(axis[hi] > axis[lo], axis[hi] - axis[lo], 1.0)
+        weight = jnp.where(hi == lo, 0.0, (x - axis[lo]) / denominator)
+        return lo, hi, weight
+
+    theta_lo, theta_hi, theta_weight = bracket(theta_clipped, theta_e_axis)
+    gamma_lo, gamma_hi, gamma_weight = bracket(gamma_clipped, gamma_axis)
+    v00 = cross_section_grid[theta_lo, gamma_lo]
+    v01 = cross_section_grid[theta_lo, gamma_hi]
+    v10 = cross_section_grid[theta_hi, gamma_lo]
+    v11 = cross_section_grid[theta_hi, gamma_hi]
+    low_theta = v00 * (1.0 - gamma_weight) + v01 * gamma_weight
+    high_theta = v10 * (1.0 - gamma_weight) + v11 * gamma_weight
+    interpolated = low_theta * (1.0 - theta_weight) + high_theta * theta_weight
+    return jnp.where(theta_inside & jnp.isfinite(interpolated), interpolated, 0.0)
+
+
 def interp_sigma_unit_clip_scalar(
     gamma: jnp.ndarray,
     zd: jnp.ndarray,
@@ -227,6 +273,7 @@ __all__ = [
     "SQRT2",
     "SQRT2PI",
     "as_jax_array",
+    "interp_cross_section_theta_gamma",
     "interp_sigma_unit_clip_scalar",
     "normal_pdf",
     "phi_standard",
