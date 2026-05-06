@@ -126,6 +126,7 @@ def write_fibre_cross_section_hdf5(
     beta_points: int = 1001,
     radial_points: int = 16,
     overwrite: bool = False,
+    progress: bool = False,
 ) -> Path:
     """Compute and write the Sonnenfeld finite-fibre cross-section table."""
 
@@ -138,6 +139,7 @@ def write_fibre_cross_section_hdf5(
         muB_min=muB_min,
         beta_points=beta_points,
         radial_points=radial_points,
+        progress=progress,
     )
     return _write_atomically(resolved_output, lambda handle: _write_fibre_grid(handle, grid))
 

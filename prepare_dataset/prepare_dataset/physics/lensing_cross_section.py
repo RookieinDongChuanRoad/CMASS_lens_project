@@ -18,8 +18,11 @@ making that convention difference explicit at the type boundary.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 import math
+import sys
+from types import TracebackType
 
 import numpy as np
 from scipy.integrate import quad
@@ -91,6 +94,104 @@ class FibreCrossSectionGrid:
     muB_min: float
     beta_points: int
     radial_points: int
+
+
+class _NullProgress(AbstractContextManager["_NullProgress"]):
+    """No-op progress reporter used by library callers and unit tests by default."""
+
+    def update(self, count: int) -> None:
+        """Accept progress increments without producing terminal output."""
+
+        _ = int(count)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Return ``None`` so exceptions from the numerical path propagate."""
+
+        _ = (exc_type, exc_value, traceback)
+        return None
+
+
+class _FallbackProgress(AbstractContextManager["_FallbackProgress"]):
+    """
+    Minimal stderr progress reporter for environments without ``tqdm``.
+
+    The finite-fibre grid can be expensive, so silently losing all feedback when
+    ``tqdm`` is absent would be a bad operational failure mode.  This fallback
+    prints one line per completed theta row plus the final row, which gives a
+    stable pair count without adding a required dependency to ``prepare_dataset``.
+    """
+
+    def __init__(self, *, total: int, gamma_count: int, description: str) -> None:
+        self.total = max(0, int(total))
+        self.gamma_count = max(1, int(gamma_count))
+        self.description = str(description)
+        self.completed = 0
+
+    def __enter__(self) -> "_FallbackProgress":
+        print(f"{self.description}: pairs 0/{self.total}", file=sys.stderr)
+        return self
+
+    def update(self, count: int) -> None:
+        """Record completed pair work and emit coarse row-level progress."""
+
+        previous = self.completed
+        self.completed = min(self.total, self.completed + max(0, int(count)))
+        crossed_row_boundary = previous // self.gamma_count != self.completed // self.gamma_count
+        if crossed_row_boundary or self.completed == self.total:
+            theta_done = math.ceil(self.completed / self.gamma_count) if self.total else 0
+            theta_total = math.ceil(self.total / self.gamma_count) if self.total else 0
+            print(
+                f"{self.description}: theta {theta_done}/{theta_total}, "
+                f"pairs {self.completed}/{self.total}",
+                file=sys.stderr,
+            )
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Return ``None`` so exceptions from the numerical path propagate."""
+
+        _ = (exc_type, exc_value, traceback)
+        return None
+
+
+def _open_pair_progress(
+    *,
+    enabled: bool,
+    total: int,
+    gamma_count: int,
+    description: str,
+) -> AbstractContextManager:
+    """
+    Return a progress context manager without making ``tqdm`` mandatory.
+
+    ``tqdm`` gives the best ETA/rate display for interactive runs.  The fallback
+    keeps long-running data preparation observable even in minimal environments
+    such as the package-local ``environment.yml``.
+    """
+
+    if not enabled:
+        return _NullProgress()
+
+    try:
+        from tqdm.auto import tqdm
+    except ModuleNotFoundError:
+        return _FallbackProgress(total=total, gamma_count=gamma_count, description=description)
+
+    return tqdm(
+        total=int(total),
+        desc=description,
+        unit="pair",
+        dynamic_ncols=True,
+    )
 
 
 def _as_1d_axis(values: np.ndarray, *, name: str) -> np.ndarray:
@@ -413,6 +514,7 @@ def compute_fibre_cross_section_grid(
     muB_min: float = DEFAULT_MUB_MIN,
     beta_points: int = DEFAULT_FIBRE_BETA_POINTS,
     radial_points: int = DEFAULT_FIBRE_RADIAL_POINTS,
+    progress: bool = False,
 ) -> FibreCrossSectionGrid:
     """Compute the Sonnenfeld finite-fibre cross-section table."""
 
@@ -430,22 +532,34 @@ def compute_fibre_cross_section_grid(
     ycaust_grid = np.zeros((theta_values.size, gamma_values.size), dtype=float)
     mufibre2_grid = np.zeros_like(ycaust_grid)
     mufibre3_grid = np.zeros_like(ycaust_grid)
-    for theta_index, theta_e in enumerate(theta_values):
-        if theta_e <= 0.0:
-            continue
-        for gamma_index, gamma in enumerate(gamma_values):
-            ycaust, mufibre2, mufibre3 = _fibre_cross_section_for_pair(
-                theta_e=float(theta_e),
-                gamma=float(gamma),
-                fibre_arcsec=float(fibre_arcsec),
-                seeing_arcsec=float(seeing_arcsec),
-                muB_min=float(muB_min),
-                beta_points=int(beta_points),
-                radial_points=int(radial_points),
-            )
-            ycaust_grid[theta_index, gamma_index] = ycaust
-            mufibre2_grid[theta_index, gamma_index] = mufibre2
-            mufibre3_grid[theta_index, gamma_index] = mufibre3
+    total_pairs = int(theta_values.size * gamma_values.size)
+    with _open_pair_progress(
+        enabled=bool(progress),
+        total=total_pairs,
+        gamma_count=gamma_values.size,
+        description="finite-fibre cross-section",
+    ) as progress_bar:
+        for theta_index, theta_e in enumerate(theta_values):
+            if theta_e <= 0.0:
+                # The zero-radius row is physically zero but still part of the
+                # requested grid.  Counting it keeps ETA aligned with the fixed
+                # axis product users see in the CLI arguments.
+                progress_bar.update(gamma_values.size)
+                continue
+            for gamma_index, gamma in enumerate(gamma_values):
+                ycaust, mufibre2, mufibre3 = _fibre_cross_section_for_pair(
+                    theta_e=float(theta_e),
+                    gamma=float(gamma),
+                    fibre_arcsec=float(fibre_arcsec),
+                    seeing_arcsec=float(seeing_arcsec),
+                    muB_min=float(muB_min),
+                    beta_points=int(beta_points),
+                    radial_points=int(radial_points),
+                )
+                ycaust_grid[theta_index, gamma_index] = ycaust
+                mufibre2_grid[theta_index, gamma_index] = mufibre2
+                mufibre3_grid[theta_index, gamma_index] = mufibre3
+                progress_bar.update(1)
 
     return FibreCrossSectionGrid(
         theta_e_axis=theta_values,

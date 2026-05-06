@@ -75,10 +75,19 @@ loga
 - `mu_zs, sigma_zs` 描述 effective source-redshift distribution。
 - `theta0, loga` 描述 `P_find(theta_E_est)`，其中 `a = 10**loga`。
 
+论文 Equation 38 把 parent stellar-mass function 的
+`mbar, alpha, m_t^(0..5), sigma_t` 也列入完整模型参数集合。但第 4.7 节随后
+说明：这些参数先由 parent sample 的 stellar-mass measurements 拟合，Table 1
+给出 best-fit 值；由于 parent sample 很大，正式 SLACS lens inference 中固定
+这些 Table 1 参数，只拟合上面列出的 lens-population、source-redshift 和
+finding-probability 参数。因此当前 `ParameterSchema` 不应采样 Table 1
+foreground-population constants，除非未来显式实现 parent-sample 联合拟合。
+
 质量定义首版应与 Sonnenfeld 2024 对齐，使用 fixed `M_2D(<5 kpc)` 的
-`m5`。若后续要支持 `h_units_v1` 或 `m5_hinvkpc`，应作为新的
-`model.components.mass_definition` 变体加入，并显式写清与 Sonnenfeld
-fixed-5-kpc 结果的转换。
+`m5`。若后续要支持 `h_units_v1` 或 `m5_hinvkpc`，应作为新的具体模型名
+暴露，例如 `sonnenfeld2024_slacs_hunit`，并显式写清与 Sonnenfeld
+fixed-5-kpc 结果的转换。不要把 paper-native fixed `m5` 和 hunit backend
+坐标混在同一个 `sonnenfeld2024_slacs` 名称下。
 
 ### Foreground Population
 
@@ -94,7 +103,24 @@ P_g(z_d, m*) proportional to
   * exp(-10**(m* - mbar))
 ```
 
-`f_t(z_d, m*)` 是随 redshift 变化的低质量截断 / completeness 项。
+其中 Table 1 固定值为：
+
+```text
+mbar = 11.06
+alpha = -1.207
+m_t(z) = sum_{k=0}^5 m_t^(k) z^k
+(m_t^0, ..., m_t^5)
+  = (9.388, 7.855, 48.34, -312.5, 535.7, -274.2)
+sigma_t = 0.0007
+```
+
+`f_t(z_d, m*)` 是随 redshift 变化的低质量截断 / completeness 项，论文
+Equation 27 写成：
+
+```text
+f_t(z, m*) = (1/pi) * arctan((m* - m_t(z)) / sigma_t) + 1/2
+```
+
 实现时应等价迁移 Sonnenfeld repo 中 `mz_distribution.py` 的
 `msdist(z, ms)` / `draw_mz()` 逻辑，或者在数据准备阶段预生成可 JAX 消费的
 inverse-CDF / tabulated sampler。
@@ -110,50 +136,119 @@ latent foreground variables：
 psi_g = (z_d, m*, R_e, m5, gamma)
 ```
 
-若 profile 变体需要 Sersic index，则扩展为：
-
-```text
-psi_g = (z_d, m*, n, R_e, m5, gamma)
-```
+注意：Sonnenfeld 2024 本文并没有在 population model 中引入 Sersic-index
+条件项。半光半径使用 `r_e = log10(R_e/kpc)`，并采用 Hyde & Bernardi (2009)
+的 early-type quadratic mass-size relation。不要把当前 CMASS/HSC Sersic
+profile 的 `n` 依赖搬进 paper-native Sonnenfeld 模型。
 
 size relation：
 
 ```text
-mu_R(m*, n)
-  = mu_R0 + beta_R * (m* - mstar_pivot)
-    + optional nu_R * (log10(n) - log10(4))
+R(r_e | m*) = Normal(mu_R(m*), sigma_R^2)
+
+mu_R(m*) = mu_R,0 + mu_R,1 * m* + mu_R,2 * m*^2
+
+(mu_R,0, mu_R,1, mu_R,2) = (7.55, -1.84, 0.11)
+sigma_R = 0.112
 ```
 
 residual：
 
 ```text
-Delta_R = log10(R_e / kpc) - mu_R(m*, n)
+Delta_R = r_e - mu_R(m*)
+        = log10(R_e / kpc) - mu_R(m*)
 ```
 
 mass and slope population：
 
 ```text
-mu5 = mu5_0 + beta5 * (m* - mstar_pivot) + xi5 * Delta_R
-mu_gamma = mu_gamma_0 + beta_gamma * (m* - mstar_pivot) + xi_gamma * Delta_R
+mu5
+  = mu5_0
+    + beta5 * (m* - 11.3)
+    + xi5 * Delta_R
 
-m5 ~ Normal(mu5, sigma5)
-gamma ~ Normal(mu_gamma, sigma_gamma)
+mu_gamma
+  = mu_gamma_0
+    + beta_gamma * (m* - 11.3)
+    + xi_gamma * Delta_R
+
+m5    ~ Normal(mu5, sigma5^2)
+gamma ~ Normal(mu_gamma, sigma_gamma^2)
 ```
 
-`mstar_pivot`、size-relation constants 和 unit shifts 应从 compiled context
-读取，不应在 hot JAX kernel 中硬编码。
+paper-native `sonnenfeld2024_slacs` 使用 physical stellar-mass coordinate
+`m* = log10(M*/Msun)` 和 fixed `m5 = log10(M_2D(<5 kpc)/Msun)`。显式
+`sonnenfeld2024_slacs_hunit` 变体若消费 hunit canonical dataset，所有
+stellar-mass location constants (`11.3`, `mbar`, `m_t(z)`, 以及 mass-size
+relation 中的 `m*` 坐标) 必须先被一致地变换到 active coordinate。unit
+shifts 应在 preprocessing/context 层完成，不应在 hot JAX kernel 中硬编码。
+
+### Fundamental Plane Prior
+
+Sonnenfeld 2024 的 FP prior 不能复用当前 CMASS 默认参考值。论文第 4.6 节
+使用的 relation 是：
+
+```text
+log10(sigma_ap)
+  ~ Normal(
+      mu_FP,0
+      + beta_FP * (m* - 11.3)
+      + xi_FP * Delta_R,
+      sigma_FP^2
+    )
+```
+
+其中 `Delta_R = r_e - mu_R(m*)`，所以这是包含 size residual 的二维
+fundamental-plane relation，不是当前 CMASS common helper 中的一维
+`sigma-logM*` relation。
+
+论文 Equation 37 给出的参考 prior 是：
+
+```text
+P(mu_FP,0) = Normal(2.342, 0.030^2)
+P(beta_FP) = Normal(0.258, 0.030^2)
+P(sigma_FP) = Normal(0.047, 0.008^2)
+```
+
+这些数值与 CMASS 当前 `FPPriorConfig` 默认值不同：
+
+```text
+CMASS mu_v_prior        = 2.34548
+CMASS beta_v_prior      = 0.176
+CMASS fiducial_scatter  = 0.075
+```
+
+因此 Sonnenfeld FP prior 如果启用，应新增 Sonnenfeld 专属 component /
+config defaults，而不是调用 `components.common.fp_prior` 的 CMASS-oriented
+默认参考值。当前 runnable v1 暂时返回 neutral `extra_prior`，这是为了避免
+把 CMASS FP prior 错误套到 Sonnenfeld 模型上；这不是 paper-level FP
+constraint 的实现。
+
+实现细节也要忠于论文：给定一组 population 参数 `eta` 时，论文不是把
+`mu_FP,0`、`beta_FP`、`xi_FP`、`sigma_FP` 作为 lens-level likelihood 的独立
+采样参数直接加入，而是先在大规模 mock population 上拟合 Equation 36，再用
+Equation 37 对拟合出的 FP summary 加权。`xi_FP` 出现在 Equation 36 的 fit
+中，但 Equation 37 只对 `mu_FP,0`、`beta_FP` 和 `sigma_FP` 给出显式 Gaussian
+prior。
 
 ### Source Distribution
 
 source 部分需要保留 Sonnenfeld 的 effective source-redshift distribution：
 
 ```text
-P_s(z_s | eta) = TruncatedNormal(mu_zs, sigma_zs; z_s > 0)
+P_s^eff(z_s | eta)
+  = Normal(mu_zs, sigma_zs^2)
 ```
 
-实现时要注意：`z_s` 分布可以是 effective source term，但 foreground 的
-`z_d, m*` 必须是 Table 1 的联合 parent distribution。不要把这两件事混成
-当前 CMASS 的独立一维近似。
+论文 Equation 33 写的是普通 Gaussian effective distribution，并没有写成
+`z_s > 0` truncated normal。实现时可以为了数值安全在 proposal 或 support
+上做截断，但这必须标成 backend 近似，不能写成 paper model 本身。
+
+同时要注意：`P_s^eff` 不是 background sources 的真实 redshift distribution，
+也不是已经 lens-selected 的 source redshift distribution。它是经过 source
+light-dependent detectability factor `l(psi_s^l)` 加权并边缘化后的 effective
+source-redshift term。foreground 的 `z_d, m*` 仍必须来自 Table 1 的联合
+parent distribution。不要把这两件事混成当前 CMASS 的独立一维近似。
 
 ### Per-lens Likelihood
 
@@ -179,10 +274,10 @@ L_i(eta)
 
 ```text
 P_g(z_d_i, m*)
-P(log R_e_i | m*, n_i)
-P(m5_i(gamma) | m*, R_e_i, eta)
-P(gamma | m*, R_e_i, eta)
-P_s(z_s_i | eta)
+P(r_e_i | m*)
+P(m5_i(gamma) | m*, Delta_R_i, eta)
+P(gamma | m*, Delta_R_i, eta)
+P_s^eff(z_s_i | eta)
 P_find(theta_E_est_i(gamma, m5_i, ...))
 g_i(theta_E_i, gamma)
 abs(dm5 / dtheta_E)
@@ -213,18 +308,23 @@ selection 必须严格使用 Sonnenfeld 的 velocity-dispersion proxy，而不�
 normalization draw 中：
 
 ```text
-sigma_proxy = sigma_model * (1 + sigma_noise)
-theta_E_est = 4 * pi * (sigma_proxy / c)**2 * D_ds / D_s
+sigma_ap_obs_proxy = sigma_ap_model * (1 + 0.0625 * epsilon)
+theta_E_est
+  = 4 * pi * (sigma_ap_obs_proxy / c)^2 * D_ds / D_s
 P_find = 1 / (1 + exp(-10**loga * (theta_E_est - theta0)))
 ```
 
-`sigma_noise` 应来自 fixed random basis 中专门的标准正态列，并使用与
-Sonnenfeld reference implementation 一致的 fractional scatter / measurement
-proxy 约定。
+其中 `epsilon` 应来自 fixed random basis 中专门的标准正态列。论文第 4.5 节
+采用所有 `sigma_ap` measurements 统一 6.25% fractional uncertainty，这是
+SLACS lenses 的 median relative uncertainty。
 
 单 lens likelihood 中也应使用同一 proxy 逻辑构造 `theta_E_est_i`，而不是
-退回 `P_find(theta_E_i)`。如果观测数据或 reference grids 已经预计算了对应
-proxy 所需量，应优先读取预计算量；否则由 `s2_grid` 和 `m5(gamma)` 即时计算。
+退回 `P_find(theta_E_i)`。需要特别小心：论文 likelihood 同时包含
+`P(sigma_ap_obs | sigma_ap_model)` 和 `P_find(theta_E_est)`。因此单 lens
+integral 中的 `P_find` 应与 observed-velocity-dispersion proxy 的噪声模型
+保持一致；不能简单把 noiseless `sigma_model` 当作 Bolton et al. 选择时用到
+的 observed `sigma_ap_obs`。如果 reference implementation 对这一项做了
+条件化或额外 MC 平均，应按 reference implementation 对齐。
 
 ### Cross-section
 
@@ -308,11 +408,15 @@ muB_min = 1.0
    psf_sigma = seeing_arcsec / 2.35
    ```
 
-6. 定义通过条件：
+6. 定义通过条件。论文第 4.4 节的 reference source 条件是：
+   emission-line flux in the fibre after PSF convolution 至少被放大 3 倍，
+   并且 photometric data 中产生至少两个 magnification 大于 1 的 image。
+   如果数据准备代码同时保存 `mufibre2` / `mufibre3` 这类派生网格，必须在
+   schema 中说明它们对应的 detection threshold，而不是在 inference 侧猜。
 
    ```text
-   mufibre2: mutot_seeing > 2 and muB > muB_min
-   mufibre3: mutot_seeing > 3 and muB > muB_min
+   spectroscopic condition: fibre_line_flux_magnification >= 3
+   photometric condition: at least two images with magnification > 1
    ```
 
 7. 在 source plane 积分：
@@ -323,7 +427,7 @@ muB_min = 1.0
 
 ### HDF5 Output Contract
 
-`fibre_crosssect_grid.hdf5` 至少应包含：
+若沿用现有命名，`fibre_crosssect_grid.hdf5` 至少应包含：
 
 ```text
 tein_grid
@@ -349,22 +453,31 @@ inference 只消费这些 datasets / attrs，不在 sampling 过程中生成或�
 
 ## Implementation Dependencies and TODO
 
-- 扩展 data config，使 Sonnenfeld 模型可以声明独立的
-  `fibre_cross_section_path`。当前 `cross_section_path` 面向 CMASS 一维
-  `cs_over_theta_ein(gamma)`，不应混用。
+- inference 生产入口已经收口到 canonical dataset；不要重新引入
+  `fibre_cross_section_path` 或 legacy `cross_section_path` 作为 production
+  config。Sonnenfeld 需要的 finite-fibre cross-section 应作为 canonical
+  capability / canonical HDF5 block 输入。
 - 在 `prepare_intepolation_grids` 中实现或迁移 `make_crosssect_grid.py`
   等价逻辑，并提供 HDF5 schema validation。
-- 将 JAX backend 改成 hook-driven engine：backend 负责 JIT / VMAP /
+- JAX backend 已经是 hook-driven engine：backend 负责 JIT / VMAP /
   normalization loop / diagnostics，模型只提供 draw、integrand、selection、
-  summary hook。
+  summary hook。后续工作应集中在 paper-faithful Sonnenfeld hooks 和
+  canonical data preparation，而不是重新拆 backend。
 - 实现 Sonnenfeld 专属 grid reader，把 `mufibre3_cs_grid(theta_E, gamma)`
   转成 JAX-friendly arrays 和边界规则。
-- 实现 Table-1 `P(z_d, m*)` 联合 parent distribution 的 JAX-friendly
-  density 和 deterministic sampler。
-- 实现 velocity-dispersion proxy 的 `theta_E_est`，并用 reference code 的
-  representative parameter point 做数值对照。
-- 保留 `sonnenfeld2024_slacs.py` 的 explicit failure，直到上述 hook、grid
-  reader 和 tests 都到位。
+- Table-1 `P(z_d, m*)` 的 arctan completeness density 已进入 runtime hooks；
+  后续仍需用 Sonnenfeld reference implementation 的 representative parameter
+  point 对 normalization proposal / density ratio 做数值对照。
+- velocity-dispersion proxy 的 `theta_E_est` 已进入 selection hooks，并使用
+  论文第 4.5 节的 6.25% fractional uncertainty；后续仍需与 reference code
+  对照单 lens conditional selection 项。
+- 实现 Sonnenfeld 专属 FP prior summary：在 mock population 上拟合
+  Equation 36，并用 Equation 37 的 `(2.342, 0.258, 0.047)` 参考值加权。
+  不要复用 CMASS `FPPriorConfig` 默认值或一维 `components.common.fp_prior`
+  作为 paper-level Sonnenfeld FP constraint。
+- `sonnenfeld2024_slacs.py` 现在已经是 registry assembly layer。当前 runnable
+  v1 只能作为工程路径 smoke test；在完成上述 reference-alignment 之前，不应
+  把它标成 paper-level reproduction。
 
 ## Tests Required for the Future Implementation
 

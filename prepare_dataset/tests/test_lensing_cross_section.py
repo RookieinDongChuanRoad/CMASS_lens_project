@@ -117,6 +117,52 @@ def test_fibre_cross_section_small_grid_matches_reference_path() -> None:
     np.testing.assert_allclose(result.mufibre3_cs_grid[1, 0], 0.5051607355894567, rtol=0.0, atol=1.0e-12)
 
 
+def test_fibre_cross_section_progress_false_is_silent(capsys: pytest.CaptureFixture[str]) -> None:
+    """The Python API should stay quiet unless a caller explicitly asks for progress."""
+
+    compute_fibre_cross_section_grid(
+        gamma_axis=np.asarray([2.0], dtype=float),
+        theta_e_axis=np.asarray([0.0, 1.0], dtype=float),
+        beta_points=9,
+        radial_points=5,
+        progress=False,
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_fibre_cross_section_progress_fallback_without_tqdm(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Progress reporting must not make ``tqdm`` a hard dependency."""
+
+    import builtins
+
+    original_import = builtins.__import__
+
+    def import_without_tqdm(name: str, *args: object, **kwargs: object) -> object:
+        if name == "tqdm.auto":
+            raise ModuleNotFoundError("No module named 'tqdm'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_tqdm)
+
+    compute_fibre_cross_section_grid(
+        gamma_axis=np.asarray([2.0], dtype=float),
+        theta_e_axis=np.asarray([0.0, 1.0], dtype=float),
+        beta_points=9,
+        radial_points=5,
+        progress=True,
+    )
+
+    captured = capsys.readouterr()
+    assert "finite-fibre cross-section" in captured.err
+    assert "pairs 2/2" in captured.err
+
+
 def test_fibre_writer_emits_sonnenfeld_hdf5_schema(tmp_path: Path) -> None:
     """The fibre writer should expose the datasets expected by Sonnenfeld-style readers."""
 
@@ -168,6 +214,17 @@ def test_cross_section_cli_exposes_new_build_modes() -> None:
     assert fibre_args.build_fibre_cross_section_hdf5 is True
     assert fibre_args.gamma_points == DEFAULT_FIBRE_GAMMA_AXIS.size
     assert fibre_args.theta_e_points is None
+    assert fibre_args.no_progress is False
+
+    quiet_fibre_args = parser.parse_args(
+        [
+            "--build-fibre-cross-section-hdf5",
+            "--output",
+            "fibre_crosssect_grid.hdf5",
+            "--no-progress",
+        ]
+    )
+    assert quiet_fibre_args.no_progress is True
 
 
 def test_cross_section_cli_generates_small_power_law_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,6 +271,35 @@ def test_cross_section_cli_generates_small_fibre_file(tmp_path: Path, monkeypatc
             "9",
             "--radial-points",
             "5",
+        ],
+    )
+
+    assert main() == 0
+    with h5py.File(output_path, "r") as handle:
+        assert handle["mufibre3_cs_grid"].shape == (2, 1)
+
+
+def test_cross_section_cli_can_disable_fibre_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Batch scripts should be able to keep finite-fibre generation quiet."""
+
+    output_path = tmp_path / "small_fibre_quiet.h5"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_dataset",
+            "--build-fibre-cross-section-hdf5",
+            "--output",
+            str(output_path),
+            "--gamma-points",
+            "1",
+            "--theta-e-points",
+            "2",
+            "--beta-points",
+            "9",
+            "--radial-points",
+            "5",
+            "--no-progress",
         ],
     )
 

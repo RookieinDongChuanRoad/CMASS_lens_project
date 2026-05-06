@@ -29,6 +29,7 @@ from prepare_dataset.dataset_schema.canonical import (
     CAPABILITY_LENS_OBSERVATIONS_V1,
     CAPABILITY_VELOCITY_DISPERSION_FP_WITHIN_RE_V1,
     CAPABILITY_VELOCITY_DISPERSION_PER_LENS_S2_V1,
+    CAPABILITY_VELOCITY_DISPERSION_POPULATION_SIGMA_UNIT_V1,
     DEFAULT_BOUNDARY_POLICY,
 )
 
@@ -177,9 +178,21 @@ def _write_lens_observations(
         else ("logmchab_h2", "logmchab", "logmchab_deV_h2", "logmchab_deV")
     )
     size_aliases = (
-        ("log10_reff_deV_hinv_kpc", "log10_re_hinv_kpc", "re_arcsec")
+        (
+            "log10_reff_deV_hinv_kpc",
+            "log10_reff_deV_kpc",
+            "log10_re_hinv_kpc",
+            "log10_re_kpc",
+            "re_arcsec",
+        )
         if profile_name == "devauc"
-        else ("log10_re_hinv_kpc", "log10_reff_deV_hinv_kpc", "re_arcsec")
+        else (
+            "log10_re_hinv_kpc",
+            "log10_re_kpc",
+            "log10_reff_deV_hinv_kpc",
+            "log10_reff_deV_kpc",
+            "re_arcsec",
+        )
     )
 
     for index, lens_id in enumerate(lens_ids):
@@ -304,6 +317,82 @@ def _copy_optional_sigma_bundle(
     return tuple(capabilities)
 
 
+def _copy_hdf5_group_payload(
+    *,
+    source_group: h5py.Group,
+    target_parent: h5py.Group,
+    target_name: str,
+) -> h5py.Group:
+    """Copy datasets and attrs from one HDF5 group into a new sibling group."""
+
+    if target_name in target_parent:
+        del target_parent[target_name]
+    target_group = target_parent.create_group(target_name)
+    for attr_name, attr_value in source_group.attrs.items():
+        target_group.attrs[attr_name] = attr_value
+    for item_name in source_group.keys():
+        source_group.copy(source_group[item_name], target_group, name=item_name)
+    return target_group
+
+
+def _validate_population_sigma_unit_group(
+    group: h5py.Group,
+    *,
+    population_sigma_path: Path,
+    mass_definition_label: str,
+) -> None:
+    """Validate the population sigma-unit leaf before copying it into canonical output."""
+
+    required_datasets = ("gamma_axis", "zd_axis", "log_re_kpc_axis", "s_unit_grid")
+    missing = [dataset_name for dataset_name in required_datasets if dataset_name not in group]
+    if missing:
+        raise ValueError(f"{population_sigma_path} is missing population sigma datasets: {missing}.")
+    if "mass_definition_label" not in group.attrs:
+        raise ValueError(f"{population_sigma_path} is missing mass_definition_label attr.")
+    source_mass_label = _decode_scalar_string(group.attrs["mass_definition_label"])
+    if source_mass_label != mass_definition_label:
+        raise ValueError(
+            f"{population_sigma_path} uses mass_definition_label={source_mass_label}; "
+            f"expected {mass_definition_label}."
+        )
+
+    gamma_axis = np.asarray(group["gamma_axis"][()], dtype=float)
+    zd_axis = np.asarray(group["zd_axis"][()], dtype=float)
+    log_re_axis = np.asarray(group["log_re_kpc_axis"][()], dtype=float)
+    values = np.asarray(group["s_unit_grid"][()], dtype=float)
+    expected_shape = (gamma_axis.size, zd_axis.size, log_re_axis.size)
+    if values.shape[:3] != expected_shape:
+        raise ValueError(
+            f"{population_sigma_path} s_unit_grid leading shape must be {expected_shape}; got {values.shape}."
+        )
+
+
+def _copy_optional_population_sigma_unit(
+    output: h5py.File,
+    *,
+    population_sigma_path: Path | None,
+    mass_definition_label: str,
+) -> tuple[str, ...]:
+    """Copy an optional flat population sigma-unit table into the canonical file."""
+
+    if population_sigma_path is None:
+        return ()
+
+    velocity_group = output[BLOCK_VELOCITY_DISPERSION_GRIDS]
+    with h5py.File(population_sigma_path, "r") as source:
+        _validate_population_sigma_unit_group(
+            source,
+            population_sigma_path=population_sigma_path,
+            mass_definition_label=mass_definition_label,
+        )
+        _copy_hdf5_group_payload(
+            source_group=source,
+            target_parent=velocity_group,
+            target_name="population_sigma_unit",
+        )
+    return (CAPABILITY_VELOCITY_DISPERSION_POPULATION_SIGMA_UNIT_V1,)
+
+
 def _write_metadata(
     output: h5py.File,
     *,
@@ -335,6 +424,7 @@ def write_canonical_inference_dataset(
     h_ref: float = 0.7,
     theta_e_axis: np.ndarray | None = None,
     sigma_bundle_path: str | Path | None = None,
+    population_sigma_path: str | Path | None = None,
     overwrite: bool = False,
 ) -> Path:
     """
@@ -351,6 +441,11 @@ def write_canonical_inference_dataset(
     resolved_sigma_bundle_path = (
         Path(sigma_bundle_path).expanduser().resolve()
         if sigma_bundle_path is not None
+        else None
+    )
+    resolved_population_sigma_path = (
+        Path(population_sigma_path).expanduser().resolve()
+        if population_sigma_path is not None
         else None
     )
     if output_path.exists() and not overwrite:
@@ -401,6 +496,10 @@ def write_canonical_inference_dataset(
             ) + _copy_optional_sigma_bundle(
                 output,
                 sigma_bundle_path=resolved_sigma_bundle_path,
+                mass_definition_label=mass_definition_label,
+            ) + _copy_optional_population_sigma_unit(
+                output,
+                population_sigma_path=resolved_population_sigma_path,
                 mass_definition_label=mass_definition_label,
             )
             _write_metadata(

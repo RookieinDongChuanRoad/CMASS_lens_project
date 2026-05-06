@@ -240,12 +240,42 @@ def _load_cross_section(group: h5py.Group) -> CanonicalCrossSectionGrid:
     )
 
 
-def _load_sigma_grid(group: h5py.Group) -> CanonicalSigmaGrid:
-    """Load one optional sigma-unit sub-block."""
+def _validate_one_dimensional_axis(axis: np.ndarray, *, axis_label: str) -> None:
+    """
+    Validate one interpolation axis used by canonical sigma-unit grids.
+
+    Sigma-unit tables are later interpolated inside JAX kernels, where unclear
+    rank or empty-axis errors are difficult to diagnose.  The reader therefore
+    validates these simple invariants immediately at dataset load time.
+    """
+
+    if axis.ndim != 1 or axis.size == 0:
+        raise ValueError(f"{axis_label} must be a non-empty one-dimensional axis, got shape {axis.shape}.")
+
+
+def _load_sigma_grid(
+    group: h5py.Group,
+    *,
+    block_label: str,
+    require_zd_axis: bool = False,
+) -> CanonicalSigmaGrid:
+    """
+    Load and validate one optional sigma-unit sub-block.
+
+    The canonical schema allows some sigma products, such as within-Re FP
+    tables, to omit redshift or Sersic-index axes when the underlying table is
+    independent of those coordinates.  Sonnenfeld's population sigma proxy,
+    however, needs a real redshift axis to build `theta_E_est` during
+    normalization, so callers can require `zd_axis` for that block.
+    """
 
     gamma_axis = _read_required_dataset(group, "gamma_axis", dtype=np.float64)
     log_re_axis = _read_required_dataset(group, "log_re_kpc_axis", dtype=np.float64)
     sigma_unit_grid = _read_required_dataset(group, "s_unit_grid", dtype=np.float64)
+    _validate_one_dimensional_axis(gamma_axis, axis_label=f"{block_label}.gamma_axis")
+    _validate_one_dimensional_axis(log_re_axis, axis_label=f"{block_label}.log_re_kpc_axis")
+    if require_zd_axis and "zd_axis" not in group:
+        raise ValueError(f"{block_label} must define zd_axis for population-level sigma interpolation.")
     zd_axis = (
         _read_required_dataset(group, "zd_axis", dtype=np.float64)
         if "zd_axis" in group
@@ -256,6 +286,19 @@ def _load_sigma_grid(group: h5py.Group) -> CanonicalSigmaGrid:
         if "n_axis" in group
         else np.asarray([4.0], dtype=np.float64)
     )
+    _validate_one_dimensional_axis(zd_axis, axis_label=f"{block_label}.zd_axis")
+    _validate_one_dimensional_axis(n_axis, axis_label=f"{block_label}.n_axis")
+    expected_shape = (gamma_axis.size,)
+    if "zd_axis" in group:
+        expected_shape += (zd_axis.size,)
+    expected_shape += (log_re_axis.size,)
+    if "n_axis" in group:
+        expected_shape += (n_axis.size,)
+    if sigma_unit_grid.shape != expected_shape:
+        raise ValueError(
+            f"{block_label}.s_unit_grid must have shape {expected_shape}, "
+            f"got {sigma_unit_grid.shape}."
+        )
     return CanonicalSigmaGrid(
         gamma_axis=gamma_axis,
         zd_axis=zd_axis,
@@ -278,9 +321,17 @@ def _load_velocity_dispersion(group: h5py.Group) -> CanonicalVelocityDispersionG
     return CanonicalVelocityDispersionGrids(
         per_lens_s2_grid=per_lens_s2_grid,
         per_lens_has_s2=per_lens_has_s2,
-        fp_within_re=_load_sigma_grid(group["fp_within_re"]) if "fp_within_re" in group else None,
+        fp_within_re=(
+            _load_sigma_grid(group["fp_within_re"], block_label="velocity_dispersion_grids.fp_within_re")
+            if "fp_within_re" in group
+            else None
+        ),
         population_sigma_unit=(
-            _load_sigma_grid(group["population_sigma_unit"])
+            _load_sigma_grid(
+                group["population_sigma_unit"],
+                block_label="velocity_dispersion_grids.population_sigma_unit",
+                require_zd_axis=True,
+            )
             if "population_sigma_unit" in group
             else None
         ),
@@ -327,6 +378,46 @@ def _validate_required_capabilities(
     missing = sorted(set(required_capabilities).difference(metadata.capabilities))
     if missing:
         raise ValueError(f"Canonical dataset is missing required capabilities: {missing}.")
+
+
+def _validate_velocity_capability_blocks(
+    metadata: CanonicalMetadata,
+    velocity_dispersion: CanonicalVelocityDispersionGrids,
+) -> None:
+    """
+    Ensure declared velocity capabilities have matching loaded HDF5 blocks.
+
+    Capability strings are the contract consumed by model runtimes.  If a file
+    advertises a capability but omits the corresponding data block, a model can
+    otherwise pass startup capability checks and fail later inside preprocessing
+    or JAX tracing.  Failing here keeps the error tied to the canonical schema.
+    """
+
+    capability_to_block = {
+        CAPABILITY_VELOCITY_DISPERSION_PER_LENS_S2_V1: (
+            velocity_dispersion.per_lens_s2_grid is not None
+            and velocity_dispersion.per_lens_has_s2 is not None,
+            "velocity_dispersion_grids/per_lens_s2",
+        ),
+        CAPABILITY_VELOCITY_DISPERSION_FP_WITHIN_RE_V1: (
+            velocity_dispersion.fp_within_re is not None,
+            "velocity_dispersion_grids/fp_within_re",
+        ),
+        CAPABILITY_VELOCITY_DISPERSION_POPULATION_SIGMA_UNIT_V1: (
+            velocity_dispersion.population_sigma_unit is not None,
+            "velocity_dispersion_grids/population_sigma_unit",
+        ),
+    }
+    missing_blocks = [
+        block_path
+        for capability, (is_present, block_path) in capability_to_block.items()
+        if capability in metadata.capabilities and not is_present
+    ]
+    if missing_blocks:
+        raise ValueError(
+            "Canonical dataset declares velocity-dispersion capabilities but "
+            f"is missing matching HDF5 blocks: {missing_blocks}."
+        )
 
 
 def _validate_shapes(
@@ -429,6 +520,7 @@ def load_canonical_inference_dataset(
         expected_profile_name=expected_profile_name,
         expected_mass_definition_label=expected_mass_definition_label,
     )
+    _validate_velocity_capability_blocks(metadata, velocity_dispersion)
     _validate_required_capabilities(metadata, required_capabilities)
     _validate_shapes(
         lenses=lenses,

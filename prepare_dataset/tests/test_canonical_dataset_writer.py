@@ -14,11 +14,12 @@ import h5py
 import numpy as np
 import pytest
 
-from prepare_dataset.config import H_UNITS_V1
+from prepare_dataset.config import H_UNITS_V1, LEGACY_FIXED_KPC
 from prepare_dataset.dataset_schema.canonical import (
     CAPABILITY_LENS_OBSERVATIONS_V1,
     CAPABILITY_LENSING_CROSS_SECTION_THETA_GAMMA_V1,
     CAPABILITY_LENSING_MASS_GRIDS_V1,
+    CAPABILITY_VELOCITY_DISPERSION_POPULATION_SIGMA_UNIT_V1,
     CAPABILITY_VELOCITY_DISPERSION_PER_LENS_S2_V1,
     TOP_LEVEL_BLOCKS,
 )
@@ -102,6 +103,59 @@ def _write_fibre_cross_section_file(path: Path) -> Path:
     return path
 
 
+def _write_fixed_m5_observation_file(path: Path) -> Path:
+    """Create a minimal legacy fixed-kpc observation file for SLACS-style tests."""
+
+    gamma_grid = np.asarray([1.2, 2.0, 2.8], dtype=float)
+    with h5py.File(path, "w") as handle:
+        handle.attrs["unit_convention"] = LEGACY_FIXED_KPC
+        handle.attrs["mass_definition_label"] = "m5"
+        handle.attrs["profile_name"] = "devauc"
+        for index, lens_id in enumerate(("slacs_a", "slacs_b")):
+            group = handle.create_group(lens_id)
+            group.attrs["unit_convention"] = LEGACY_FIXED_KPC
+            group.attrs["zd"] = 0.2 + 0.1 * index
+            group.attrs["zs"] = 0.6 + 0.1 * index
+            group.attrs["logmchab_deV"] = 11.0 + 0.1 * index
+            group.attrs["logmchab_err"] = 0.08
+            group.attrs["log10_reff_deV_kpc"] = 0.5 + 0.1 * index
+            group.attrs["nser"] = 4.0
+            group.attrs["rein_arcsec"] = 1.1 + 0.1 * index
+            group.attrs["num_sigma"] = 1
+            group.attrs["sigma"] = np.asarray([240.0 + index], dtype=float)
+            group.attrs["sigma_err"] = np.asarray([15.0], dtype=float)
+            group.create_dataset("gamma_grid", data=gamma_grid)
+            mass_group = group.create_group("mass_definitions").create_group("m5")
+            mass_group.attrs["unit_convention"] = LEGACY_FIXED_KPC
+            mass_group.attrs["mass_definition_label"] = "m5"
+            mass_group.attrs["mass_radius_kpc"] = 5.0
+            mass_group.create_dataset("mass_grid", data=np.asarray([10.0, 10.2, 10.4]) + index)
+            mass_group.create_dataset("dmass_dthetaein_grid", data=np.asarray([0.8, 0.9, 1.0]))
+            mass_group.create_dataset("s2_grid", data=np.asarray([2.0, 2.2, 2.4]) * 1.0e-5)
+    return path
+
+
+def _write_population_sigma_table(path: Path) -> Path:
+    """Create the flat sigma-unit table shape copied into Sonnenfeld canonical files."""
+
+    with h5py.File(path, "w") as handle:
+        handle.attrs["schema_version"] = "sigma_unit_table_v1"
+        handle.attrs["profile_name"] = "devauc"
+        handle.attrs["unit_convention"] = LEGACY_FIXED_KPC
+        handle.attrs["mass_definition_label"] = "m5"
+        handle.attrs["mass_radius_kpc"] = 5.0
+        handle.attrs["sigma_definition"] = "observed_aperture"
+        handle.attrs["aperture_shape"] = "circular"
+        handle.attrs["aperture_radius_arcsec"] = 1.5
+        handle.attrs["seeing_fwhm_arcsec"] = 1.5
+        handle.create_dataset("profile_name", data=np.bytes_("devauc"))
+        handle.create_dataset("gamma_axis", data=np.asarray([1.2, 2.0, 2.8], dtype=float))
+        handle.create_dataset("zd_axis", data=np.asarray([0.1, 0.3], dtype=float))
+        handle.create_dataset("log_re_kpc_axis", data=np.asarray([-0.2, 0.0, 0.2], dtype=float))
+        handle.create_dataset("s_unit_grid", data=np.ones((3, 2, 3), dtype=float))
+    return path
+
+
 def test_write_canonical_inference_dataset_creates_expected_schema_blocks(tmp_path: Path) -> None:
     """The writer should emit the agreed top-level canonical HDF5 blocks."""
 
@@ -182,6 +236,37 @@ def test_write_canonical_inference_dataset_accepts_fibre_cross_section_grid(tmp_
             np.asarray([[0.0, 0.0, 0.0], [0.5, 1.0, 1.5]], dtype=float),
         )
         assert cross_section.attrs["source"] == "mufibre3_cs_grid"
+
+
+def test_write_canonical_inference_dataset_copies_population_sigma_unit(tmp_path: Path) -> None:
+    """Sonnenfeld datasets require a population-level sigma-unit interpolation grid."""
+
+    observation_path = _write_fixed_m5_observation_file(tmp_path / "slacs_observations.hdf5")
+    cross_section_path = _write_fibre_cross_section_file(tmp_path / "fibre_crosssect_grid.hdf5")
+    population_sigma_path = _write_population_sigma_table(tmp_path / "population_sigma_unit.h5")
+    output_path = write_canonical_inference_dataset(
+        observation_path=observation_path,
+        cross_section_path=cross_section_path,
+        output_path=tmp_path / "sonnenfeld_canonical.hdf5",
+        profile_name="devauc",
+        mass_definition_label="m5",
+        unit_convention=LEGACY_FIXED_KPC,
+        h_ref=0.7,
+        population_sigma_path=population_sigma_path,
+    )
+
+    with h5py.File(output_path, "r") as handle:
+        capabilities = {
+            item.decode("utf-8") if isinstance(item, bytes) else str(item)
+            for item in handle["metadata/capabilities"][()]
+        }
+        assert CAPABILITY_VELOCITY_DISPERSION_POPULATION_SIGMA_UNIT_V1 in capabilities
+        population_group = handle["velocity_dispersion_grids/population_sigma_unit"]
+        np.testing.assert_allclose(population_group["gamma_axis"][()], np.asarray([1.2, 2.0, 2.8]))
+        np.testing.assert_allclose(population_group["zd_axis"][()], np.asarray([0.1, 0.3]))
+        np.testing.assert_allclose(population_group["log_re_kpc_axis"][()], np.asarray([-0.2, 0.0, 0.2]))
+        assert population_group["s_unit_grid"].shape == (3, 2, 3)
+        assert population_group.attrs["mass_definition_label"] == "m5"
 
 
 def test_write_canonical_inference_dataset_rejects_sigma_lens_without_s2_grid(tmp_path: Path) -> None:

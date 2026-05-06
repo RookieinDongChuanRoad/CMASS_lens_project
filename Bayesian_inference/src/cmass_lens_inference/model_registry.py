@@ -11,16 +11,22 @@ from __future__ import annotations
 
 from .jax_backend.model_adapter import build_model_definition
 from .model_interfaces import ModelDefinition
-from .models import cmass, cmass_runtime, sonnenfeld2024_slacs
+from .models import (
+    cmass,
+    cmass_runtime,
+    sonnenfeld2024_slacs,
+    sonnenfeld2024_slacs_runtime,
+)
 
 
 def get_model_definition(model_name: str) -> ModelDefinition:
     """
     Return the model definition registered under ``model_name``.
 
-    Sonnenfeld 2024 is intentionally present but disabled.  Raising
-    ``NotImplementedError`` here prevents a config typo from silently running
-    CMASS equations under a Sonnenfeld label.
+    Every branch returns a complete ``ModelDefinition`` built from a
+    human-authored ``ModelSpec`` and a runtime adapter.  The registry is the
+    only production dispatch point, so config parsing, JAX, NumPyro, and
+    benchmarks all see the same model boundary.
     """
 
     if model_name == "cmass":
@@ -29,10 +35,19 @@ def get_model_definition(model_name: str) -> ModelDefinition:
             cmass_runtime.get_runtime_adapter(),
         )
     if model_name == "sonnenfeld2024_slacs":
-        return sonnenfeld2024_slacs.get_model_definition()
+        return build_model_definition(
+            sonnenfeld2024_slacs.get_model_spec(),
+            sonnenfeld2024_slacs_runtime.get_runtime_adapter(),
+        )
+    if model_name == "sonnenfeld2024_slacs_hunit":
+        return build_model_definition(
+            sonnenfeld2024_slacs.get_hunit_model_spec(),
+            sonnenfeld2024_slacs_runtime.get_runtime_adapter(),
+        )
     raise ValueError(
         "Unsupported model preset "
-        f"'{model_name}'. Expected one of: cmass, sonnenfeld2024_slacs."
+        f"'{model_name}'. Expected one of: cmass, sonnenfeld2024_slacs, "
+        "sonnenfeld2024_slacs_hunit."
     )
 
 

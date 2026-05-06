@@ -22,7 +22,7 @@ from .io import (
 )
 from .mass_definition import H_UNITS_V1
 from .profiles import build_profile_spec
-from .models.cmass_context import CMASSModelContext
+from .models.components.cmass.context import CMASSModelContext
 from .types import RandomBasis, RuntimeConfig
 
 LOG10_2PI = math.log10(2.0 * math.pi)

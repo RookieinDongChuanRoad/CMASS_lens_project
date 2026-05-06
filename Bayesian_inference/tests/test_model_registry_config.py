@@ -21,8 +21,8 @@ from cmass_lens_inference.canonical_dataset import (
 )
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.models import cmass, cmass_runtime
-from cmass_lens_inference.models.cmass_context import CMASSModelContext
-from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
+from cmass_lens_inference.models.components.cmass.context import CMASSModelContext
+from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, get_mass_definition
 from cmass_lens_inference.model_interfaces import (
     CompiledContextBundle,
     ContextArraySpec,
@@ -216,14 +216,21 @@ def test_legacy_sampling_fields_are_rejected(tmp_path: Path) -> None:
         load_runtime_config(config_path)
 
 
-def test_model_registry_exposes_cmass_and_blocks_unimplemented_sonnenfeld() -> None:
-    """Registry dispatch should be explicit about implemented models."""
+def test_model_registry_exposes_cmass_and_sonnenfeld() -> None:
+    """Registry dispatch should expose every implemented concrete model."""
 
     cmass_model = get_model_definition("cmass")
     assert cmass_model.name == "cmass"
 
-    with pytest.raises(NotImplementedError, match="sonnenfeld2024_slacs"):
-        get_model_definition("sonnenfeld2024_slacs")
+    sonnenfeld_model = get_model_definition("sonnenfeld2024_slacs")
+    sonnenfeld_hunit_model = get_model_definition("sonnenfeld2024_slacs_hunit")
+
+    assert sonnenfeld_model.name == "sonnenfeld2024_slacs"
+    assert sonnenfeld_model.resolve_mass_definition(LEGACY_FIXED_KPC).label == "m5"
+    assert sonnenfeld_model.required_capabilities[-1] == "velocity_dispersion.population_sigma_unit.v1"
+    assert sonnenfeld_hunit_model.name == "sonnenfeld2024_slacs_hunit"
+    assert sonnenfeld_hunit_model.resolve_mass_definition(H_UNITS_V1).label == "m5_hinvkpc"
+    assert sonnenfeld_hunit_model.required_capabilities == sonnenfeld_model.required_capabilities
 
 
 def test_cmass_model_file_exposes_high_level_model_spec() -> None:

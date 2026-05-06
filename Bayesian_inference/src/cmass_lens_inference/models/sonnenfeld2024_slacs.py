@@ -1,29 +1,99 @@
-"""
-Sonnenfeld 2024 SLACS debiased model boundary.
+"""Assembly layer for the Sonnenfeld 2024 SLACS debiased model.
 
-This file intentionally defines the module boundary before enabling the model.
-The requested refactor is about separating reusable backend code from concrete
-scientific models; the Sonnenfeld numerical model still needs its own parent
-population, likelihood, and Monte Carlo selection-normalization implementation
-before it can be sampled safely.
+The numerical formulas live under
+``models.components.sonnenfeld2024_slacs``.  This file mirrors the CMASS
+assembly pattern: it names the concrete model, records fixed metadata, and
+wires component hooks into ``ModelSpec``.  Backend concerns such as JAX
+packing, ``jit``/``vmap`` execution, NumPyro sampling, and output writing stay
+outside this module.
 """
 
 from __future__ import annotations
 
-def get_model_definition():
-    """
-    Fail explicitly until the Sonnenfeld likelihood is implemented.
+from ..mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC
+from ..model_interfaces import ModelSpec
+from .components.sonnenfeld2024_slacs.capabilities import REQUIRED_CAPABILITIES
+from .components.sonnenfeld2024_slacs import (
+    likelihood,
+    parameters,
+    population,
+    selection,
+    summaries,
+)
 
-    Keeping this as a real module instead of a missing import gives users and
-    future developers a precise extension point while preventing accidental
-    execution of CMASS equations under a Sonnenfeld config label.
+
+MODEL_NAME = "sonnenfeld2024_slacs"
+HUNIT_MODEL_NAME = "sonnenfeld2024_slacs_hunit"
+MODEL_COMPONENT_KEY = "table1_velocity_proxy"
+MASS_APERTURE_KPC = 5
+
+
+def _build_model_spec(
+    *,
+    model_name: str,
+    unit_convention: str,
+    mass_definition_label: str,
+    mass_coordinate: str,
+) -> ModelSpec:
+    """
+    Build one concrete Sonnenfeld unit-convention variant.
+
+    ``sonnenfeld2024_slacs`` is reserved for the paper-native fixed-kpc mass
+    convention.  ``sonnenfeld2024_slacs_hunit`` is the explicit h-units variant
+    that runs on the current hunit canonical backend.  Both variants share the
+    same scientific formula hooks; the runtime context decides whether paper
+    mass-location constants are shifted before JAX sees them.
     """
 
-    raise NotImplementedError(
-        "sonnenfeld2024_slacs is registered as a model module boundary, but "
-        "its parent-population likelihood and Monte Carlo selection "
-        "normalization are not implemented yet."
+    return ModelSpec(
+        name=model_name,
+        component_key=MODEL_COMPONENT_KEY,
+        required_unit_convention=unit_convention,
+        mass_aperture_kpc=MASS_APERTURE_KPC,
+        parameters=parameters.PARAMETER_SPECS,
+        metadata={
+            "foreground_population": "sonnenfeld2024_table1",
+            "selection": "velocity_dispersion_proxy_theta_e_est",
+            "cross_section": "theta_gamma_finite_fibre",
+            "mass_definition": mass_definition_label,
+            "unit_convention": unit_convention,
+            "mass_coordinate": mass_coordinate,
+            "mstar_pivot_physical": parameters.MSTAR_PIVOT_PHYSICAL,
+            "mbar_physical": parameters.MBAR_PHYSICAL,
+        },
+        required_capabilities=REQUIRED_CAPABILITIES,
+        optional_capabilities=(),
+        static_codes={},
+        unpack_theta=parameters.unpack_theta,
+        validate_theta=parameters.validate_theta,
+        draw_population=population.draw_population,
+        selection_weight=selection.selection_weight_from_normal,
+        summary_row=summaries.summary_row,
+        lens_integrals=likelihood.lens_integrals,
+        extra_prior=summaries.extra_prior,
     )
 
 
-__all__ = ["get_model_definition"]
+def get_model_spec() -> ModelSpec:
+    """Return the paper-native fixed-5-kpc Sonnenfeld model specification."""
+
+    return _build_model_spec(
+        model_name=MODEL_NAME,
+        unit_convention=LEGACY_FIXED_KPC,
+        mass_definition_label="m5",
+        mass_coordinate="physical_fixed_5kpc",
+    )
+
+
+def get_hunit_model_spec() -> ModelSpec:
+    """Return the explicit h-units Sonnenfeld model specification."""
+
+    return _build_model_spec(
+        model_name=HUNIT_MODEL_NAME,
+        unit_convention=H_UNITS_V1,
+        mass_definition_label="m5_hinvkpc",
+        mass_coordinate="h_units_v1_m5_hinvkpc",
+    )
+
+
+__all__ = ["HUNIT_MODEL_NAME", "MODEL_NAME", "get_hunit_model_spec", "get_model_spec"]

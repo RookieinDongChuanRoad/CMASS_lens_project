@@ -20,6 +20,10 @@ from prepare_dataset.io.lensing_cross_sections import (
     write_fibre_cross_section_hdf5,
     write_power_law_cross_section_hdf5,
 )
+from prepare_dataset.io.slacs_observations import (
+    write_slacs_observation_hdf5,
+    write_slacs_population_sigma_unit_hdf5,
+)
 from prepare_dataset.io.slit_observation_updates import sync_slit_canonical_updates
 from prepare_dataset.io.sigma_tables import (
     build_default_sigma_unit_hdf5_tables,
@@ -87,6 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--build-boss-observation-hdf5",
         action="store_true",
         help="Build the two BOSS raw observation HDF5 files from the summary table.",
+    )
+    parser.add_argument(
+        "--build-slacs-observation-hdf5",
+        action="store_true",
+        help="Build the Sonnenfeld/SLACS devauc fixed-m5 raw observation HDF5 from SLACS_table.cat.",
+    )
+    parser.add_argument(
+        "--build-slacs-population-sigma-hdf5",
+        action="store_true",
+        help="Build the Sonnenfeld/SLACS population sigma-unit HDF5 table for fixed m5.",
     )
     parser.add_argument(
         "--repack-legacy-sigma-unit-hdf5",
@@ -192,6 +206,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional sigma bundle HDF5 input copied into canonical velocity-dispersion blocks when available.",
     )
     parser.add_argument(
+        "--population-sigma-hdf5",
+        type=Path,
+        default=None,
+        help="Optional flat population sigma-unit HDF5 copied into canonical velocity-dispersion blocks.",
+    )
+    parser.add_argument(
+        "--catalog",
+        type=Path,
+        default=None,
+        help="Raw catalog path used by --build-slacs-observation-hdf5.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -268,6 +294,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MUB_MIN,
         help="Minimum faint-image magnification for --build-fibre-cross-section-hdf5.",
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the default progress display for --build-fibre-cross-section-hdf5.",
+    )
     return parser
 
 
@@ -299,6 +330,8 @@ def main() -> int:
     selected_build_modes = (
         int(args.build_sigma_unit_hdf5)
         + int(args.build_boss_observation_hdf5)
+        + int(args.build_slacs_observation_hdf5)
+        + int(args.build_slacs_population_sigma_hdf5)
         + int(args.repack_legacy_sigma_unit_hdf5)
         + int(args.sync_slit_canonical_sigma)
         + int(args.build_canonical_inference_dataset)
@@ -357,6 +390,7 @@ def main() -> int:
                 beta_points=args.beta_points,
                 radial_points=args.radial_points,
                 overwrite=args.overwrite_in_place,
+                progress=not args.no_progress,
             )
         except ValueError as error:
             parser.error(str(error))
@@ -397,9 +431,34 @@ def main() -> int:
             h_ref=args.h_ref,
             theta_e_axis=theta_e_axis,
             sigma_bundle_path=args.sigma_bundle_hdf5,
+            population_sigma_path=args.population_sigma_hdf5,
             overwrite=args.overwrite_in_place,
         )
         print(f"canonical: wrote {output_path}")
+        return 0
+
+    if args.build_slacs_observation_hdf5:
+        if args.output is None:
+            parser.error("--build-slacs-observation-hdf5 requires --output.")
+        if args.catalog is None:
+            parser.error("--build-slacs-observation-hdf5 requires --catalog.")
+        output_path = write_slacs_observation_hdf5(
+            catalog_path=args.catalog,
+            output_path=args.output,
+            overwrite=args.overwrite_in_place,
+        )
+        print(f"slacs-observations: wrote {output_path}")
+        return 0
+
+    if args.build_slacs_population_sigma_hdf5:
+        if args.output is None:
+            parser.error("--build-slacs-population-sigma-hdf5 requires --output.")
+        output_path = write_slacs_population_sigma_unit_hdf5(
+            output_path=args.output,
+            workers=args.workers,
+            overwrite=args.overwrite_in_place,
+        )
+        print(f"slacs-population-sigma: wrote {output_path}")
         return 0
 
     if args.build_boss_observation_hdf5:
