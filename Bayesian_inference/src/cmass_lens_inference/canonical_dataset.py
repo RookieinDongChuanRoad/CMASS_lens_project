@@ -4,7 +4,7 @@ Canonical inference dataset reader and validator.
 The data-preparation step owns conversion from raw survey products into the
 canonical HDF5 schema.  This module owns the inference-side contract: read that
 already-prepared file, validate the metadata/capabilities/shapes needed before
-JAX context construction, and expose typed NumPy records to model runtimes.
+runtime context construction, and expose typed NumPy records to model runtimes.
 """
 
 from __future__ import annotations
@@ -244,9 +244,10 @@ def _validate_one_dimensional_axis(axis: np.ndarray, *, axis_label: str) -> None
     """
     Validate one interpolation axis used by canonical sigma-unit grids.
 
-    Sigma-unit tables are later interpolated inside JAX kernels, where unclear
-    rank or empty-axis errors are difficult to diagnose.  The reader therefore
-    validates these simple invariants immediately at dataset load time.
+    Sigma-unit tables are later interpolated inside backend kernels, where
+    unclear rank or empty-axis errors are difficult to diagnose.  The reader
+    therefore validates these simple invariants immediately at dataset load
+    time.
     """
 
     if axis.ndim != 1 or axis.size == 0:
@@ -390,7 +391,8 @@ def _validate_velocity_capability_blocks(
     Capability strings are the contract consumed by model runtimes.  If a file
     advertises a capability but omits the corresponding data block, a model can
     otherwise pass startup capability checks and fail later inside preprocessing
-    or JAX tracing.  Failing here keeps the error tied to the canonical schema.
+    or compiled-kernel setup.  Failing here keeps the error tied to the
+    canonical schema.
     """
 
     capability_to_block = {

@@ -8,11 +8,9 @@ are public/config-facing (`mu5h_0`).
 
 from __future__ import annotations
 
+import math
 from typing import NamedTuple
 
-import jax.numpy as jnp
-
-from ....jax_backend.primitives import phi_standard as _phi_standard
 from ....model_interfaces import ParameterSpec
 
 
@@ -76,21 +74,27 @@ PARAMETER_SPECS: tuple[ParameterSpec, ...] = tuple(
 class CMASSTheta(NamedTuple):
     """Named view over the fixed 11D CMASS parameter vector."""
 
-    mu5_0: jnp.ndarray
-    beta5: jnp.ndarray
-    xi5: jnp.ndarray
-    sigma5: jnp.ndarray
-    mu_gamma_0: jnp.ndarray
-    beta_sigma_star_gamma: jnp.ndarray
-    sigma_gamma: jnp.ndarray
-    mu_zs: jnp.ndarray
-    sigma_zs: jnp.ndarray
-    theta0: jnp.ndarray
-    loga: jnp.ndarray
+    mu5_0: object
+    beta5: object
+    xi5: object
+    sigma5: object
+    mu_gamma_0: object
+    beta_sigma_star_gamma: object
+    sigma_gamma: object
+    mu_zs: object
+    sigma_zs: object
+    theta0: object
+    loga: object
 
 
-def unpack_theta(theta: jnp.ndarray) -> CMASSTheta:
-    """Unpack the fixed 11D CMASS parameter vector."""
+def unpack_theta(theta) -> CMASSTheta:
+    """
+    Unpack the fixed 11D CMASS parameter vector.
+
+    This helper is retained for reference/oracle utilities.  Production Numba
+    kernels use their own typed scalar unpacker so importing this declaration
+    module does not require JAX.
+    """
 
     return CMASSTheta(
         mu5_0=theta[0],
@@ -108,11 +112,11 @@ def unpack_theta(theta: jnp.ndarray) -> CMASSTheta:
 
 
 def validate_theta(
-    theta: jnp.ndarray,
+    theta,
     theta_parts: CMASSTheta,
     context: object,
     static: dict[str, int],
-) -> jnp.ndarray:
+) -> bool:
     """
     Return the differentiable validity mask for one CMASS theta vector.
 
@@ -122,14 +126,17 @@ def validate_theta(
     """
 
     del context, static
-    z0 = (0.0 - theta_parts.mu_zs) / theta_parts.sigma_zs
-    trunc_den = 1.0 - _phi_standard(z0)
+    if float(theta_parts.sigma_zs) <= 0.0:
+        trunc_den = 0.0
+    else:
+        z0 = (0.0 - float(theta_parts.mu_zs)) / float(theta_parts.sigma_zs)
+        trunc_den = 1.0 - 0.5 * (1.0 + math.erf(z0 / math.sqrt(2.0)))
     return (
         (theta.shape[0] == len(INTERNAL_PARAMETER_NAMES))
-        & (theta_parts.sigma5 > 0.0)
-        & (theta_parts.sigma_gamma > 0.0)
-        & (theta_parts.sigma_zs > 0.0)
-        & (trunc_den > 0.0)
+        and (float(theta_parts.sigma5) > 0.0)
+        and (float(theta_parts.sigma_gamma) > 0.0)
+        and (float(theta_parts.sigma_zs) > 0.0)
+        and (trunc_den > 0.0)
     )
 
 
@@ -142,4 +149,3 @@ __all__ = [
     "unpack_theta",
     "validate_theta",
 ]
-

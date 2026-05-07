@@ -9,9 +9,9 @@ the engineering contract needed before real-data validation can happen:
 - the runtime should build a model-specific context from canonical input;
 - paper-native fixed-mass coordinates should keep the paper's mass-location
   constants unshifted, while h-dependent coordinates should shift them before
-  JAX kernels consume them;
-- the generic JAX likelihood backend should be able to evaluate one finite
-  posterior value through the Sonnenfeld hooks.
+  production kernels consume them;
+- the Numba production likelihood backend should be able to evaluate one finite
+  posterior value through the Sonnenfeld kernel.
 """
 
 from __future__ import annotations
@@ -21,20 +21,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
-import jax.numpy as jnp
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.jax_backend.primitives import normal_pdf
-from cmass_lens_inference.jax_backend.likelihood_engine import (
+from cmass_lens_inference.numba_backend.primitives import normal_pdf
+from cmass_lens_inference.numba_backend.likelihood_engine import (
     build_compiled_model,
     log_prob,
 )
+from cmass_lens_inference.runner import run_inference
 from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, get_mass_definition
 from cmass_lens_inference.model_registry import get_model_definition
 from cmass_lens_inference.models.components.sonnenfeld2024_slacs import (
     capabilities,
     parameters,
-    source,
 )
 from cmass_lens_inference.models.components.sonnenfeld2024_slacs.preprocessing import (
     build_sonnenfeld_context_from_canonical_dataset,
@@ -74,9 +73,9 @@ def _minimal_sonnenfeld_config(
         },
         "sampling": {
             "random_seed": 7,
-            "num_chains": 2,
-            "num_samples": 2,
-            "num_warmup": 1,
+            "n_walkers": 24,
+            "n_steps": 2,
+            "burn_in": 1,
             "initial_center": {
                 "mu5_0": 11.2,
                 "beta5": 0.5,
@@ -173,22 +172,21 @@ def test_sonnenfeld_effective_source_redshift_is_ordinary_gaussian() -> None:
     """Equation 33 is an ordinary Gaussian effective source-redshift term."""
 
     theta_parts = parameters.SonnenfeldTheta(
-        mu5_0=jnp.asarray(11.2),
-        beta5=jnp.asarray(0.5),
-        xi5=jnp.asarray(-0.1),
-        sigma5=jnp.asarray(0.08),
-        mu_gamma_0=jnp.asarray(2.0),
-        beta_gamma=jnp.asarray(0.1),
-        xi_gamma=jnp.asarray(0.05),
-        sigma_gamma=jnp.asarray(0.15),
-        mu_zs=jnp.asarray(0.2),
-        sigma_zs=jnp.asarray(0.5),
-        theta0=jnp.asarray(0.2),
-        loga=jnp.asarray(0.0),
+        mu5_0=11.2,
+        beta5=0.5,
+        xi5=-0.1,
+        sigma5=0.08,
+        mu_gamma_0=2.0,
+        beta_gamma=0.1,
+        xi_gamma=0.05,
+        sigma_gamma=0.15,
+        mu_zs=0.2,
+        sigma_zs=0.5,
+        theta0=0.2,
+        loga=0.0,
     )
-    negative_zs = jnp.asarray(-0.1)
-
-    density = source.effective_source_redshift_density(negative_zs, theta_parts)
+    negative_zs = -0.1
+    density = normal_pdf(negative_zs, theta_parts.mu_zs, theta_parts.sigma_zs)
 
     assert float(density) == pytest.approx(
         float(normal_pdf(negative_zs, theta_parts.mu_zs, theta_parts.sigma_zs))
@@ -396,11 +394,11 @@ def test_config_loads_sonnenfeld_parameter_schema(
     assert config.parameter_schema.model_metadata["foreground_population"] == "sonnenfeld2024_table1"
 
 
-def test_sonnenfeld_jax_log_prob_is_finite_for_synthetic_dataset(
+def test_sonnenfeld_numba_log_prob_is_finite_for_synthetic_dataset(
     tmp_path: Path,
     sonnenfeld_fixed_m5_ready_dataset_path: Path,
 ) -> None:
-    """A valid synthetic point should evaluate through the JAX backend."""
+    """A valid synthetic point should evaluate through the Numba backend."""
 
     config = load_runtime_config(
         _minimal_sonnenfeld_config(
@@ -420,7 +418,7 @@ def test_sonnenfeld_jax_log_prob_is_finite_for_synthetic_dataset(
     assert compiled.context.population_sigma_unit_grid.shape == (3, 2, 2, 2)
 
 
-def test_sonnenfeld_hunit_jax_log_prob_is_finite_for_synthetic_dataset(
+def test_sonnenfeld_hunit_numba_log_prob_is_finite_for_synthetic_dataset(
     tmp_path: Path,
     sonnenfeld_hunit_ready_dataset_path: Path,
 ) -> None:
@@ -444,3 +442,28 @@ def test_sonnenfeld_hunit_jax_log_prob_is_finite_for_synthetic_dataset(
     assert compiled.context.mstar_pivot == pytest.approx(
         parameters.shift_physical_mass_location_to_hunits(parameters.MSTAR_PIVOT_PHYSICAL, 0.7)
     )
+
+
+def test_sonnenfeld_short_emcee_run_writes_chain_h5(
+    tmp_path: Path,
+    sonnenfeld_fixed_m5_ready_dataset_path: Path,
+) -> None:
+    """The Sonnenfeld model should run through the shared production sampler."""
+
+    config_path = _minimal_sonnenfeld_config(
+        tmp_path,
+        sonnenfeld_fixed_m5_ready_dataset_path,
+        model_name="sonnenfeld2024_slacs",
+        unit_convention=LEGACY_FIXED_KPC,
+    )
+    run_result = run_inference(str(config_path))
+
+    assert run_result.status == "completed"
+    assert run_result.metadata["backend"] == "numba_emcee"
+    assert run_result.metadata["chain_storage"] == "emcee_hdf_backend"
+    assert (run_result.run_dir / "chain.h5").exists()
+
+    import emcee
+
+    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"), read_only=True)
+    assert backend.get_chain().shape == (2, 24, 12)

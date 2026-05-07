@@ -3,7 +3,7 @@ Deterministic preprocessing for the default CMASS model.
 
 This module is model-specific, but sampler-agnostic.  It converts a validated
 canonical inference dataset into `CMASSModelContext`, the NumPy source context
-that `models.cmass` scientific hooks consume after generic JAX packing.
+consumed by production backend kernels.
 
 Why this boundary exists:
 - `cmass.py` should stay readable as the human-authored scientific model.
@@ -26,14 +26,14 @@ from ....canonical_dataset import (
     CanonicalInferenceDataset,
     load_canonical_inference_dataset,
 )
-from ....compiled_context import build_random_basis
-from ....cosmology import FlatLambdaCDM
-from ....jax_backend.canonical_context import (
+from ....canonical_context import (
     canonical_dataset_metadata,
     interpolate_lensing_mass_grids,
-    normalize_sigma_grid_for_jax,
+    normalize_sigma_grid,
     shared_gamma_axis,
 )
+from ....compiled_context import build_random_basis
+from ....cosmology import FlatLambdaCDM
 from ....model_interfaces import CompiledContextBundle
 from ....profiles import build_profile_spec
 from ....types import ProfileSpec, RuntimeConfig
@@ -243,7 +243,7 @@ def build_cmass_context_from_canonical_dataset(
     )
 
     fp_gamma_axis, fp_zd_axis, fp_log_re_axis, fp_n_axis, fp_sigma_grid, fp_has_n_axis = (
-        normalize_sigma_grid_for_jax(
+        normalize_sigma_grid(
             active_dataset.velocity_dispersion.fp_within_re if runtime_config.fp_prior.enabled else None,
             profile_fixed_n=active_profile.fixed_n,
         )

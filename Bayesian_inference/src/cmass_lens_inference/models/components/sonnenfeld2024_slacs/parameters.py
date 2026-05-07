@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-import jax.numpy as jnp
 import numpy as np
 
 from ....model_interfaces import ParameterSpec
@@ -83,22 +82,28 @@ PARAMETER_SPECS: tuple[ParameterSpec, ...] = tuple(
 class SonnenfeldTheta(NamedTuple):
     """Named view over the fixed 12D Sonnenfeld parameter vector."""
 
-    mu5_0: jnp.ndarray
-    beta5: jnp.ndarray
-    xi5: jnp.ndarray
-    sigma5: jnp.ndarray
-    mu_gamma_0: jnp.ndarray
-    beta_gamma: jnp.ndarray
-    xi_gamma: jnp.ndarray
-    sigma_gamma: jnp.ndarray
-    mu_zs: jnp.ndarray
-    sigma_zs: jnp.ndarray
-    theta0: jnp.ndarray
-    loga: jnp.ndarray
+    mu5_0: object
+    beta5: object
+    xi5: object
+    sigma5: object
+    mu_gamma_0: object
+    beta_gamma: object
+    xi_gamma: object
+    sigma_gamma: object
+    mu_zs: object
+    sigma_zs: object
+    theta0: object
+    loga: object
 
 
-def unpack_theta(theta: jnp.ndarray) -> SonnenfeldTheta:
-    """Unpack the fixed 12D Sonnenfeld parameter vector."""
+def unpack_theta(theta) -> SonnenfeldTheta:
+    """
+    Unpack the fixed 12D Sonnenfeld parameter vector.
+
+    The production backend uses model-specific Numba unpacking.  This helper
+    remains a backend-neutral reference utility and therefore avoids importing
+    JAX from the model declaration module.
+    """
 
     return SonnenfeldTheta(
         mu5_0=theta[0],
@@ -117,11 +122,11 @@ def unpack_theta(theta: jnp.ndarray) -> SonnenfeldTheta:
 
 
 def validate_theta(
-    theta: jnp.ndarray,
+    theta,
     theta_parts: SonnenfeldTheta,
     context: object,
     static: dict[str, int],
-) -> jnp.ndarray:
+) -> bool:
     """
     Return the differentiable validity mask for one Sonnenfeld theta vector.
 
@@ -134,9 +139,9 @@ def validate_theta(
     del context, static
     return (
         (theta.shape[0] == len(INTERNAL_PARAMETER_NAMES))
-        & (theta_parts.sigma5 > 0.0)
-        & (theta_parts.sigma_gamma > 0.0)
-        & (theta_parts.sigma_zs > 0.0)
+        and (float(theta_parts.sigma5) > 0.0)
+        and (float(theta_parts.sigma_gamma) > 0.0)
+        and (float(theta_parts.sigma_zs) > 0.0)
     )
 
 
@@ -173,7 +178,8 @@ def active_size_relation_coefficients(
 
     Substituting ``m_phys = m_h - 2 log10(h_ref)`` gives a new quadratic in
     ``m_h``.  Keeping this algebra in one helper makes hunit shifts auditable
-    and prevents JAX kernels from carrying paper/native conversion branches.
+    and prevents backend kernels from carrying paper/native conversion
+    branches.
     """
 
     if unit_convention == "legacy_fixed_kpc":

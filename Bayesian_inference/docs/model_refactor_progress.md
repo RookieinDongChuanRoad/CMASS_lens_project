@@ -2,36 +2,51 @@
 
 ## Final Target
 
-The inference architecture should let a scientist add a new model without
-understanding the sampler, JAX compilation, output writer, or CMASS-specific
-data plumbing.  In the final form, a model file should only define:
+The production inference architecture should let a scientist add or inspect a
+model without understanding sampler internals, output artifact conventions, or
+CMASS-specific data plumbing.  The production backend for this worktree is now
+intentionally:
+
+```text
+canonical inference dataset
+  -> thin ModelSpec + ModelRuntimeAdapter
+  -> model-specific Numba kernels
+  -> backend-owned posterior reduction and diagnostics
+  -> emcee sampler
+  -> emcee HDFBackend chain.h5 outputs
+```
+
+In final form, a model assembly file should define only:
 
 - sampled parameters and their public config names;
-- model-specific data requirements;
-- latent-population, selection, per-lens likelihood, and optional prior formulas;
-- model-owned diagnostics.
+- model-specific data capability requirements;
+- model metadata and unit/mass-coordinate contract;
+- the backend kernel key that owns the numerical hot path.
 
-Framework code should own config validation, schema construction, HDF5 field
-loading, context packing, JAX `jit`/`vmap`, selection-normalization reduction,
-NumPyro/NUTS integration, and output metadata.
+Framework code owns config validation, schema construction, canonical HDF5
+loading, runtime context dispatch, emcee sampling, output metadata,
+checkpoints, diagnostics, and production backend execution.
 
-## Current State After Sonnenfeld Paper-Native / Hunit Split
+JAX/NumPyro are no longer production dependencies or production run-path
+requirements.  Optional JAX code may remain only as oracle/reference code and
+must not be imported by `model_registry.py`, `runner.py`, configs, output
+writers, or the default benchmark path.
 
-The codebase now uses the inference-side canonical dataset as the only
-production data entry, roughly 98% of the architectural target.  The required YAML data
-entry is:
+## Current State After Numba/Emcee Production Migration
+
+The production data entry remains canonical-only:
 
 ```yaml
 data:
   inference_dataset_path: /path/to/inference_dataset.hdf5
 ```
 
-The old observation/cross-section/sigma-table paths are no longer accepted by
-`load_runtime_config()`.  They remain available only to data-preparation code
-and explicitly constructed legacy oracle tests.
+The old observation/cross-section/sigma-table YAML paths are not accepted by
+`load_runtime_config()`.  Raw files remain useful for data preparation and
+explicitly constructed oracle tests, but they are not part of production
+inference.
 
-The public model entry can now select one of three concrete models.  CMASS
-remains the default hunit production model:
+The public model entry can select these concrete production models:
 
 ```yaml
 unit_convention: h_units_v1
@@ -39,17 +54,11 @@ model:
   name: cmass
 ```
 
-The paper-native Sonnenfeld entry is now fixed-kpc / physical-mass `m5`,
-matching the intended Sonnenfeld 2024 coordinate contract:
-
 ```yaml
 unit_convention: legacy_fixed_kpc
 model:
   name: sonnenfeld2024_slacs
 ```
-
-The previous hunit runnable path remains available, but it is now explicit in
-the model name so its results cannot be mistaken for paper-native fixed `m5`:
 
 ```yaml
 unit_convention: h_units_v1
@@ -57,67 +66,45 @@ model:
   name: sonnenfeld2024_slacs_hunit
 ```
 
-Implemented boundaries:
+Implemented production boundaries:
 
-- `ModelSpec` and `ParameterSpec` describe the human-authored scientific model.
-- `DataSpec` describes how a validated NumPy source context is packed into a
-  JAX context, including traced arrays, ordered scalar packing, static JIT
-  flags, normalization samples, and normalization floor.
-- `ModelRuntimeAdapter` now only provides source-context construction plus the
-  model's `DataSpec`; it no longer hand-writes JAX packing functions.
-- `jax_backend/model_adapter.py` converts `ModelSpec + ModelRuntimeAdapter` into
-  the low-level `ModelDefinition` consumed by the existing JAX backend.
-- `jax_backend/context_builder.py` owns generic JAX-context construction,
-  static-flag extraction, normalization-field access, and `CompiledModel`
-  construction.
-- `models/cmass.py` is now a pure assembly layer: it names the concrete model,
-  records fixed metadata, and wires component hooks into `ModelSpec`.
-- `models/components/cmass/` owns the CMASS scientific components:
-  parameters, latent population draw, selection weight, per-lens likelihood,
-  FP-prior summaries, context types, and deterministic preprocessing.
-- `models/components/common/fp_prior.py` owns the shared hunit-aware 1D FP OLS
-  sufficient statistics, optional prior value, and diagnostics convention.
-- `models/components/sonnenfeld2024_slacs/` now owns the shared Sonnenfeld
-  implementation used by both concrete Sonnenfeld entries: capability audit,
-  sampled parameters, context types, deterministic preprocessing,
-  latent-population draw, velocity-proxy selection, per-lens likelihood, and
-  neutral diagnostics/prior hooks.
-- `models/sonnenfeld2024_slacs.py` is now a pure assembly layer that exposes
-  two explicit `ModelSpec` objects: `sonnenfeld2024_slacs` for paper-native
-  fixed `m5`, and `sonnenfeld2024_slacs_hunit` for the hunit canonical-backend
-  variant.
-- `models/sonnenfeld2024_slacs_runtime.py` declares the Sonnenfeld `DataSpec`
-  and builds source context from canonical input.
-- `jax_backend/canonical_context.py` owns reusable canonical metadata, gamma
-  axis, per-lens mass-grid interpolation, and sigma-grid normalization helpers.
-- `models/components/cmass/preprocessing.py` owns CMASS deterministic
-  preprocessing: hunit population pivots, stellar-mass quadrature arrays, fixed
-  redshift weights, random-basis construction, FP-grid adaptation, and
-  `CMASSModelContext` assembly.
-- `models/cmass_runtime.py` is now a thin glue module: it checks the canonical
-  input path, loads the CMASS canonical dataset, calls CMASS preprocessing, and
-  exposes the declarative `DataSpec`.
-- `models/components/cmass/context.py` contains both the NumPy source context
-  and JAX context type for CMASS, making the context boundary explicit.
-- `canonical_dataset.py` reads and validates the canonical HDF5 blocks,
-  capabilities, unit metadata, cross-block shape constraints, and
-  velocity-dispersion capability-to-block consistency.
-- `canonical_dataset.py` now validates
-  `velocity_dispersion_grids/population_sigma_unit` as the canonical data
-  capability needed by Sonnenfeld's velocity-dispersion proxy selection path.
-- `cmass_runtime.py` can now build `CMASSModelContext` directly from
-  `data.inference_dataset_path`.
-- Runner metadata records `input_inference_dataset_path` and canonical
-  capabilities instead of raw observation or sigma-table paths.
-- CMASS selection and likelihood hooks now consume the canonical two-dimensional
-  `theta_E x gamma` cross-section interface.  The legacy separable
-  cross-section path is converted into the same representation for migration
-  testing.
-- Sonnenfeld selection and likelihood hooks consume the canonical two-dimensional
-  `theta_E x gamma` cross-section and use `population_sigma_unit` to construct
-  the velocity-dispersion proxy `theta_E_est` for `P_find`.
+- `ModelSpec` and `ParameterSpec` describe the human-authored scientific model
+  surface.
+- `ModelRuntimeAdapter` builds validated NumPy source contexts from canonical
+  datasets and exposes a backend-neutral `DataSpec`.
+- `DataSpec` describes context arrays, scalar packing order, static flags,
+  normalization samples, and normalization floors without binding model
+  declarations to a specific sampler.
+- `model_registry.py` uses `numba_backend.model_adapter` as the production
+  adapter for CMASS and both Sonnenfeld labels.
+- `numba_backend/likelihood_engine.py` owns box-prior rejection, backend
+  dispatch, posterior reduction, timing diagnostics, and the emcee blob dtype.
+- `numba_backend/cmass_kernels.py` owns CMASS normalization, per-lens
+  likelihood, FP summary, FP prior support, and canonical
+  `theta_E x gamma` cross-section interpolation.
+- `numba_backend/sonnenfeld_kernels.py` owns Sonnenfeld normalization,
+  per-lens likelihood, velocity-dispersion proxy selection, finite-fibre
+  cross-section interpolation, and parent/proposal correction.
+- `emcee_sampler.py` owns walker initialization, HDFBackend setup, log-prob
+  wrapping, optional process-pool execution, and acceptance summaries.
+- `runner.py` calls only the Numba compiled model builder and emcee sampler on
+  the production path.
+- `outputs.py` writes production run layout, metadata, run summaries, and
+  emcee checkpoints; it no longer writes NumPyro checkpoint or ArviZ artifacts.
+- `posterior_corner.py` reads production `chain.h5`.
+- `scripts/benchmark_log_prob.py` benchmarks the production Numba log-prob
+  path and optionally runs an explicitly supplied short emcee config.
+- `canonical_dataset.py` reads and validates canonical HDF5 blocks,
+  capabilities, unit metadata, cross-block shapes, and velocity-dispersion
+  capability-to-block consistency.
+- `canonical_context.py` owns backend-neutral canonical metadata, gamma-axis
+  handling, mass-grid interpolation, and sigma-grid normalization helpers.
+- `models/cmass.py` and `models/sonnenfeld2024_slacs.py` are assembly layers;
+  sampler/backend/output logic stays outside model files.
+- `models/*_runtime.py` and `models/components/*/preprocessing.py` own
+  model-specific deterministic context construction.
 
-The old public surfaces remain intentionally unsupported:
+The following public surfaces remain intentionally unsupported:
 
 - `model.name: cmass_current`
 - `model.components`
@@ -126,391 +113,177 @@ The old public surfaces remain intentionally unsupported:
 - `data.observation_path`
 - `data.cross_section_path`
 - `data.sigma_table_path`
+- `sampling.num_chains`
+- `sampling.num_samples`
+- `sampling.num_warmup`
+- `sampling.chain_method`
+- `sampling.thinning`
+- `sampling.warmup`
 - `unit_convention: legacy_fixed_kpc` for the default CMASS model
+
+## Completed Migration Phases
+
+### Phase A: Backend Skeleton
+
+Completed:
+
+- added `numba_backend/` and `emcee_sampler.py`;
+- switched `runner.py` from the retired sampler path to
+  `build_numba_compiled_model() + run_emcee_sampler()`;
+- changed production sampling config to `n_walkers`, `n_steps`, and `burn_in`;
+- rejected retired sampling field names at config-load time;
+- switched production artifacts to `chain.h5` plus emcee checkpoint arrays;
+- removed production NumPyro output helpers and ArviZ dependency.
+
+### Phase B: CMASS Numba Production
+
+Completed:
+
+- implemented CMASS Numba kernels for normalization, likelihood, FP summary,
+  FP prior diagnostics, and canonical cross-section interpolation;
+- verified synthetic CMASS finite log-probability, bounds rejection, h-unit
+  context values, FP-disabled path, FP-enabled path, and short emcee output;
+- verified real devauc canonical slit log-probability against the legacy raw
+  oracle with zero log-probability difference and normalization difference
+  `1.1102230246251565e-16`;
+- verified real devauc slit/BOSS FP diagnostics are finite;
+- confirmed real devauc short emcee run writes `chain.h5` and metadata records
+  `backend=numba_emcee`, `sampler=emcee`, and
+  `chain_storage=emcee_hdf_backend`;
+- replaced the benchmark script with a production Numba benchmark.
+
+### Phase C: Sonnenfeld Numba Production
+
+Completed:
+
+- implemented Sonnenfeld Numba normalization and per-lens likelihood kernels;
+- implemented the velocity-dispersion proxy selection path using
+  `population_sigma_unit`, `theta_E_est`, finite-fibre cross-section lookup,
+  parent/proposal correction, and source-redshift density;
+- kept both `sonnenfeld2024_slacs` and `sonnenfeld2024_slacs_hunit` wired
+  through the same production backend framework;
+- verified synthetic paper-native and hunit Sonnenfeld log-probability paths;
+- verified missing canonical capabilities fail at the model/data boundary;
+- verified a short Sonnenfeld emcee run writes `chain.h5`.
 
 ## Remaining Work
 
-The next milestones are:
+Backend migration blockers: none.
 
-1. Validate Sonnenfeld numerical semantics against the paper/reference
-   implementation, especially the Table-1 parent population, selection proxy
-   scatter convention, and finite-fibre cross-section interpolation.
-2. Prepare or validate realistic canonical SLACS datasets for both relevant
-   coordinate contracts: paper-native `legacy_fixed_kpc + m5` for direct
-   paper comparison, and optional `h_units_v1 + m5_hinvkpc` for hunit backend
-   continuity checks.
-3. Run Sonnenfeld short-chain NumPyro smoke tests once a realistic canonical
-   SLACS dataset with `population_sigma_unit` and finite-fibre cross-section is
-   available in `data/external`.
-4. Promote additional shared utilities from CMASS and Sonnenfeld components into
-   `models/components/common/` only when a second implemented model needs the
-   same algebra or diagnostics.
-5. Run scientific equivalence, performance, and posterior-predictive validation
-   for CMASS and Sonnenfeld.
+Future scientific validation work remains separate from the backend migration:
 
-## Current Refactor Step: Canonical Input Closure
-
-This step is the planned bridge before thinning `models/cmass_runtime.py`
-further.  The goal is to make the production inference entry accept exactly one
-prepared canonical dataset:
-
-```yaml
-data:
-  inference_dataset_path: /path/to/inference_dataset.hdf5
-```
-
-The raw observation/cross-section/sigma-table paths remain useful for data
-preparation and legacy numerical oracles, but they should no longer be accepted
-by `load_runtime_config()` for production inference.  That separation matters
-because the final target assumes inference starts from one stable canonical
-schema instead of each model knowing how to normalize historical raw products.
-
-Implemented in this step:
-
-- added repeatable `real_data`/`slow` tests for the existing devauc canonical
-  datasets under `data/external`;
-- proved the canonical devauc path matches the legacy raw-input oracle for
-  log-probability and selection normalization;
-- proved canonical FP-within-Re diagnostics remain finite for the devauc slit
-  and BOSS datasets;
-- rejected `data.observation_path`, `data.cross_section_path`, and
-  `data.sigma_table_path` in production configs;
-- updated runner metadata to record `inference_dataset_path` and canonical
-  capabilities rather than raw input paths.
-
-Known input coverage:
-
-- real canonical datasets currently exist for `devauc + m5_hinvkpc +
-  h_units_v1`;
-- sersic remains covered by synthetic canonical tests until a real sersic
-  canonical dataset is prepared.
-
-## Refactor Step: Canonical Preprocessing Split
-
-This step moved preprocessing responsibilities out of `models/cmass_runtime.py`
-without changing the CMASS numerical model.
-
-Implemented in this step:
-
-- added `jax_backend/canonical_context.py` for model-neutral canonical helpers;
-- added `models/components/cmass/preprocessing.py` for CMASS-only deterministic
-  context construction;
-- reduced `models/cmass_runtime.py` to runtime glue plus `DataSpec`;
-- added unit tests for canonical helper behavior and direct CMASS preprocessing;
-- kept existing CMASS log-probability, FP prior, NumPyro, and real-data tests
-  as behavior-preservation checks.
-
-## Refactor Step: CMASS Componentization
-
-This step made CMASS follow the target model-file pattern: the model file
-assembles components, while the components own scientific formulas and
-model-specific context definitions.  The backend interface, YAML entry,
-canonical dataset contract, NumPyro output format, and CMASS numerical formulas
-were intentionally left unchanged.
-
-Implemented in this step:
-
-- added `models/components/common/fp_prior.py` for shared 1D FP prior algebra;
-- added `models/components/cmass/parameters.py` for the fixed 11D CMASS schema;
-- added `models/components/cmass/population.py`, `selection.py`,
-  `likelihood.py`, and `summaries.py` for CMASS scientific hooks;
-- moved CMASS context and deterministic preprocessing into
-  `models/components/cmass/context.py` and
-  `models/components/cmass/preprocessing.py`;
-- rewrote `models/cmass.py` so `get_model_spec()` only wires component hooks;
-- added component-boundary tests proving `models/cmass.py` no longer defines
-  formula hooks or CMASS context/draw types.
-
-## Refactor Step: Sonnenfeld Capability Audit
-
-This step starts the Sonnenfeld implementation path without enabling a runnable
-likelihood.  The goal is to prevent accidental CMASS reuse under a Sonnenfeld
-label while making the next data-preparation requirements testable.
-
-Implemented in this step:
-
-- added `models/components/sonnenfeld2024_slacs/capabilities.py` with the
-  required canonical capability tuple:
-  `lens_observations.v1`, `lensing_mass_grids.v1`,
-  `lensing_cross_section.theta_gamma_grid.v1`,
-  `velocity_dispersion.per_lens_s2.v1`, and
-  `velocity_dispersion.population_sigma_unit.v1`;
-- added a capability audit object that reports missing inputs and explicitly
-  calls out `population_sigma_unit` as blocking `theta_E_est` construction;
-- added `models/components/sonnenfeld2024_slacs/parameters.py` with the paper
-  constants in physical stellar-mass coordinates:
-  `mstar_pivot = 11.3`, `mbar = 11.06`, `alpha = -1.207`,
-  `m_t` polynomial coefficients, and `sigma_t = 0.0007`;
-- kept `models/sonnenfeld2024_slacs.py` disabled, but updated its
-  `NotImplementedError` to point at the missing canonical capability boundary;
-- added tests that prove the audit contract, parameter constants, and disabled
-  registry boundary.
-
-## Current Refactor Step: Population Sigma-Unit Canonical Validation
-
-This step makes the inference-side canonical reader capable of expressing and
-validating the data needed by Sonnenfeld's `theta_E_est` selection proxy.  It
-still does not implement the Sonnenfeld likelihood or normalization formula.
-
-Implemented in this step:
-
-- added synthetic canonical reader tests that write
-  `velocity_dispersion_grids/population_sigma_unit` with `gamma_axis`,
-  `zd_axis`, `log_re_kpc_axis`, optional `n_axis`, and `s_unit_grid`;
-- made declared velocity-dispersion capabilities fail fast when the matching
-  HDF5 block is absent;
-- validated sigma-unit axes as non-empty one-dimensional arrays;
-- validated `population_sigma_unit.s_unit_grid` shape against
-  `(N_gamma, N_zd, N_log_re, N_n)` when `n_axis` is present, and against the
-  corresponding lower-rank shape when optional axes are absent;
-- added a Sonnenfeld audit test that consumes a loaded
-  `CanonicalInferenceDataset`, proving future runtime code can audit the real
-  dataset object directly.
-
-## Refactor Step: Sonnenfeld Runtime Model v1
-
-This step implements the first runnable Sonnenfeld model while preserving the
-same registry, `ModelSpec`, `DataSpec`, JAX backend, NumPyro sampler, and
-canonical dataset boundaries used by CMASS.
-
-Implemented in this step:
-
-- added `models/components/sonnenfeld2024_slacs/context.py` with separate
-  NumPy source and JAX pytree context types;
-- added `models/components/sonnenfeld2024_slacs/preprocessing.py` to load the
-  complete canonical dataset, normalize the `population_sigma_unit` grid,
-  interpolate mass tracks, build stellar-mass quadrature arrays, and place the
-  paper constants `mstar_pivot = 11.3` and `mbar = 11.06` into the active
-  model coordinate;
-- added `models/sonnenfeld2024_slacs_runtime.py` with a declarative `DataSpec`
-  for generic JAX context packing;
-- extended `models/components/sonnenfeld2024_slacs/parameters.py` with the 12D
-  parameter unpack/validation hooks;
-- added Sonnenfeld `population.py`, `selection.py`, `likelihood.py`, and
-  `summaries.py` components;
-- rewrote `models/sonnenfeld2024_slacs.py` as a pure assembly layer returning
-  `ModelSpec`;
-- enabled `model_registry.py` to build a real `sonnenfeld2024_slacs`
-  `ModelDefinition`;
-- added synthetic runtime tests proving config parsing, context construction,
-  hunit mass-location shifts, registry dispatch, and finite JAX log-probability.
-
-## Refactor Step: Sonnenfeld Paper-Native / Hunit Split
-
-This step separates the paper-native Sonnenfeld name from the hunit-compatible
-engineering variant.  The goal is to keep scientific interpretation explicit:
-`sonnenfeld2024_slacs` now means fixed `M_2D(<5 kpc)` / physical stellar-mass
-coordinates, while `sonnenfeld2024_slacs_hunit` means the hunit canonical
-backend variant.
-
-Implemented in this step:
-
-- changed `models/sonnenfeld2024_slacs.py` so `get_model_spec()` returns the
-  paper-native `legacy_fixed_kpc + m5` model;
-- added `get_hunit_model_spec()` and registered
-  `model.name: sonnenfeld2024_slacs_hunit` for the existing
-  `h_units_v1 + m5_hinvkpc` runnable path;
-- kept both variants on the same component package and runtime adapter, so
-  formula changes remain centralized;
-- updated Sonnenfeld preprocessing so Table-1 mass-location constants and the
-  low-mass truncation threshold stay unshifted for the paper-native model and
-  shift by `2 log10(h_ref)` only for the explicit hunit model;
-- updated the size-relation intercept handling so the hunit context gets the
-  hunit `log R_e` intercept while the paper-native context keeps the physical
-  intercept;
-- added runtime tests for both valid model/unit combinations and registry tests
-  for the two Sonnenfeld labels.
-
-Known scientific caveats:
-
-- this is a runnable v1, not yet a paper-level reproduction;
-- the Table-1 parent density and velocity-proxy scatter convention still need
-  direct comparison against the Sonnenfeld reference implementation;
-- real-data Sonnenfeld validation requires a canonical SLACS dataset with the
-  complete finite-fibre cross-section and population sigma-unit products;
-- the synthetic paper-native fixed `m5` test fixture rewrites metadata from a
-  minimal hunit fixture only to exercise the code path.  It is not a scientific
-  fixed-kpc SLACS dataset.
+1. Run paper-level Sonnenfeld validation against a realistic SLACS canonical
+   dataset and a trusted Sonnenfeld reference implementation.
+2. Promote more utilities into `models/components/common/` only when a second
+   implemented production model needs the same algebra.
+3. Decide whether optional JAX oracle modules should remain, move under a more
+   explicit oracle namespace, or be removed after reference comparisons are no
+   longer needed.
+4. Add long-chain production benchmarks and posterior-predictive validation for
+   final scientific runs.
 
 ## Verification Record
 
+All commands below were run from
+`/Users/liurongfu/.codex/worktrees/b283/CMASS_lens_project` with the
+`cmass_lens` conda environment.
+
+Full test suite:
+
 ```bash
 conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
 ```
 
-Latest result after the canonical reader v1 milestone:
+Latest result:
 
 ```text
-........................................................................ [ 86%]
-...........                                                              [100%]
+........................................................................ [ 62%]
+.............sss............................                             [100%]
 ```
 
-Additional focused checks after the DataSpec v1 milestone:
+The three skipped tests are real-data tests whose hardcoded b283
+`data/external` files are absent in this worktree.  Equivalent real-data checks
+were run manually against locally available canonical HDF5 files under the 1ca5
+worktree data directory.
+
+Production import boundary:
 
 ```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_model_registry_config.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_jax_numpyro_inference.py -q
+conda run -n cmass_lens python -c "import sys; sys.path.insert(0, 'Bayesian_inference/src'); from cmass_lens_inference.model_registry import get_model_definition; from cmass_lens_inference.runner import run_inference; print(get_model_definition('cmass').backend_kernel); print(get_model_definition('sonnenfeld2024_slacs').backend_kernel); print('jax' in sys.modules, 'numpyro' in sys.modules)"
 ```
 
-Results:
+Observed result:
 
 ```text
-............                                                             [100%]
-......                                                                   [100%]
+cmass
+sonnenfeld2024_slacs
+False False
 ```
 
-Additional focused checks after the canonical reader v1 milestone:
+Real devauc canonical-vs-legacy oracle check:
+
+```text
+canonical_log_prob -129.39561603870516
+legacy_log_prob -129.39561603870516
+delta_log_prob 0.0
+canonical_norm 0.4871499982066181
+legacy_norm 0.487149998206618
+delta_norm 1.1102230246251565e-16
+```
+
+Real devauc FP diagnostics:
+
+```text
+CMASS_REAL_DEVAUC_FP slit
+log_prob -233.26842187564836
+normalization 0.48714999820661803
+fp_prior -103.8728058369432
+fpfit_mu 2.3824739595552935
+fpfit_beta 0.30186483077170184
+fpfit_xi_is_nan True
+fpfit_scatter 0.05598807504759378
+
+CMASS_REAL_DEVAUC_FP boss
+log_prob -290.39710660067954
+normalization 0.487149998206618
+fp_prior -103.8728058369432
+fpfit_mu 2.3824739595552935
+fpfit_beta 0.30186483077170184
+fpfit_xi_is_nan True
+fpfit_scatter 0.05598807504759378
+```
+
+Real devauc short emcee artifact check:
+
+```text
+run_dir /tmp/cmass_lens_numba_acceptance_outputs/devauc/20260507_130306_devauc_devauc-real-short-emcee
+chain_exists True
+metadata_backend numba_emcee
+metadata_sampler emcee
+metadata_chain_storage emcee_hdf_backend
+status completed
+completed_steps 2
+acceptance_fraction_mean 0.7083333333333334
+```
+
+Benchmark command:
 
 ```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_canonical_dataset.py Bayesian_inference/tests/test_model_registry_config.py Bayesian_inference/tests/test_jax_numpyro_inference.py -q
+conda run -n cmass_lens python Bayesian_inference/scripts/benchmark_log_prob.py --config /tmp/cmass_numba_devauc_acceptance.yaml --repeats 3 --output-dir /tmp/cmass_numba_benchmarks
 ```
 
-Result:
+Benchmark result:
 
 ```text
-.......................                                                  [100%]
-```
-
-Additional checks after the canonical input-closure milestone:
-
-```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_canonical_dataset.py Bayesian_inference/tests/test_model_registry_config.py Bayesian_inference/tests/test_jax_numpyro_inference.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q -m real_data
-```
-
-Results:
-
-```text
-........................                                                 [100%]
-........................................................................ [ 82%]
-...............                                                          [100%]
-...                                                                      [100%]
-```
-
-Additional checks after the canonical preprocessing-split milestone:
-
-```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_canonical_context_helpers.py Bayesian_inference/tests/test_cmass_preprocessing.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_canonical_context_helpers.py Bayesian_inference/tests/test_cmass_preprocessing.py Bayesian_inference/tests/test_canonical_dataset.py Bayesian_inference/tests/test_model_registry_config.py Bayesian_inference/tests/test_jax_numpyro_inference.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q -m real_data
-```
-
-Results:
-
-```text
-....                                                                     [100%]
-............................                                             [100%]
-........................................................................ [ 79%]
-...................                                                      [100%]
-...                                                                      [100%]
-```
-
-Additional checks after the CMASS componentization milestone:
-
-```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_cmass_component_boundary.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_cmass_component_boundary.py Bayesian_inference/tests/test_model_registry_config.py Bayesian_inference/tests/test_cmass_preprocessing.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_jax_numpyro_inference.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q -m real_data
-git diff --check
-```
-
-Results:
-
-```text
-....                                                                     [100%]
-...................                                                      [100%]
-.......                                                                  [100%]
-........................................................................ [ 75%]
-.......................                                                  [100%]
-...                                                                      [100%]
-git diff --check: passed
-```
-
-Additional checks after the Sonnenfeld capability-audit milestone:
-
-```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_sonnenfeld_capability_audit.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_sonnenfeld_capability_audit.py Bayesian_inference/tests/test_model_registry_config.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q -m real_data
-```
-
-Results:
-
-```text
-.....                                                                    [100%]
-...................                                                      [100%]
-........................................................................ [ 72%]
-............................                                             [100%]
-...                                                                      [100%]
-```
-
-Additional checks after the population sigma-unit canonical-validation
-milestone:
-
-```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_canonical_dataset.py Bayesian_inference/tests/test_sonnenfeld_capability_audit.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_canonical_dataset.py Bayesian_inference/tests/test_sonnenfeld_capability_audit.py Bayesian_inference/tests/test_jax_numpyro_inference.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q -m real_data
-```
-
-Results:
-
-```text
-............                                                             [100%]
-...................                                                      [100%]
-........................................................................ [ 69%]
-................................                                         [100%]
-...                                                                      [100%]
-```
-
-Additional checks after the Sonnenfeld runtime-model v1 milestone:
-
-```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_sonnenfeld_runtime_model.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_sonnenfeld_capability_audit.py Bayesian_inference/tests/test_model_registry_config.py Bayesian_inference/tests/test_sonnenfeld_runtime_model.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q -m real_data
-conda run -n cmass_lens python -m compileall -q Bayesian_inference/src/cmass_lens_inference/models/components/sonnenfeld2024_slacs Bayesian_inference/src/cmass_lens_inference/models/sonnenfeld2024_slacs.py Bayesian_inference/src/cmass_lens_inference/models/sonnenfeld2024_slacs_runtime.py
-git diff --check
-```
-
-Results:
-
-```text
-....                                                                     [100%]
-........................                                                 [100%]
-........................................................................ [ 66%]
-....................................                                     [100%]
-...                                                                      [100%]
-compileall: passed
-git diff --check: passed
-```
-
-Additional checks after the Sonnenfeld paper-native / hunit split:
-
-```bash
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_sonnenfeld_runtime_model.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_model_registry_config.py Bayesian_inference/tests/test_sonnenfeld_capability_audit.py Bayesian_inference/tests/test_sonnenfeld_runtime_model.py -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
-conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q -m real_data
-conda run -n cmass_lens python -m compileall -q Bayesian_inference/src/cmass_lens_inference/models/components/sonnenfeld2024_slacs Bayesian_inference/src/cmass_lens_inference/models/sonnenfeld2024_slacs.py Bayesian_inference/src/cmass_lens_inference/models/sonnenfeld2024_slacs_runtime.py Bayesian_inference/src/cmass_lens_inference/model_registry.py
-git diff --check
-```
-
-Results:
-
-```text
-......                                                                   [100%]
-..........................                                               [100%]
-........................................................................ [ 65%]
-......................................                                   [100%]
-...                                                                      [100%]
-compileall: passed
-git diff --check: passed
+benchmark_path /private/tmp/cmass_numba_benchmarks/20260507_130130_numba_benchmark.json
+config_path /private/tmp/cmass_numba_devauc_acceptance.yaml
+normalization_samples 1024
+gamma_points 80
+mstar_points 80
+n_walkers 24
+n_steps 2
+first_call_seconds 0.1836464999942109
+steady_log_prob_median_seconds 0.00052370794583112
+steady_log_prob_mean_seconds 0.000525083354053398
+steady_log_prob_value -129.39561603870513
 ```

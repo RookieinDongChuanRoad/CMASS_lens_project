@@ -2,13 +2,12 @@
 Posterior corner-plot workflow for completed CMASS inference runs.
 
 Why this module exists:
-- the standard production pipeline now treats posterior corner plots as a
-  required post-processing artifact rather than a manual notebook-only step
-- the first four hyper-parameters expose different public names under `m5` and
-  `m10`, so the figure labels and JSON summary must read the stored run
-  configuration instead of hard-coding one historical naming surface
-- the workflow operates directly on an existing `chain.h5` backend and should
-  stay decoupled from PPC-specific sigma-table logic
+- the standard production pipeline treats posterior corner plots as a required
+  post-processing artifact rather than a manual notebook-only step
+- public labels must read the stored run configuration instead of hard-coding
+  one historical naming surface
+- production samples are stored in emcee's `chain.h5` HDFBackend, so this
+  reader stays decoupled from retired array/netCDF artifact conventions
 """
 
 from __future__ import annotations
@@ -82,7 +81,7 @@ def _load_flattened_emcee_chain(chain_path: Path, burn_in: int) -> np.ndarray:
         import emcee
     except ImportError as exc:
         raise ImportError(
-            "Reading legacy chain.h5 files requires the optional legacy dependency `emcee`."
+            "Reading production chain.h5 files requires the dependency `emcee`."
         ) from exc
 
     backend = emcee.backends.HDFBackend(str(chain_path))
@@ -92,35 +91,6 @@ def _load_flattened_emcee_chain(chain_path: Path, burn_in: int) -> np.ndarray:
             f"Burn-in {burn_in} removes all samples from chain with {chain.shape[0]} stored steps."
         )
     return chain[burn_in:].reshape(-1, chain.shape[-1])
-
-
-def _load_flattened_numpyro_samples(samples_path: Path, burn_in: int) -> np.ndarray:
-    """
-    Load flattened samples from the NumPyro `samples.npz` artifact.
-
-    NumPyro samples are already post-warmup, so `burn_in="auto"` is normalized
-    to zero before this helper is called.  An explicit integer burn-in is still
-    honored for manual sensitivity checks.
-    """
-
-    with np.load(samples_path) as payload:
-        if "samples_by_chain" in payload:
-            samples_by_chain = np.asarray(payload["samples_by_chain"], dtype=float)
-            if burn_in >= samples_by_chain.shape[1]:
-                raise ValueError(
-                    f"Burn-in {burn_in} removes all samples from posterior with "
-                    f"{samples_by_chain.shape[1]} stored draws."
-                )
-            return samples_by_chain[:, burn_in:, :].reshape(-1, samples_by_chain.shape[-1])
-        if "flat_samples" in payload:
-            flat_samples = np.asarray(payload["flat_samples"], dtype=float)
-            if burn_in >= flat_samples.shape[0]:
-                raise ValueError(
-                    f"Burn-in {burn_in} removes all samples from posterior with "
-                    f"{flat_samples.shape[0]} stored draws."
-                )
-            return flat_samples[burn_in:]
-    raise KeyError(f"Posterior sample file '{samples_path}' does not contain samples_by_chain or flat_samples.")
 
 
 def _public_parameter_order_and_labels(runtime_config) -> tuple[list[str], list[str]]:
@@ -160,12 +130,6 @@ def _load_corner_runtime_context(resolved_run_dir: Path, burn_in: str | int) -> 
         )
 
     runtime_config = load_runtime_config(config_path)
-    samples_path = resolved_run_dir / "samples.npz"
-    if samples_path.exists():
-        burn_in_steps = 0 if burn_in == "auto" else _resolve_burn_in(burn_in, runtime_config.sampling.num_warmup)
-        flattened_chain = _load_flattened_numpyro_samples(samples_path=samples_path, burn_in=burn_in_steps)
-        return flattened_chain, burn_in_steps, runtime_config.profile.name, runtime_config
-
     chain_path = resolved_run_dir / "chain.h5"
     if chain_path.exists():
         burn_in_steps = _resolve_burn_in(burn_in, runtime_config.sampling.warmup)
@@ -173,7 +137,7 @@ def _load_corner_runtime_context(resolved_run_dir: Path, burn_in: str | int) -> 
         return flattened_chain, burn_in_steps, runtime_config.profile.name, runtime_config
 
     raise FileNotFoundError(
-        f"Run directory '{resolved_run_dir}' does not contain samples.npz or legacy chain.h5."
+        f"Run directory '{resolved_run_dir}' does not contain production chain.h5."
     )
 
 

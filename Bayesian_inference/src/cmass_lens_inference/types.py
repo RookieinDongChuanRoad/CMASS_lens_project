@@ -180,36 +180,35 @@ class ModelConfig:
 @dataclass(frozen=True)
 class SamplingConfig:
     """
-    Controls NumPyro sampling for the production inference path.
+    Controls emcee sampling for the production inference path.
 
-    The sampler vocabulary is intentionally NumPyro-native.  The old emcee
-    walker/step fields were removed with the legacy backend so new configs have
-    one unambiguous contract.  A read-only `warmup` compatibility property is
-    retained because `posterior_corner.py` still reads historical run snapshots
-    in this cleanup pass; it is not accepted from YAML.
+    The production backend is now deliberately emcee-native.  `n_walkers` is
+    the ensemble width, `n_steps` is the number of stored proposal steps per
+    run or resume call, and `burn_in` is the post-processing discard count used
+    by readers such as `posterior_corner.py`.  Keeping these names explicit
+    prevents run snapshots from mixing retired warmup/sample terminology with
+    emcee's persistent HDF backend.
     """
 
     random_seed: int
     initial_center: HyperParams
     initial_jitter_scale: float
-    num_chains: int
-    num_samples: int
-    num_warmup: int
-    thinning: int
-    chain_method: str
+    n_walkers: int
+    n_steps: int
+    burn_in: int
 
     @property
     def warmup(self) -> int:
         """
-        Return the NumPyro warmup count for legacy read-only consumers.
+        Return the production burn-in count for read-only compatibility.
 
-        This property deliberately has no corresponding dataclass field and no
-        YAML parser support.  It exists only so the untouched posterior-corner
-        legacy-chain reader can continue to resolve `burn_in="auto"` until that
-        module is tightened in a separate change.
+        Older plotting helpers used the word `warmup` when resolving
+        `burn_in="auto"`.  The production config no longer accepts a YAML
+        `warmup` field, but exposing this property keeps those readers simple
+        while still serializing the actual emcee field name as `burn_in`.
         """
 
-        return self.num_warmup
+        return self.burn_in
 
 
 @dataclass(frozen=True)

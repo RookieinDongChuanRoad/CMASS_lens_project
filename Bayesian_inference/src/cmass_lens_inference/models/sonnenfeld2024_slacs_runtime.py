@@ -1,9 +1,8 @@
 """Runtime adapter for the Sonnenfeld 2024 SLACS model.
 
 This module mirrors ``cmass_runtime.py`` but remains Sonnenfeld-specific where
-the source context is built.  The generic backend still owns JAX context
-packing, static flag extraction, and ``CompiledModel`` construction through the
-declarative ``DataSpec`` below.
+the source context is built.  The generic backend owns compiled-model
+construction through the declarative ``DataSpec`` below.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from ..model_interfaces import (
 )
 from ..profiles import build_profile_spec
 from ..types import RuntimeConfig
-from .components.sonnenfeld2024_slacs.context import SonnenfeldJaxContext
 from .components.sonnenfeld2024_slacs.preprocessing import (
     build_sonnenfeld_context_from_canonical_dataset,
     load_sonnenfeld_canonical_dataset,
@@ -49,12 +47,12 @@ def get_data_spec() -> DataSpec:
     """
     Return the Sonnenfeld context-packing declaration.
 
-    The scalar order is part of the JAX hot-path contract.  Hooks index this
-    compact array instead of repeatedly tracing Python attribute lookups.
+    The scalar order is part of the backend hot-path contract.  Kernels may pack
+    this compact array instead of repeatedly traversing Python attributes.
     """
 
     return DataSpec(
-        jax_context_type=SonnenfeldJaxContext,
+        backend_context_type=object,
         array_fields=(
             ContextArraySpec("z_grid"),
             ContextArraySpec("chi_kpc_grid"),

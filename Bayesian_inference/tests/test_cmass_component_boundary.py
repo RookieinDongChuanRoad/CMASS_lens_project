@@ -1,9 +1,9 @@
-"""Component-boundary tests for the default CMASS model.
+"""Boundary tests for the default CMASS production model.
 
 These tests intentionally focus on module ownership rather than scientific
 values.  The numerical regression suite already checks the CMASS likelihood;
-this file makes sure the model file stays as a small assembly layer after the
-component split.
+this file makes sure the model file stays as a small assembly layer and does
+not grow sampler/backend responsibilities again.
 """
 
 from __future__ import annotations
@@ -11,22 +11,13 @@ from __future__ import annotations
 import ast
 import inspect
 
-import jax.numpy as jnp
-import numpy as np
-
+from cmass_lens_inference.model_registry import get_model_definition
 from cmass_lens_inference.models import cmass
-from cmass_lens_inference.models.components.cmass import (
-    likelihood,
-    parameters,
-    population,
-    selection,
-    summaries,
-)
-from cmass_lens_inference.models.components.common import fp_prior
+from cmass_lens_inference.models.components.cmass import parameters
 
 
 def test_cmass_file_is_assembly_only() -> None:
-    """`models.cmass` should not define scientific hook implementations."""
+    """`models.cmass` should not define sampler or backend implementations."""
 
     source_tree = ast.parse(inspect.getsource(cmass))
     function_names = {
@@ -44,27 +35,27 @@ def test_cmass_file_is_assembly_only() -> None:
     assert "CMASSTheta" not in class_names
     assert "CMASSPopulationDraw" not in class_names
     assert not {
-        "draw_population",
-        "selection_weight_from_normal",
-        "lens_integrals",
-        "summary_row",
-        "extra_prior",
+        "log_prob",
+        "run_emcee_sampler",
+        "build_compiled_model",
+        "normalization_mc_numba",
+        "lens_log_likelihood_numba",
     } & function_names
 
 
 def test_cmass_model_spec_is_assembled_from_components() -> None:
-    """The public CMASS spec should wire hooks from dedicated components."""
+    """The public CMASS spec should expose only declarative model metadata."""
 
     model_spec = cmass.get_model_spec()
 
     assert model_spec.parameters is parameters.PARAMETER_SPECS
-    assert model_spec.unpack_theta is parameters.unpack_theta
-    assert model_spec.validate_theta is parameters.validate_theta
-    assert model_spec.draw_population is population.draw_population
-    assert model_spec.selection_weight is selection.selection_weight_from_normal
-    assert model_spec.summary_row is summaries.summary_row
-    assert model_spec.lens_integrals is likelihood.lens_integrals
-    assert model_spec.extra_prior is summaries.extra_prior
+    assert model_spec.name == "cmass"
+    assert model_spec.component_key == "default"
+    assert model_spec.backend_kernel == "cmass"
+    assert model_spec.required_unit_convention == "h_units_v1"
+    assert model_spec.mass_aperture_kpc == 5
+    assert model_spec.static_codes == {"gamma_mode": cmass.GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE}
+    assert "lensing_cross_section.theta_gamma_grid.v1" in model_spec.required_capabilities
 
 
 def test_cmass_parameter_component_exposes_fixed_schema() -> None:
@@ -98,22 +89,12 @@ def test_cmass_parameter_component_exposes_fixed_schema() -> None:
     )
 
 
-def test_common_fp_prior_disabled_path_returns_neutral_prior_and_nan_diagnostics() -> None:
-    """Disabled FP prior should be a neutral log term with empty diagnostics."""
+def test_cmass_registry_definition_is_numba_kernel_backed() -> None:
+    """The registry should expose CMASS through the production Numba adapter."""
 
-    log_prior, fpfit_mu, fpfit_beta, fpfit_xi, fpfit_scatter = fp_prior.fp_prior_value(
-        jnp.zeros(fp_prior.FP_OLS_SUMMARY_SIZE, dtype=jnp.float64),
-        fp_enabled=0,
-        fp_fiducial_scatter=0.075,
-        fp_scatter_error=0.003,
-        fp_mu_v_prior=2.34548,
-        fp_mu_v_error=0.00611,
-        fp_beta_v_prior=0.176,
-        fp_beta_v_error=0.011,
-    )
+    model_definition = get_model_definition("cmass")
 
-    assert float(log_prior) == 0.0
-    assert np.isnan(float(fpfit_mu))
-    assert np.isnan(float(fpfit_beta))
-    assert np.isnan(float(fpfit_xi))
-    assert np.isnan(float(fpfit_scatter))
+    assert model_definition.name == "cmass"
+    assert model_definition.backend_kernel == "cmass"
+    assert model_definition.required_capabilities == cmass.get_model_spec().required_capabilities
+    assert not hasattr(model_definition, "to_jax_context")

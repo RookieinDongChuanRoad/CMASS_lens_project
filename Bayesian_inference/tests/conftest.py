@@ -728,9 +728,9 @@ def synthetic_config_path(
         "box_prior": _default_box_prior_config(),
         "sampling": {
             "random_seed": 7,
-            "num_chains": 24,
-            "num_samples": 3,
-            "num_warmup": 1,
+            "n_walkers": 24,
+            "n_steps": 3,
+            "burn_in": 1,
             "initial_center": {
                 "mu5h_0": 11.17,
                 "beta5h": 0.59,
@@ -800,9 +800,9 @@ def synthetic_m10_config_path(
         "box_prior": _default_box_prior_config(mass_radius_kpc=10, gamma_mode="dependent"),
         "sampling": {
             "random_seed": 7,
-            "num_chains": 24,
-            "num_samples": 3,
-            "num_warmup": 1,
+            "n_walkers": 24,
+            "n_steps": 3,
+            "burn_in": 1,
             "initial_center": {
                 "mu10_0": 11.42,
                 "beta10": 0.49,
@@ -874,9 +874,9 @@ def synthetic_independent_config_path(
         "box_prior": _default_box_prior_config(mass_radius_kpc=5, gamma_mode="independent"),
         "sampling": {
             "random_seed": 7,
-            "num_chains": 24,
-            "num_samples": 3,
-            "num_warmup": 1,
+            "n_walkers": 24,
+            "n_steps": 3,
+            "burn_in": 1,
             "initial_center": {
                 "mu5_0": 11.32,
                 "beta5": 0.59,
@@ -947,9 +947,9 @@ def synthetic_sigma_star_dependent_config_path(
         "box_prior": _default_box_prior_config(mass_radius_kpc=5, gamma_mode="sigma_star_dependent"),
         "sampling": {
             "random_seed": 7,
-            "num_chains": 24,
-            "num_samples": 3,
-            "num_warmup": 1,
+            "n_walkers": 24,
+            "n_steps": 3,
+            "burn_in": 1,
             "initial_center": {
                 "mu5_0": 11.32,
                 "beta5": 0.59,
@@ -1072,9 +1072,9 @@ def synthetic_devauc_fp_prior_config_path(
         "box_prior": _default_box_prior_config(mass_radius_kpc=5, gamma_mode="dependent"),
         "sampling": {
             "random_seed": 7,
-            "num_chains": 24,
-            "num_samples": 3,
-            "num_warmup": 1,
+            "n_walkers": 24,
+            "n_steps": 3,
+            "burn_in": 1,
             "initial_center": {
                 "mu5_0": 11.32,
                 "beta5": 0.59,

@@ -10,12 +10,10 @@ readme = "PROJECT_REQUIREMENTS.md"
 requires-python = ">=3.11"
 dependencies = [
   "astropy>=7.2",
-  "arviz>=0.22",
   "corner>=2.2",
+  "emcee>=3.1",
   "h5py>=3.10",
-  "jax>=0.8.3,<0.9",
-  "jaxlib>=0.8.3,<0.9",
-  "numpyro>=0.20.1,<0.21",
+  "numba>=0.64",
   "numpy>=1.26",
   "PyYAML>=6.0",
   "scipy>=1.11",
@@ -26,8 +24,10 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
-legacy = [
-  "emcee>=3.1",
+jax-oracle = [
+  "jax>=0.8.3,<0.9",
+  "jaxlib>=0.8.3,<0.9",
+  "numpyro>=0.20.1,<0.21",
 ]
 
 [project.scripts]

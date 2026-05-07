@@ -3,9 +3,10 @@ Real-data regression tests for the canonical inference-dataset path.
 
 These tests are intentionally marked as both ``real_data`` and ``slow`` because
 they require the locally synced ``data/`` products and compile the real CMASS
-JAX log-probability.  They protect the migration boundary that matters most in
-this cleanup step: production inference should consume canonical HDF5, while
-legacy raw files remain available only as a numerical oracle.
+Numba log-probability.  They protect the migration boundary that matters most
+in this cleanup step: production inference should consume canonical HDF5, while
+legacy raw files remain available only as an explicit numerical oracle inside
+tests.
 """
 
 from __future__ import annotations
@@ -19,9 +20,9 @@ import yaml
 
 from cmass_lens_inference.compiled_context import build_compiled_context as build_legacy_context
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.jax_backend.likelihood_engine import (
-    build_compiled_model as build_jax_model,
-    log_prob as jax_log_prob,
+from cmass_lens_inference.numba_backend.likelihood_engine import (
+    build_compiled_model as build_numba_model,
+    log_prob as numba_log_prob,
 )
 from cmass_lens_inference.parallel import resolve_parallelism
 from cmass_lens_inference.types import CompiledModel, DataConfig
@@ -75,11 +76,9 @@ def _devauc_runtime_config_payload(*, dataset_path: Path, output_root: Path, fp_
         },
         "sampling": {
             "random_seed": 7,
-            "num_chains": 2,
-            "num_samples": 2,
-            "num_warmup": 1,
-            "thinning": 1,
-            "chain_method": "sequential",
+            "n_walkers": 24,
+            "n_steps": 2,
+            "burn_in": 1,
             "initial_jitter_scale": 1.0e-3,
             "initial_center": {
                 "mu5h_0": 11.32,
@@ -149,7 +148,7 @@ def _legacy_oracle_compiled_model(runtime_config, *, observation_path: Path, cro
     )
     parallelism = resolve_parallelism(
         legacy_runtime_config.runtime,
-        legacy_runtime_config.sampling.num_chains,
+        legacy_runtime_config.sampling.n_walkers,
     )
     return CompiledModel(
         config=legacy_runtime_config,
@@ -177,8 +176,8 @@ def test_real_devauc_canonical_log_prob_matches_legacy_raw_oracle(tmp_path: Path
     runtime_config = load_runtime_config(config_path)
     theta = runtime_config.sampling.initial_center.to_array()
 
-    canonical_value, canonical_blob = jax_log_prob(theta, build_jax_model(runtime_config))
-    legacy_value, legacy_blob = jax_log_prob(
+    canonical_value, canonical_blob = numba_log_prob(theta, build_numba_model(runtime_config))
+    legacy_value, legacy_blob = numba_log_prob(
         theta,
         _legacy_oracle_compiled_model(
             runtime_config,
@@ -212,7 +211,7 @@ def test_real_devauc_canonical_fp_prior_diagnostics_are_finite(tmp_path: Path, d
     runtime_config = load_runtime_config(config_path)
     theta = runtime_config.sampling.initial_center.to_array()
 
-    log_prob_value, blob = jax_log_prob(theta, build_jax_model(runtime_config))
+    log_prob_value, blob = numba_log_prob(theta, build_numba_model(runtime_config))
 
     assert np.isfinite(log_prob_value)
     assert np.isfinite(float(blob["fp_prior_log_term"]))

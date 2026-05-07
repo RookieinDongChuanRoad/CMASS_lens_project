@@ -18,7 +18,8 @@ class ParameterSpec:
 
     The model file should describe the scientific parameter surface in this
     compact form.  The runtime adapter later turns the list into the lower-level
-    `ParameterSchema` used by config parsing, NumPyro, and output metadata.
+    `ParameterSchema` used by config parsing, sampler initialization, and
+    output metadata.
     Keeping this declaration small is what lets future model authors define a
     new inference target without knowing how the backend serializes schemas.
     """
@@ -35,9 +36,10 @@ class ModelSpec:
 
     This object owns the parts that are genuinely model-specific: model name,
     required unit convention, mass aperture, sampled parameters, metadata, and
-    the JAX-compatible scientific formula hooks.  It deliberately does not
-    include compiled-context construction, JAX pytree packing, or registry
-    boilerplate; those are framework concerns handled by `ModelRuntimeAdapter`.
+    the backend implementation key.  It deliberately does not include
+    compiled-context construction, sampler wiring, output writing, or registry
+    boilerplate; those are framework concerns handled by `ModelRuntimeAdapter`
+    and the active production backend.
     """
 
     name: str
@@ -49,24 +51,19 @@ class ModelSpec:
     required_capabilities: tuple[str, ...]
     optional_capabilities: tuple[str, ...]
     static_codes: Mapping[str, int]
-    unpack_theta: Callable[[Any], Any]
-    validate_theta: Callable[[Any, Any, Any, Mapping[str, int]], Any]
-    draw_population: Callable[[Any, Any, Any, Mapping[str, int]], Any]
-    selection_weight: Callable[[Any, Any, Any, Any, Mapping[str, int]], Any]
-    summary_row: Callable[[Any, Any, Any, Mapping[str, int]], Any]
-    lens_integrals: Callable[[Any, Any, Mapping[str, int]], Any]
-    extra_prior: Callable[[Any, Any, Mapping[str, int]], tuple[Any, ...]]
+    backend_kernel: str
 
 
 @dataclass(frozen=True)
 class ContextArraySpec:
     """
-    Declare one array field that should move from NumPy context to JAX context.
+    Declare one array field that a backend may copy from the source context.
 
     `source_name` is the attribute on the model's compiled NumPy context.
-    `target_name` is the attribute exposed on the JAX context.  Most fields keep
-    the same name; the optional target lets future models use cleaner runtime
-    names without changing their HDF5-normalized source objects.
+    `target_name` is the attribute exposed on a backend-owned context when that
+    backend needs a separate packed object.  Most fields keep the same name; the
+    optional target lets future models use cleaner runtime names without
+    changing their HDF5-normalized source objects.
     """
 
     source_name: str
@@ -74,7 +71,7 @@ class ContextArraySpec:
 
     @property
     def output_name(self) -> str:
-        """Return the JAX-context field name used by generated builders."""
+        """Return the backend-context field name used by generated builders."""
 
         return self.target_name or self.source_name
 
@@ -82,10 +79,10 @@ class ContextArraySpec:
 @dataclass(frozen=True)
 class ContextScalarSpec:
     """
-    Declare one scalar packed into the JAX `scalar_context` array.
+    Declare one scalar packed into a backend scalar-context array.
 
     The order of this tuple is part of the model's numerical contract because
-    jitted scientific hooks index the compact scalar array.  Tests should cover
+    compiled kernels may index the compact scalar array.  Tests should cover
     this order for every production model.
     """
 
@@ -95,10 +92,10 @@ class ContextScalarSpec:
 @dataclass(frozen=True)
 class StaticContextSpec:
     """
-    Declare one source-context value that becomes a JIT static flag.
+    Declare one source-context value that becomes a static backend flag.
 
-    Static flags are kept out of the JAX pytree because they control traced
-    branches and therefore belong in the JIT cache key.
+    Static flags are kept out of compact numeric arrays because they control
+    branches and therefore belong in backend setup rather than sampled theta.
     """
 
     source_name: str
@@ -114,20 +111,45 @@ class StaticContextSpec:
 @dataclass(frozen=True)
 class DataSpec:
     """
-    Declarative description of the data a model exposes to the JAX backend.
+    Declarative description of the data a model exposes to backend kernels.
 
     This v1 does not try to load arbitrary HDF5 schemas.  A model runtime still
-    builds its validated NumPy context, then this spec tells the generic backend
-    how to pack that context into the shape expected by scientific hooks.
+    builds its validated NumPy context, then this spec tells backend adapters
+    how to pack that context into the shape expected by scientific kernels.
     """
 
-    jax_context_type: type
+    backend_context_type: type
     array_fields: tuple[ContextArraySpec, ...]
     scalar_fields: tuple[ContextScalarSpec, ...]
     static_fields: tuple[StaticContextSpec, ...]
     normalization_samples_field: str
     normalization_min_value_field: str
-    scalar_context_name: str | None = "scalar_context"
+    backend_scalar_context_name: str | None = "scalar_context"
+
+    @property
+    def jax_context_type(self) -> type:
+        """
+        Backward-compatible name used only by the retired JAX oracle helpers.
+
+        Production adapters must read `backend_context_type`.  Keeping this
+        property, rather than the old dataclass field, prevents model runtime
+        declarations from having to mention JAX while preserving a narrow
+        compatibility surface for optional reference code.
+        """
+
+        return self.backend_context_type
+
+    @property
+    def scalar_context_name(self) -> str | None:
+        """
+        Backward-compatible scalar-context name for retired oracle helpers.
+
+        The production name is `backend_scalar_context_name`; this alias exists
+        so optional oracle modules can still import without forcing JAX naming
+        back into model declarations.
+        """
+
+        return self.backend_scalar_context_name
 
 
 @dataclass(frozen=True)
@@ -155,8 +177,8 @@ class ModelRuntimeAdapter:
 
     A fully generic HDF5 `DataSpec` does not exist yet, so each implemented
     model still needs one runtime adapter that knows how to build a validated
-    NumPy source context.  JAX packing and static-flag extraction are now
-    declared through `data_spec` and handled by the generic backend.
+    NumPy source context.  Context packing and static-flag extraction are now
+    declared through `data_spec` and handled by the active backend.
     """
 
     build_context_bundle: Callable[[RuntimeConfig], CompiledContextBundle]
@@ -168,11 +190,10 @@ class ModelDefinition:
     """
     Complete registry entry for one concrete scientific model.
 
-    Model modules own scientific formulas and parameter names.  The JAX backend
-    owns JIT compilation, vectorized Monte Carlo normalization, posterior
-    reduction, and host diagnostics.  The callables below are intentionally
-    small hooks so adding another model does not require copying that execution
-    framework.
+    Model modules own scientific declarations and parameter names.  The active
+    production backend owns compilation, posterior reduction, and diagnostics.
+    The `backend_kernel` key tells that backend which model-specific hot kernel
+    should consume the runtime context.
     """
 
     name: str
@@ -181,14 +202,4 @@ class ModelDefinition:
     resolve_mass_definition: Callable[[str], MassDefinition]
     build_parameter_schema: Callable[..., ParameterSchema]
     build_compiled_model: Callable[[RuntimeConfig], CompiledModel]
-    static_jit_kwargs: Callable[[CompiledModel], Mapping[str, int]]
-    to_jax_context: Callable[[CompiledModel], Any]
-    normalization_samples: Callable[[Any], Any]
-    normalization_min_value: Callable[[Any], Any]
-    unpack_theta: Callable[[Any], Any]
-    validate_theta: Callable[[Any, Any, Any, Mapping[str, int]], Any]
-    draw_population: Callable[[Any, Any, Any, Mapping[str, int]], Any]
-    selection_weight: Callable[[Any, Any, Any, Any, Mapping[str, int]], Any]
-    summary_row: Callable[[Any, Any, Any, Mapping[str, int]], Any]
-    lens_integrals: Callable[[Any, Any, Mapping[str, int]], Any]
-    extra_prior: Callable[[Any, Any, Mapping[str, int]], tuple[Any, ...]]
+    backend_kernel: str

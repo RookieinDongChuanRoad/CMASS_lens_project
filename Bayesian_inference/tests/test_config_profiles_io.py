@@ -94,9 +94,9 @@ def test_load_runtime_config_builds_typed_sections(synthetic_config_path: Path) 
     assert not hasattr(runtime_config.model, "components")
     assert runtime_config.cosmology.h0 == 70.0
     assert runtime_config.cosmology.omega_m == 0.3
-    assert runtime_config.sampling.num_chains == 24
-    assert runtime_config.sampling.num_samples == 3
-    assert runtime_config.sampling.num_warmup == 1
+    assert runtime_config.sampling.n_walkers == 24
+    assert runtime_config.sampling.n_steps == 3
+    assert runtime_config.sampling.burn_in == 1
     assert runtime_config.integration.normalization_samples == 128
     assert runtime_config.output.run_label == "synthetic"
     assert runtime_config.output.root_dir == synthetic_config_path.parent / "outputs"

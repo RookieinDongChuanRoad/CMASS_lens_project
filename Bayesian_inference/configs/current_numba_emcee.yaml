@@ -23,11 +23,9 @@ box_prior:
   loga: [-1.0, 3.0]
 
 sampling:
-  num_chains: 24
-  num_samples: 10000
-  num_warmup: 2000
-  thinning: 1
-  chain_method: sequential
+  n_walkers: 24
+  n_steps: 10000
+  burn_in: 2000
   random_seed: 7
   initial_jitter_scale: 1.0e-3
   initial_center:
@@ -64,5 +62,5 @@ runtime:
 
 output:
   root_dir: /Users/liurongfu/Work/CMASS_lens_project/outputs
-  run_label: current-jax
+  run_label: current-numba-emcee
   overwrite_latest: true

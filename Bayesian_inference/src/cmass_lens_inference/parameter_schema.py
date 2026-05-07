@@ -13,7 +13,7 @@ with:
 - optional static integer codes needed by compiled kernels
 
 Keeping this layer generic is what lets future models expose a different
-parameter vector without editing the NumPyro sampler, output writer, or common
+parameter vector without editing the sampler, output writer, or common
 validation code.
 """
 
@@ -40,7 +40,7 @@ class ParameterSchema:
         distribution.  The field is intentionally generic so non-CMASS models
         can store their own primary variant without inheriting CMASS naming.
     internal_parameter_names:
-        Canonical order used by NumPyro, JAX kernels, checkpoints, and compact
+        Canonical order used by backend kernels, emcee checkpoints, and compact
         array outputs.
     public_parameter_names:
         User-facing order used by YAML config and metadata.  It may differ from
@@ -100,8 +100,8 @@ class ParameterSchema:
         """
         Return the CMASS gamma-mode integer code when the active model has one.
 
-        The compiled context feeds the CMASS JAX kernel through this compact
-        code.  A non-CMASS model that does not use this code should fail
+        The compiled context feeds the CMASS kernel through this compact code.
+        A non-CMASS model that does not use this code should fail
         explicitly if that path is called before its backend has been
         implemented.
         """

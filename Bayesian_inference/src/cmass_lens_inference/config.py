@@ -32,7 +32,7 @@ from .types import (
 
 DEFAULT_OUTPUT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs")
 REMOVED_TOP_LEVEL_MODEL_SECTIONS = ("mass_definition", "gamma_model")
-REMOVED_SAMPLING_FIELDS = ("n_walkers", "n_steps", "warmup")
+REMOVED_SAMPLING_FIELDS = ("num_chains", "num_samples", "num_warmup", "chain_method", "thinning", "warmup")
 REMOVED_RAW_DATA_FIELDS = ("observation_path", "cross_section_path", "sigma_table_path")
 
 
@@ -168,18 +168,19 @@ def _load_data_config(data_raw: dict) -> DataConfig:
 
 def _reject_removed_sampling_fields(sampling_raw: dict) -> None:
     """
-    Reject emcee-era sampling names before building `SamplingConfig`.
+    Reject NumPyro-era sampling names before building `SamplingConfig`.
 
-    The production sampler is now NumPyro/NUTS only.  Accepting both old and new
-    names would make run snapshots ambiguous, especially when `n_steps` and
+    The production sampler is now emcee only.  Accepting both old and new names
+    would make run snapshots ambiguous, especially when `n_steps` and
     `num_samples` disagree.  Failing early gives users a direct migration path.
     """
 
     removed_present = [name for name in REMOVED_SAMPLING_FIELDS if name in sampling_raw]
     if removed_present:
         raise ValueError(
-            "Sampling fields n_walkers, n_steps, and warmup are no longer supported. "
-            "Use num_chains, num_samples, and num_warmup instead. "
+            "Sampling fields num_chains, num_samples, num_warmup, chain_method, "
+            "thinning, and warmup are no longer supported in production configs. "
+            "Use n_walkers, n_steps, and burn_in instead. "
             f"Removed fields present: {', '.join(removed_present)}."
         )
 
@@ -250,11 +251,9 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
             random_seed=int(sampling_raw["random_seed"]),
             initial_center=initial_center,
             initial_jitter_scale=float(sampling_raw.get("initial_jitter_scale", 1.0e-3)),
-            num_chains=int(sampling_raw.get("num_chains", max(1, 2 * parameter_schema.n_dim))),
-            num_samples=int(sampling_raw["num_samples"]),
-            num_warmup=int(sampling_raw["num_warmup"]),
-            thinning=int(sampling_raw.get("thinning", 1)),
-            chain_method=str(sampling_raw.get("chain_method", "sequential")),
+            n_walkers=int(sampling_raw.get("n_walkers", max(2 * parameter_schema.n_dim, 24))),
+            n_steps=int(sampling_raw["n_steps"]),
+            burn_in=int(sampling_raw.get("burn_in", 0)),
         ),
         integration=IntegrationConfig(
             gamma_points=int(integration_raw["gamma_points"]),

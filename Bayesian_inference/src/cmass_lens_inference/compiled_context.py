@@ -4,7 +4,7 @@ Build the compiled array context used by the production `log_prob` path.
 The current project keeps rich typed records for readability and schema
 validation, but the hot path should not traverse Python objects. This module
 performs the one-time transformation from `ObservationRecord` instances to the
-contiguous arrays consumed by the JAX production backend.
+contiguous arrays consumed by backend kernels.
 """
 
 from __future__ import annotations

@@ -1,61 +1,10 @@
-"""Array context for the Sonnenfeld 2024 SLACS model.
-
-This module defines the two context shapes used by the runtime:
-
-- ``SonnenfeldModelContext`` is the validated NumPy source context created
-  from a canonical inference dataset.
-- ``SonnenfeldJaxContext`` is the traced JAX pytree generated from the source
-  context by the generic ``DataSpec`` builder.
-
-Keeping these structures separate from the scientific formulas makes the model
-file readable while still documenting every numerical array consumed by the
-hot JAX kernels.
-"""
+"""Array context for the Sonnenfeld 2024 SLACS model."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NamedTuple
 
-import jax.numpy as jnp
 import numpy as np
-
-
-class SonnenfeldJaxContext(NamedTuple):
-    """JAX pytree context consumed by Sonnenfeld scientific hooks."""
-
-    z_grid: jnp.ndarray
-    chi_kpc_grid: jnp.ndarray
-    cs_theta_e_axis: jnp.ndarray
-    cs_gamma_axis: jnp.ndarray
-    cs_cross_section_grid: jnp.ndarray
-    gamma_grid_int: jnp.ndarray
-    mass_grid_int: jnp.ndarray
-    dmass_dthetaein_grid_int: jnp.ndarray
-    s2_grid_int: jnp.ndarray
-    has_s2: jnp.ndarray
-    num_sigma: jnp.ndarray
-    sigma_obs: jnp.ndarray
-    sigma_err: jnp.ndarray
-    zd: jnp.ndarray
-    zs: jnp.ndarray
-    log_mstar_obs: jnp.ndarray
-    log_mstar_err: jnp.ndarray
-    log_re_obs: jnp.ndarray
-    n_obs: jnp.ndarray
-    theta_e_obs: jnp.ndarray
-    mstar_grid: jnp.ndarray
-    parent_mstar_density_grid: jnp.ndarray
-    size_density_grid: jnp.ndarray
-    delta_r_grid: jnp.ndarray
-    mstar_shift_grid: jnp.ndarray
-    base_normals: jnp.ndarray
-    population_gamma_axis: jnp.ndarray
-    population_zd_axis: jnp.ndarray
-    population_log_re_kpc_axis: jnp.ndarray
-    population_n_axis: jnp.ndarray
-    population_sigma_unit_grid: jnp.ndarray
-    scalar_context: jnp.ndarray
 
 
 @dataclass(frozen=True)
@@ -65,8 +14,8 @@ class SonnenfeldModelContext:
 
     The context contains no sampled hyper-parameters.  It stores canonical data
     arrays, deterministic quadrature tables, shifted h-unit constants, and
-    normalization controls so JAX hooks can remain pure functions of
-    ``theta_parts``, one random-basis row, and this context.
+    normalization controls so backend kernels can remain pure functions of one
+    random-basis row and this context.
     """
 
     z_grid: np.ndarray
@@ -122,4 +71,4 @@ class SonnenfeldModelContext:
     normalization_min_value: float
 
 
-__all__ = ["SonnenfeldJaxContext", "SonnenfeldModelContext"]
+__all__ = ["SonnenfeldModelContext"]

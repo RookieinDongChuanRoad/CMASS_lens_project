@@ -105,9 +105,9 @@ def _write_corner_config(
         },
         "box_prior": _box_prior_payload(),
         "sampling": {
-            "num_chains": 24,
-            "num_samples": 5,
-            "num_warmup": warmup,
+            "n_walkers": 24,
+            "n_steps": 5,
+            "burn_in": warmup,
             "random_seed": 7,
             "initial_center": _initial_center_payload(),
             "initial_jitter_scale": 1.0e-3,

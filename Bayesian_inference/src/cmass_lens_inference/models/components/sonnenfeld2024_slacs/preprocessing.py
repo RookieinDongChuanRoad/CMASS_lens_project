@@ -2,17 +2,17 @@
 
 The canonical dataset reader validates raw HDF5 shape and capability
 contracts.  This module performs the model-specific deterministic work that is
-still required before JAX can evaluate Sonnenfeld hooks:
+still required before the production backend can evaluate Sonnenfeld kernels:
 
 - load a complete canonical dataset with the velocity-dispersion proxy grid;
 - interpolate per-lens mass tracks onto the configured gamma integration axis;
 - build per-lens stellar-mass quadrature arrays;
 - place paper Table-1 mass-location constants in the active model coordinate;
-- normalize the population sigma-unit grid to the rank expected by JAX.
+- normalize the population sigma-unit grid to the rank expected by the kernel.
 
 No sampled parameter enters this module.  That separation is important because
-preprocessing should run once per inference run, while likelihood hooks run for
-every proposed hyper-parameter vector.
+preprocessing should run once per inference run, while likelihood kernels run
+for every proposed hyper-parameter vector.
 """
 
 from __future__ import annotations
@@ -22,14 +22,14 @@ import math
 import numpy as np
 
 from ....canonical_dataset import CanonicalInferenceDataset, load_canonical_inference_dataset
-from ....compiled_context import build_random_basis
-from ....cosmology import FlatLambdaCDM
-from ....jax_backend.canonical_context import (
+from ....canonical_context import (
     canonical_dataset_metadata,
     interpolate_lensing_mass_grids,
-    normalize_sigma_grid_for_jax,
+    normalize_sigma_grid,
     shared_gamma_axis,
 )
+from ....compiled_context import build_random_basis
+from ....cosmology import FlatLambdaCDM
 from ....mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC
 from ....model_interfaces import CompiledContextBundle
 from ....profiles import build_profile_spec
@@ -77,7 +77,7 @@ def _active_mass_locations(runtime_config: RuntimeConfig) -> tuple[float, float]
     - ``sonnenfeld2024_slacs_hunit`` consumes h-unit canonical input, so every
       location in the stellar-mass coordinate is shifted by ``2 log10(h_ref)``.
 
-    Keeping this conversion in preprocessing, instead of inside JAX hooks,
+    Keeping this conversion in preprocessing, instead of inside hot kernels,
     makes the hot path unit-agnostic and keeps model names tied to one explicit
     coordinate contract.
     """
@@ -145,8 +145,9 @@ def _parent_density_grid(
     The normalization cancels between likelihood and selection normalization,
     so the model only needs a positive density up to an overall constant.  The
     redshift factor is represented by a simple comoving-volume proxy ``z_d^2``
-    in this first JAX implementation; the expensive survey parent fitting stays
-    outside runtime, consistent with the canonical-dataset boundary.
+    in this first production implementation; the expensive survey parent
+    fitting stays outside runtime, consistent with the canonical-dataset
+    boundary.
     """
 
     threshold = truncation_mass_threshold(
@@ -297,7 +298,7 @@ def build_sonnenfeld_context_from_canonical_dataset(
         population_n_axis,
         population_sigma_unit_grid,
         population_has_n_axis,
-    ) = normalize_sigma_grid_for_jax(
+    ) = normalize_sigma_grid(
         active_dataset.velocity_dispersion.population_sigma_unit,
         profile_fixed_n=active_profile.fixed_n,
     )

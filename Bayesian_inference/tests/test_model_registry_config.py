@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import NamedTuple
 
 import numpy as np
 import pytest
 import yaml
 
-from cmass_lens_inference.jax_backend.model_adapter import build_model_definition
-from cmass_lens_inference.jax_backend.context_builder import (
-    build_jax_context_from_data_spec,
-    static_jit_kwargs_from_data_spec,
-)
 from cmass_lens_inference.canonical_dataset import (
     CAPABILITY_LENSING_CROSS_SECTION_THETA_GAMMA_V1,
     CAPABILITY_LENSING_MASS_GRIDS_V1,
@@ -25,15 +19,12 @@ from cmass_lens_inference.models.components.cmass.context import CMASSModelConte
 from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, get_mass_definition
 from cmass_lens_inference.model_interfaces import (
     CompiledContextBundle,
-    ContextArraySpec,
-    ContextScalarSpec,
-    DataSpec,
     ModelRuntimeAdapter,
     ModelSpec,
     ParameterSpec,
-    StaticContextSpec,
 )
 from cmass_lens_inference.model_registry import get_model_definition
+from cmass_lens_inference.numba_backend.model_adapter import build_model_definition
 
 
 def _minimal_cmass_config(tmp_path: Path) -> dict:
@@ -61,9 +52,9 @@ def _minimal_cmass_config(tmp_path: Path) -> dict:
         },
         "sampling": {
             "random_seed": 7,
-            "num_chains": 24,
-            "num_samples": 3,
-            "num_warmup": 1,
+            "n_walkers": 24,
+            "n_steps": 3,
+            "burn_in": 1,
             "initial_center": {
                 "mu5h_0": 11.17,
                 "beta5h": 0.59,
@@ -205,14 +196,23 @@ def test_cmass_rejects_legacy_fixed_kpc_unit_convention(tmp_path: Path) -> None:
 
 
 def test_legacy_sampling_fields_are_rejected(tmp_path: Path) -> None:
-    """The NumPyro-only config parser should reject emcee-era sampling names."""
+    """The emcee-only config parser should reject retired sampling names."""
 
     payload = _minimal_cmass_config(tmp_path)
-    payload["sampling"].update({"n_walkers": 24, "n_steps": 3, "warmup": 1})
+    payload["sampling"].update(
+        {
+            "num_chains": 24,
+            "num_samples": 3,
+            "num_warmup": 1,
+            "chain_method": "sequential",
+            "thinning": 1,
+            "warmup": 1,
+        }
+    )
     config_path = tmp_path / "legacy_sampling.yaml"
     config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="n_walkers.*n_steps.*warmup"):
+    with pytest.raises(ValueError, match="num_chains.*num_samples.*num_warmup.*warmup"):
         load_runtime_config(config_path)
 
 
@@ -273,13 +273,7 @@ def test_generic_model_adapter_builds_schema_without_cmass_fields() -> None:
         required_capabilities=("toy.capability.v1",),
         optional_capabilities=(),
         static_codes={},
-        unpack_theta=lambda theta: theta,
-        validate_theta=lambda theta, theta_parts, context, static: True,
-        draw_population=lambda theta_parts, nrm, context, static: nrm,
-        selection_weight=lambda theta_parts, draw, nrm, context, static: 1.0,
-        summary_row=lambda theta_parts, draw, context, static: draw,
-        lens_integrals=lambda theta_parts, context, static: context.lens_integrals,
-        extra_prior=lambda fp_summary, context, static: (0.0, 0.0, 0.0, 0.0, 0.0),
+        backend_kernel="toy_kernel",
     )
     runtime_adapter = ModelRuntimeAdapter(
         build_context_bundle=lambda runtime_config: CompiledContextBundle(
@@ -290,14 +284,7 @@ def test_generic_model_adapter_builds_schema_without_cmass_fields() -> None:
             random_basis=None,
             observations=(),
         ),
-        data_spec=DataSpec(
-            jax_context_type=ToyJaxContext,
-            array_fields=(),
-            scalar_fields=(),
-            static_fields=(),
-            normalization_samples_field="base_normals",
-            normalization_min_value_field="normalization_min_value",
-        ),
+        data_spec=cmass_runtime.get_data_spec(),
     )
 
     model_definition = build_model_definition(model_spec, runtime_adapter)
@@ -312,55 +299,7 @@ def test_generic_model_adapter_builds_schema_without_cmass_fields() -> None:
     assert parameter_schema.prior_bounds == ((-0.5, 0.5), (0.2, 2.0))
     assert parameter_schema.model_metadata == {"purpose": "adapter-test"}
     assert model_definition.required_capabilities == ("toy.capability.v1",)
-
-
-class ToyJaxContext(NamedTuple):
-    """Small context type used to prove the generic builder is model-agnostic."""
-
-    signal: object
-    scalar_context: object
-
-
-class ToyRawContext(NamedTuple):
-    """Raw NumPy context with deliberately non-CMASS field names."""
-
-    signal_numpy: np.ndarray
-    scale: float
-    offset: float
-    use_feature: int
-    base_normals: np.ndarray
-    normalization_floor: float
-
-
-def test_data_spec_builds_jax_context_and_static_flags_without_cmass_fields() -> None:
-    """The generic context builder should only depend on declarative specs."""
-
-    raw_context = ToyRawContext(
-        signal_numpy=np.asarray([1.0, 2.0, 3.0], dtype=np.float64),
-        scale=4.0,
-        offset=-1.5,
-        use_feature=1,
-        base_normals=np.zeros((2, 3), dtype=np.float64),
-        normalization_floor=1.0e-8,
-    )
-    data_spec = DataSpec(
-        jax_context_type=ToyJaxContext,
-        array_fields=(ContextArraySpec(source_name="signal_numpy", target_name="signal"),),
-        scalar_fields=(
-            ContextScalarSpec(source_name="scale"),
-            ContextScalarSpec(source_name="offset"),
-        ),
-        static_fields=(StaticContextSpec(source_name="use_feature", target_name="feature_enabled"),),
-        normalization_samples_field="base_normals",
-        normalization_min_value_field="normalization_floor",
-    )
-
-    jax_context = build_jax_context_from_data_spec(raw_context, data_spec)
-    static_kwargs = static_jit_kwargs_from_data_spec(raw_context, data_spec)
-
-    np.testing.assert_allclose(np.asarray(jax_context.signal), np.asarray([1.0, 2.0, 3.0]))
-    np.testing.assert_allclose(np.asarray(jax_context.scalar_context), np.asarray([4.0, -1.5]))
-    assert static_kwargs == {"feature_enabled": 1}
+    assert model_definition.backend_kernel == "toy_kernel"
 
 
 def _minimal_cmass_model_context() -> CMASSModelContext:
@@ -432,12 +371,18 @@ def _minimal_cmass_model_context() -> CMASSModelContext:
     )
 
 
-def test_cmass_data_spec_preserves_scalar_context_order_and_values() -> None:
-    """CMASS scalar packing must stay byte-for-byte compatible with old hooks."""
+def test_cmass_data_spec_preserves_scalar_field_order_and_values() -> None:
+    """CMASS runtime declaration must preserve scalar field order and values."""
 
     raw_context = _minimal_cmass_model_context()
     data_spec = cmass_runtime.get_data_spec()
-    jax_context = build_jax_context_from_data_spec(raw_context, data_spec)
+    scalar_values = np.asarray(
+        [
+            getattr(raw_context, scalar_spec.source_name)
+            for scalar_spec in data_spec.scalar_fields
+        ],
+        dtype=np.float64,
+    )
 
     expected = np.asarray(
         [
@@ -471,11 +416,11 @@ def test_cmass_data_spec_preserves_scalar_context_order_and_values() -> None:
         ],
         dtype=np.float64,
     )
-    np.testing.assert_allclose(np.asarray(jax_context.scalar_context), expected)
+    np.testing.assert_allclose(scalar_values, expected)
 
 
 def test_runtime_adapter_rejects_old_manual_context_hooks() -> None:
-    """Runtime adapters should no longer ask models to hand-write JAX packing."""
+    """Runtime adapters should no longer ask models to hand-write backend packing."""
 
     with pytest.raises(TypeError, match="static_jit_kwargs|to_jax_context|unexpected"):
         ModelRuntimeAdapter(

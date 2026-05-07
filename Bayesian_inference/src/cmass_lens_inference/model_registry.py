@@ -2,14 +2,14 @@
 Scientific-model registry.
 
 All production entrypoints resolve models through this module.  That keeps
-configuration parsing, NumPyro sampling, benchmarks, and tests from importing
+configuration parsing, emcee sampling, benchmarks, and tests from importing
 CMASS implementation details directly.  Adding a new model should mean adding
 a new module under ``models/`` and registering it here.
 """
 
 from __future__ import annotations
 
-from .jax_backend.model_adapter import build_model_definition
+from .numba_backend.model_adapter import build_model_definition
 from .model_interfaces import ModelDefinition
 from .models import (
     cmass,
@@ -25,8 +25,8 @@ def get_model_definition(model_name: str) -> ModelDefinition:
 
     Every branch returns a complete ``ModelDefinition`` built from a
     human-authored ``ModelSpec`` and a runtime adapter.  The registry is the
-    only production dispatch point, so config parsing, JAX, NumPyro, and
-    benchmarks all see the same model boundary.
+    only production dispatch point, so config parsing, numba kernels, emcee,
+    and benchmarks all see the same model boundary.
     """
 
     if model_name == "cmass":

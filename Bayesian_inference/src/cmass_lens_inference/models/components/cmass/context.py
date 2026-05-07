@@ -3,57 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NamedTuple
 
-import jax.numpy as jnp
 import numpy as np
-
-
-class CMASSJaxContext(NamedTuple):
-    """
-    JAX pytree context consumed by the CMASS scientific hooks.
-
-    This type is intentionally colocated with `CMASSModelContext`: the NumPy
-    dataclass describes the validated source context, while this NamedTuple
-    describes the traced JAX view generated from the model's `DataSpec`.
-    """
-
-    z_grid: jnp.ndarray
-    chi_kpc_grid: jnp.ndarray
-    cs_gamma_grid: jnp.ndarray
-    cs_over_theta_grid: jnp.ndarray
-    cs_theta_e_axis: jnp.ndarray
-    cs_cross_section_grid: jnp.ndarray
-    cs_over_theta_int: jnp.ndarray
-    gamma_grid_int: jnp.ndarray
-    mass_grid_int: jnp.ndarray
-    dmass_dthetaein_grid_int: jnp.ndarray
-    s2_grid_int: jnp.ndarray
-    has_s2: jnp.ndarray
-    num_sigma: jnp.ndarray
-    sigma_obs: jnp.ndarray
-    sigma_err: jnp.ndarray
-    zd: jnp.ndarray
-    zs: jnp.ndarray
-    p_zd_fixed: jnp.ndarray
-    mstar_grid: jnp.ndarray
-    mstar_shift11p4: jnp.ndarray
-    sigma_star_shift9p0_grid: jnp.ndarray
-    mstar_integrand_base: jnp.ndarray
-    delta_r_grid: jnp.ndarray
-    base_normals: jnp.ndarray
-    scalar_context: jnp.ndarray
-    fp_gamma_axis: jnp.ndarray
-    fp_zd_axis: jnp.ndarray
-    fp_log_re_kpc_axis: jnp.ndarray
-    fp_n_axis: jnp.ndarray
-    fp_sigma_unit_grid: jnp.ndarray
 
 
 @dataclass(frozen=True)
 class CMASSModelContext:
     """
-    Parameter-independent arrays consumed by the CMASS JAX hooks.
+    Parameter-independent arrays consumed by the CMASS backend kernel.
 
     This context is model-specific.  Generic orchestration stores it as an
     opaque object and routes it through the active model definition.
@@ -121,4 +78,4 @@ class CMASSModelContext:
     fp_has_n_axis: int
 
 
-__all__ = ["CMASSJaxContext", "CMASSModelContext"]
+__all__ = ["CMASSModelContext"]

@@ -1,9 +1,10 @@
 """
-Regression tests for the JAX/NumPyro inference backend.
+Regression tests for the production Numba/emcee inference backend.
 
-The legacy numba/emcee backend has been removed from the production package, so
-these tests now lock the active JAX contract directly: model-registry dispatch,
-finite posterior evaluation, hunit-aware context values, and NumPyro artifacts.
+These tests lock the backend contract that matters for Phase A and Phase B:
+emcee-native config fields, bounded walker initialization, finite CMASS Numba
+log-probability evaluation, canonical dataset context construction, and native
+`chain.h5` artifacts.
 """
 
 from __future__ import annotations
@@ -16,20 +17,20 @@ import pytest
 import yaml
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.jax_backend.likelihood_engine import (
-    build_compiled_model as build_jax_model,
-    log_prob as jax_log_prob,
+from cmass_lens_inference.emcee_sampler import initialize_walkers
+from cmass_lens_inference.numba_backend.likelihood_engine import (
+    build_compiled_model as build_numba_model,
+    log_prob as numba_log_prob,
 )
-from cmass_lens_inference.numpyro_sampler import _build_jittered_initial_strategy
 from cmass_lens_inference.runner import run_inference
 
 
 def _write_minimal_canonical_dataset(path: Path) -> Path:
     """
-    Write a tiny canonical dataset that can drive the CMASS JAX runtime.
+    Write a tiny canonical CMASS dataset for backend-level tests.
 
-    This fixture intentionally bypasses legacy observation/cross-section files:
-    the test asserts that inference can start from the canonical schema itself.
+    The fixture bypasses legacy raw observation and cross-section products so
+    the tests assert the production runtime starts from the canonical schema.
     """
 
     gamma_grid = np.linspace(1.3, 2.7, 17)
@@ -97,12 +98,10 @@ def _write_minimal_canonical_dataset(path: Path) -> Path:
     return path
 
 
-def test_config_loads_cmass_model_and_numpyro_sampling_fields(
+def test_config_loads_cmass_model_and_emcee_sampling_fields(
     synthetic_config_path: Path,
 ) -> None:
-    """
-    New configs should expose one concrete model and NumPyro sampling fields.
-    """
+    """New configs should expose one concrete model and emcee sampling fields."""
 
     runtime_config = load_runtime_config(synthetic_config_path)
 
@@ -110,68 +109,66 @@ def test_config_loads_cmass_model_and_numpyro_sampling_fields(
     assert not hasattr(runtime_config.model, "components")
     assert runtime_config.parameter_schema.model_metadata["gamma_distribution"] == "sigma_star_dependent"
     assert runtime_config.mass_definition.label == "m5_hinvkpc"
-    assert runtime_config.sampling.num_chains == 24
-    assert runtime_config.sampling.num_samples == 3
-    assert runtime_config.sampling.num_warmup == runtime_config.sampling.warmup
-    assert runtime_config.sampling.thinning == 1
-    assert runtime_config.sampling.chain_method == "sequential"
+    assert runtime_config.sampling.n_walkers == 24
+    assert runtime_config.sampling.n_steps == 3
+    assert runtime_config.sampling.burn_in == runtime_config.sampling.warmup == 1
 
 
-def test_numpyro_jittered_initial_strategy_uses_independent_bounded_chain_values(
+def test_emcee_walker_initialization_uses_independent_bounded_values(
     synthetic_config_path: Path,
 ) -> None:
-    """
-    NumPyro chains should start from independently jittered, in-bounds values.
-
-    This replaces the old emcee walker cloud condition-number concern with the
-    NUTS-specific contract: each chain gets its own valid constrained initial
-    point, while box-prior bounds remain hard guards.
-    """
-
-    import jax
+    """emcee walkers should start from independently jittered in-bounds values."""
 
     runtime_config = load_runtime_config(synthetic_config_path)
-    strategy = _build_jittered_initial_strategy(runtime_config)
-    parameter_name = runtime_config.parameter_schema.internal_parameter_names[0]
-    lower, upper = runtime_config.parameter_schema.prior_bounds[0]
+    walkers = initialize_walkers(
+        runtime_config.sampling.initial_center,
+        runtime_config.sampling.n_walkers,
+        runtime_config.sampling.initial_jitter_scale,
+        runtime_config.sampling.random_seed,
+    )
+    lower_bounds = np.asarray([lower for lower, _ in runtime_config.parameter_schema.prior_bounds])
+    upper_bounds = np.asarray([upper for _, upper in runtime_config.parameter_schema.prior_bounds])
 
-    site_template = {
-        "type": "sample",
-        "is_observed": False,
-        "name": parameter_name,
-        "kwargs": {},
-    }
-    first_site = {**site_template, "kwargs": {"rng_key": jax.random.PRNGKey(1)}}
-    second_site = {**site_template, "kwargs": {"rng_key": jax.random.PRNGKey(2)}}
-
-    first_value = float(strategy(first_site))
-    second_value = float(strategy(second_site))
-
-    assert lower < first_value < upper
-    assert lower < second_value < upper
-    assert first_value != pytest.approx(second_value)
+    assert walkers.shape == (24, runtime_config.parameter_schema.n_dim)
+    assert np.all(walkers >= lower_bounds[None, :])
+    assert np.all(walkers <= upper_bounds[None, :])
+    assert np.linalg.matrix_rank(walkers - walkers.mean(axis=0)) > 1
 
 
-def test_jax_log_prob_is_finite_for_cmass_model(
+def test_numba_log_prob_is_finite_for_cmass_model(
     synthetic_config_path: Path,
 ) -> None:
-    """
-    A valid initial point should produce a finite posterior through backend dispatch.
-    """
+    """A valid initial point should produce a finite Numba posterior."""
 
     runtime_config = load_runtime_config(synthetic_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
+    numba_model = build_numba_model(runtime_config)
 
-    jax_model = build_jax_model(runtime_config)
+    value, blob = numba_log_prob(theta, numba_model)
 
-    jax_value, blob = jax_log_prob(theta, jax_model)
-
-    assert np.isfinite(jax_value)
-    assert blob["backend"].decode("utf-8").rstrip("\x00") == "jax"
+    assert np.isfinite(value)
+    assert blob["backend"].decode("utf-8").rstrip("\x00") == "numba"
+    assert blob["kernel"].decode("utf-8").rstrip("\x00") == "cmass"
     assert np.isfinite(float(blob["normalization_value"]))
 
 
-def test_jax_log_prob_is_finite_for_canonical_dataset(
+def test_numba_log_prob_rejects_out_of_bounds_theta(
+    synthetic_config_path: Path,
+) -> None:
+    """The host-side box prior should reject proposals before kernel work."""
+
+    runtime_config = load_runtime_config(synthetic_config_path)
+    theta = runtime_config.sampling.initial_center.to_array()
+    theta[0] = runtime_config.parameter_schema.prior_bounds[0][1] + 1.0
+    numba_model = build_numba_model(runtime_config)
+
+    value, blob = numba_log_prob(theta, numba_model)
+
+    assert value == -np.inf
+    assert float(blob["normalization_value"]) == 0.0
+
+
+def test_numba_log_prob_is_finite_for_canonical_dataset(
     tmp_path: Path,
     synthetic_config_path: Path,
 ) -> None:
@@ -186,100 +183,81 @@ def test_jax_log_prob_is_finite_for_canonical_dataset(
 
     runtime_config = load_runtime_config(canonical_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
-    jax_model = build_jax_model(runtime_config)
+    numba_model = build_numba_model(runtime_config)
 
-    jax_value, blob = jax_log_prob(theta, jax_model)
+    value, blob = numba_log_prob(theta, numba_model)
 
     assert runtime_config.data.inference_dataset_path is not None
-    assert jax_model.context.cs_cross_section_grid.shape == (64, 17)
-    assert np.isfinite(jax_value)
+    assert numba_model.context.cs_cross_section_grid.shape == (64, 17)
+    assert np.isfinite(value)
     assert np.isfinite(float(blob["normalization_value"]))
 
 
-def test_jax_fp_prior_log_prob_is_finite(
+def test_numba_fp_prior_log_prob_is_finite(
     synthetic_fp_prior_config_path: Path,
 ) -> None:
-    """
-    FP-enabled JAX evaluation should expose finite FP diagnostics.
-
-    This specifically guards the population-summary path because it estimates
-    both selection normalization and sufficient statistics for the Fundamental
-    Plane prior.
-    """
+    """FP-enabled Numba evaluation should expose finite FP diagnostics."""
 
     runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
+    numba_model = build_numba_model(runtime_config)
 
-    jax_model = build_jax_model(runtime_config)
+    value, blob = numba_log_prob(theta, numba_model)
 
-    jax_value, blob = jax_log_prob(theta, jax_model)
-
-    assert np.isfinite(jax_value)
+    assert np.isfinite(value)
     assert np.isfinite(float(blob["fp_prior_log_term"]))
     assert np.isfinite(float(blob["fpfit_mu"]))
     assert np.isfinite(float(blob["fpfit_beta"]))
 
 
-def test_jax_log_prob_uses_h_unit_current_model_context(
+def test_numba_log_prob_uses_h_unit_current_model_context(
     synthetic_config_path: Path,
 ) -> None:
-    """
-    The JAX backend must honor the merged hunit mass and size convention.
-
-    This is the regression that protects the non-textual merge risk: Git can
-    merge `compiled_context.py` automatically, but JAX still has to consume the
-    hunit-aware `stellar_mass_pivot`, physical aperture radius, and mass-log
-    offset exported by that context.
-    """
+    """The Numba backend must honor the hunit mass and size convention."""
 
     runtime_config = load_runtime_config(synthetic_config_path)
     theta = runtime_config.sampling.initial_center.to_array()
+    numba_model = build_numba_model(runtime_config)
 
-    jax_model = build_jax_model(runtime_config)
-
-    jax_value, blob = jax_log_prob(theta, jax_model)
+    value, blob = numba_log_prob(theta, numba_model)
 
     assert runtime_config.mass_definition.label == "m5_hinvkpc"
-    assert jax_model.context.stellar_mass_pivot == pytest.approx(11.4 + 2.0 * np.log10(0.7))
-    assert jax_model.context.mass_radius_kpc == pytest.approx(5.0 / 0.7)
-    assert jax_model.context.mass_log_physical_offset == pytest.approx(np.log10(0.7**-1))
-    assert np.isfinite(jax_value)
-    assert blob["backend"].decode("utf-8").rstrip("\x00") == "jax"
+    assert numba_model.context.stellar_mass_pivot == pytest.approx(11.4 + 2.0 * np.log10(0.7))
+    assert numba_model.context.mass_radius_kpc == pytest.approx(5.0 / 0.7)
+    assert numba_model.context.mass_log_physical_offset == pytest.approx(np.log10(0.7**-1))
+    assert np.isfinite(value)
+    assert blob["backend"].decode("utf-8").rstrip("\x00") == "numba"
 
 
-def test_run_inference_writes_numpyro_posterior_artifacts(
+def test_run_inference_writes_emcee_chain_artifact(
     synthetic_config_path: Path,
 ) -> None:
-    """
-    Production runs should use NumPyro output artifacts instead of emcee HDF5.
-
-    The synthetic run is deliberately tiny: it verifies orchestration,
-    serialization, and metadata contracts without trying to assess MCMC quality.
-    """
+    """Production runs should use emcee HDFBackend output artifacts."""
 
     payload = yaml.safe_load(synthetic_config_path.read_text(encoding="utf-8"))
     payload["sampling"].update(
         {
-            "num_chains": 2,
-            "num_samples": 2,
-            "num_warmup": 1,
-            "chain_method": "sequential",
-            "thinning": 1,
+            "n_walkers": 24,
+            "n_steps": 2,
+            "burn_in": 1,
             "initial_jitter_scale": 1.0e-3,
         }
     )
-    numpyro_config_path = synthetic_config_path.parent / "synthetic_numpyro.yaml"
-    numpyro_config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    config_path = synthetic_config_path.parent / "synthetic_emcee.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
-    runtime_config = load_runtime_config(numpyro_config_path)
-    run_result = run_inference(str(numpyro_config_path))
+    runtime_config = load_runtime_config(config_path)
+    run_result = run_inference(str(config_path))
 
     assert run_result.status == "completed"
     assert run_result.completed_steps == 2
     assert run_result.acceptance_fraction_mean >= 0.0
-    assert run_result.metadata["chain_storage"] == "numpyro_arviz_netcdf"
-    assert (run_result.run_dir / "samples.npz").exists()
-    assert (run_result.run_dir / "posterior.nc").exists()
-    assert not (run_result.run_dir / "chain.h5").exists()
-    with np.load(run_result.run_dir / "samples.npz") as payload:
-        assert payload["samples_by_chain"].shape == (2, 2, runtime_config.parameter_schema.n_dim)
+    assert run_result.metadata["chain_storage"] == "emcee_hdf_backend"
+    assert (run_result.run_dir / "chain.h5").exists()
+    assert not (run_result.run_dir / "samples.npz").exists()
+    assert not (run_result.run_dir / "posterior.nc").exists()
+
+    import emcee
+
+    backend = emcee.backends.HDFBackend(str(run_result.run_dir / "chain.h5"), read_only=True)
+    assert backend.get_chain().shape == (2, 24, runtime_config.parameter_schema.n_dim)

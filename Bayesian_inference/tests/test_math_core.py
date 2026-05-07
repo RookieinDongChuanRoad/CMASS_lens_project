@@ -87,7 +87,7 @@ def test_flat_lcdm_builds_its_distance_table_from_astropy() -> None:
     """
     The wrapper should delegate the base comoving-distance grid to astropy.
 
-    That guarantees Python helpers and the JAX backend consume the same
+    That guarantees Python helpers and backend kernels consume the same
     cosmology source of truth instead of a hand-maintained approximation.
     """
 

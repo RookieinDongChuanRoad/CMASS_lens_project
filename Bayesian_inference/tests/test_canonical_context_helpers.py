@@ -22,10 +22,10 @@ from cmass_lens_inference.canonical_dataset import (
     CanonicalSigmaGrid,
     CanonicalVelocityDispersionGrids,
 )
-from cmass_lens_inference.jax_backend.canonical_context import (
+from cmass_lens_inference.canonical_context import (
     canonical_dataset_metadata,
     interpolate_lensing_mass_grids,
-    normalize_sigma_grid_for_jax,
+    normalize_sigma_grid,
     shared_gamma_axis,
 )
 
@@ -138,7 +138,7 @@ def test_interpolate_lensing_mass_grids_handles_per_lens_gamma_axes() -> None:
     assert mass_grid[1, -1] == np.float64(10.9)
 
 
-def test_normalize_sigma_grid_for_jax_injects_missing_axes() -> None:
+def test_normalize_sigma_grid_injects_missing_axes() -> None:
     """Canonical sigma grids should normalize to gamma, zd, logRe, n order."""
 
     sigma_grid = CanonicalSigmaGrid(
@@ -149,7 +149,7 @@ def test_normalize_sigma_grid_for_jax_injects_missing_axes() -> None:
         n_axis=np.asarray([4.0]),
     )
 
-    gamma_axis, zd_axis, log_re_axis, n_axis, values, has_n_axis = normalize_sigma_grid_for_jax(
+    gamma_axis, zd_axis, log_re_axis, n_axis, values, has_n_axis = normalize_sigma_grid(
         sigma_grid,
         profile_fixed_n=4.0,
     )

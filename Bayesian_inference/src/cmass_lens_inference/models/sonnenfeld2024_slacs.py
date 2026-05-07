@@ -1,11 +1,8 @@
 """Assembly layer for the Sonnenfeld 2024 SLACS debiased model.
 
-The numerical formulas live under
-``models.components.sonnenfeld2024_slacs``.  This file mirrors the CMASS
-assembly pattern: it names the concrete model, records fixed metadata, and
-wires component hooks into ``ModelSpec``.  Backend concerns such as JAX
-packing, ``jit``/``vmap`` execution, NumPyro sampling, and output writing stay
-outside this module.
+The backend kernels live outside this assembly layer.  This file mirrors the
+CMASS pattern: it names each concrete model, records fixed metadata, and exposes
+the parameter/capability contract consumed by the production backend.
 """
 
 from __future__ import annotations
@@ -13,13 +10,7 @@ from __future__ import annotations
 from ..mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC
 from ..model_interfaces import ModelSpec
 from .components.sonnenfeld2024_slacs.capabilities import REQUIRED_CAPABILITIES
-from .components.sonnenfeld2024_slacs import (
-    likelihood,
-    parameters,
-    population,
-    selection,
-    summaries,
-)
+from .components.sonnenfeld2024_slacs import parameters
 
 
 MODEL_NAME = "sonnenfeld2024_slacs"
@@ -41,8 +32,8 @@ def _build_model_spec(
     ``sonnenfeld2024_slacs`` is reserved for the paper-native fixed-kpc mass
     convention.  ``sonnenfeld2024_slacs_hunit`` is the explicit h-units variant
     that runs on the current hunit canonical backend.  Both variants share the
-    same scientific formula hooks; the runtime context decides whether paper
-    mass-location constants are shifted before JAX sees them.
+    same backend kernel; the runtime context decides whether paper mass-location
+    constants are shifted before numerical evaluation.
     """
 
     return ModelSpec(
@@ -64,13 +55,7 @@ def _build_model_spec(
         required_capabilities=REQUIRED_CAPABILITIES,
         optional_capabilities=(),
         static_codes={},
-        unpack_theta=parameters.unpack_theta,
-        validate_theta=parameters.validate_theta,
-        draw_population=population.draw_population,
-        selection_weight=selection.selection_weight_from_normal,
-        summary_row=summaries.summary_row,
-        lens_integrals=likelihood.lens_integrals,
-        extra_prior=summaries.extra_prior,
+        backend_kernel="sonnenfeld2024_slacs",
     )
 
 

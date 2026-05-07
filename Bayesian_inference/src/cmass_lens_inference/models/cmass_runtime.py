@@ -6,12 +6,10 @@ generic data-loading layer exists.  It performs two jobs:
 
 1. build the validated CMASS NumPy source context from the canonical inference
    dataset;
-2. declare how that context is packed into the JAX context consumed by
-   `models.cmass`.
+2. declare the source-context fields that backends may consume.
 
-The scientific equations stay in `cmass.py`.  The generic backend consumes this
-declaration and handles JAX array conversion, scalar packing, static flags, and
-`CompiledModel` construction.
+The scientific equations stay outside this runtime glue.  The generic backend
+consumes this declaration and handles `CompiledModel` construction.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ from ..model_interfaces import (
 )
 from ..profiles import build_profile_spec
 from ..types import RuntimeConfig
-from .components.cmass.context import CMASSJaxContext
 from .components.cmass.preprocessing import (
     build_cmass_context_from_canonical_dataset,
     load_cmass_canonical_dataset,
@@ -61,16 +58,16 @@ def build_context_bundle(runtime_config: RuntimeConfig) -> CompiledContextBundle
 
 def get_data_spec() -> DataSpec:
     """
-    Return the CMASS context-packing declaration.
+    Return the CMASS context declaration.
 
-    The scalar field order intentionally matches the previous hand-written
-    `_scalar_context_array` implementation.  CMASS hooks index this array by
-    position inside JIT-compiled code, so changing the order would be a
-    scientific behavior change and must be covered by explicit tests.
+    The scalar field order intentionally preserves the previous backend
+    contract.  Backend kernels may pack these fields into compact arrays, so
+    changing the order is a scientific behavior change and must be covered by
+    explicit tests.
     """
 
     return DataSpec(
-        jax_context_type=CMASSJaxContext,
+        backend_context_type=object,
         array_fields=(
             ContextArraySpec("z_grid"),
             ContextArraySpec("chi_kpc_grid"),
@@ -145,8 +142,8 @@ def get_runtime_adapter() -> ModelRuntimeAdapter:
     """
     Return the runtime adapter paired with `models.cmass.get_model_spec()`.
 
-    No JAX packing functions are exposed here.  The generic backend derives
-    them from `DataSpec`, which is the point of this refactor.
+    No sampler or backend implementation is exposed here.  The generic backend
+    derives its compiled-model container from this runtime adapter.
     """
 
     return ModelRuntimeAdapter(
