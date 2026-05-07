@@ -114,9 +114,10 @@ def build_model_definition(
     """
     Combine a scientific spec and runtime adapter into a registry entry.
 
-    The returned definition deliberately contains no JAX hook callables.  The
-    Numba backend dispatches through `backend_kernel`, while the framework still
-    gets model-owned schema, mass-definition, and context-build callables.
+    The returned definition deliberately contains only production Numba/emcee
+    entrypoints.  The Numba backend dispatches through `backend_kernel`, while
+    the framework still gets model-owned schema, mass-definition, and
+    context-build callables.
     """
 
     return ModelDefinition(

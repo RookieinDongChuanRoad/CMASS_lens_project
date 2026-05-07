@@ -419,14 +419,14 @@ def test_cmass_data_spec_preserves_scalar_field_order_and_values() -> None:
     np.testing.assert_allclose(scalar_values, expected)
 
 
-def test_runtime_adapter_rejects_old_manual_context_hooks() -> None:
+def test_runtime_adapter_rejects_old_manual_backend_context_hooks() -> None:
     """Runtime adapters should no longer ask models to hand-write backend packing."""
 
-    with pytest.raises(TypeError, match="static_jit_kwargs|to_jax_context|unexpected"):
+    with pytest.raises(TypeError, match="static_backend_kwargs|to_backend_context|unexpected"):
         ModelRuntimeAdapter(
             build_compiled_model=lambda runtime_config: runtime_config,
-            static_jit_kwargs=lambda compiled_model: {},
-            to_jax_context=lambda compiled_model: compiled_model.context,
+            static_backend_kwargs=lambda compiled_model: {},
+            to_backend_context=lambda compiled_model: compiled_model.context,
         )
 
 

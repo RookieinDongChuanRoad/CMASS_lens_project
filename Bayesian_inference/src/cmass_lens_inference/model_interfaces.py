@@ -124,32 +124,6 @@ class DataSpec:
     static_fields: tuple[StaticContextSpec, ...]
     normalization_samples_field: str
     normalization_min_value_field: str
-    backend_scalar_context_name: str | None = "scalar_context"
-
-    @property
-    def jax_context_type(self) -> type:
-        """
-        Backward-compatible name used only by the retired JAX oracle helpers.
-
-        Production adapters must read `backend_context_type`.  Keeping this
-        property, rather than the old dataclass field, prevents model runtime
-        declarations from having to mention JAX while preserving a narrow
-        compatibility surface for optional reference code.
-        """
-
-        return self.backend_context_type
-
-    @property
-    def scalar_context_name(self) -> str | None:
-        """
-        Backward-compatible scalar-context name for retired oracle helpers.
-
-        The production name is `backend_scalar_context_name`; this alias exists
-        so optional oracle modules can still import without forcing JAX naming
-        back into model declarations.
-        """
-
-        return self.backend_scalar_context_name
 
 
 @dataclass(frozen=True)

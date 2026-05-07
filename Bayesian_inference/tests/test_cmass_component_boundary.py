@@ -97,4 +97,4 @@ def test_cmass_registry_definition_is_numba_kernel_backed() -> None:
     assert model_definition.name == "cmass"
     assert model_definition.backend_kernel == "cmass"
     assert model_definition.required_capabilities == cmass.get_model_spec().required_capabilities
-    assert not hasattr(model_definition, "to_jax_context")
+    assert not hasattr(model_definition, "to_backend_context")

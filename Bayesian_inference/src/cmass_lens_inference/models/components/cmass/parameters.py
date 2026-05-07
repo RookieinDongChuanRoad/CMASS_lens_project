@@ -91,9 +91,9 @@ def unpack_theta(theta) -> CMASSTheta:
     """
     Unpack the fixed 11D CMASS parameter vector.
 
-    This helper is retained for reference/oracle utilities.  Production Numba
-    kernels use their own typed scalar unpacker so importing this declaration
-    module does not require JAX.
+    Production Numba kernels use their own typed scalar unpacker.  This
+    declaration helper remains backend-neutral so parameter tests and metadata
+    code can inspect the schema without importing the numerical hot path.
     """
 
     return CMASSTheta(

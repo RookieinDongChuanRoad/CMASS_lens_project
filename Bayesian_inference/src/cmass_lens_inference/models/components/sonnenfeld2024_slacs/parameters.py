@@ -101,8 +101,7 @@ def unpack_theta(theta) -> SonnenfeldTheta:
     Unpack the fixed 12D Sonnenfeld parameter vector.
 
     The production backend uses model-specific Numba unpacking.  This helper
-    remains a backend-neutral reference utility and therefore avoids importing
-    JAX from the model declaration module.
+    remains a backend-neutral declaration utility for tests and metadata code.
     """
 
     return SonnenfeldTheta(

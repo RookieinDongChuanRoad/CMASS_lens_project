@@ -4,9 +4,9 @@ Backend-neutral helpers for canonical inference datasets.
 This module owns small, deterministic transformations that are shared by
 runtime adapters regardless of the numerical backend.  The helpers understand
 canonical dataset array conventions, metadata, and interpolation axes, but they
-do not import JAX, NumPyro, emcee, or model-specific likelihood code.  Keeping
-them here prevents source-context construction from depending on a retired or
-optional backend namespace.
+do not import samplers, backend kernels, or model-specific likelihood code.
+Keeping them here prevents source-context construction from depending on
+execution-layer namespaces.
 """
 
 from __future__ import annotations

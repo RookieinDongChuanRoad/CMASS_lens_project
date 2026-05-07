@@ -28,9 +28,9 @@ loading, runtime context dispatch, emcee sampling, output metadata,
 checkpoints, diagnostics, and production backend execution.
 
 JAX/NumPyro are no longer production dependencies or production run-path
-requirements.  Optional JAX code may remain only as oracle/reference code and
-must not be imported by `model_registry.py`, `runner.py`, configs, output
-writers, or the default benchmark path.
+requirements.  Their backend modules, NumPyro sampler, hook/oracle-only
+component modules, and package extras have been physically removed from this
+worktree.
 
 ## Current State After Numba/Emcee Production Migration
 
@@ -103,6 +103,8 @@ Implemented production boundaries:
   sampler/backend/output logic stays outside model files.
 - `models/*_runtime.py` and `models/components/*/preprocessing.py` own
   model-specific deterministic context construction.
+- `tests/test_no_jax_numpyro_backend.py` prevents the retired JAX/NumPyro stack
+  from reappearing as production imports or packaging extras.
 
 The following public surfaces remain intentionally unsupported:
 
@@ -166,6 +168,20 @@ Completed:
 - verified missing canonical capabilities fail at the model/data boundary;
 - verified a short Sonnenfeld emcee run writes `chain.h5`.
 
+### Phase D: Physical JAX/NumPyro Removal
+
+Completed:
+
+- deleted `src/cmass_lens_inference/jax_backend/`;
+- deleted `src/cmass_lens_inference/numpyro_sampler.py`;
+- deleted JAX hook/oracle-only component modules under
+  `models/components/{common,cmass,sonnenfeld2024_slacs}/`;
+- removed the `jax-oracle` optional dependency group from `pyproject.toml`;
+- removed backward-compatible JAX naming aliases from `DataSpec`;
+- deleted the obsolete source-tree Sonnenfeld JAX implementation note;
+- added and verified a regression test that scans production source and package
+  metadata for retired JAX/NumPyro imports or extras.
+
 ## Remaining Work
 
 Backend migration blockers: none.
@@ -176,10 +192,7 @@ Future scientific validation work remains separate from the backend migration:
    dataset and a trusted Sonnenfeld reference implementation.
 2. Promote more utilities into `models/components/common/` only when a second
    implemented production model needs the same algebra.
-3. Decide whether optional JAX oracle modules should remain, move under a more
-   explicit oracle namespace, or be removed after reference comparisons are no
-   longer needed.
-4. Add long-chain production benchmarks and posterior-predictive validation for
+3. Add long-chain production benchmarks and posterior-predictive validation for
    final scientific runs.
 
 ## Verification Record
@@ -197,8 +210,8 @@ conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
 Latest result:
 
 ```text
-........................................................................ [ 62%]
-.............sss............................                             [100%]
+........................................................................ [ 61%]
+...............sss............................                           [100%]
 ```
 
 The three skipped tests are real-data tests whose hardcoded b283
@@ -209,7 +222,16 @@ worktree data directory.
 Production import boundary:
 
 ```bash
-conda run -n cmass_lens python -c "import sys; sys.path.insert(0, 'Bayesian_inference/src'); from cmass_lens_inference.model_registry import get_model_definition; from cmass_lens_inference.runner import run_inference; print(get_model_definition('cmass').backend_kernel); print(get_model_definition('sonnenfeld2024_slacs').backend_kernel); print('jax' in sys.modules, 'numpyro' in sys.modules)"
+conda run -n cmass_lens bash -lc 'python - <<'"'"'PY'"'"'
+import sys
+sys.path.insert(0, "Bayesian_inference/src")
+from cmass_lens_inference.model_registry import get_model_definition
+from cmass_lens_inference.runner import run_inference
+print(get_model_definition("cmass").backend_kernel)
+print(get_model_definition("sonnenfeld2024_slacs").backend_kernel)
+print(get_model_definition("sonnenfeld2024_slacs_hunit").backend_kernel)
+print("jax" in sys.modules, "numpyro" in sys.modules)
+PY'
 ```
 
 Observed result:
@@ -217,8 +239,30 @@ Observed result:
 ```text
 cmass
 sonnenfeld2024_slacs
+sonnenfeld2024_slacs
 False False
 ```
+
+Physical JAX/NumPyro removal boundary:
+
+```bash
+conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_no_jax_numpyro_backend.py -q
+```
+
+Observed result:
+
+```text
+..                                                                       [100%]
+```
+
+Compilation and patch hygiene:
+
+```bash
+conda run -n cmass_lens python -m py_compile $(rg --files Bayesian_inference/src/cmass_lens_inference -g '*.py')
+git diff --check
+```
+
+Observed result: both commands exited with code 0.
 
 Real devauc canonical-vs-legacy oracle check:
 

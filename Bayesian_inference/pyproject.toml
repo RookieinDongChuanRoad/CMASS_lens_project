@@ -24,11 +24,6 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
-jax-oracle = [
-  "jax>=0.8.3,<0.9",
-  "jaxlib>=0.8.3,<0.9",
-  "numpyro>=0.20.1,<0.21",
-]
 
 [project.scripts]
 cmass-lens-inference = "cmass_lens_inference.cli:main"

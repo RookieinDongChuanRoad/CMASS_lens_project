@@ -16,6 +16,8 @@ canonical inference dataset
 The migration must make `numba/emcee` the only production backend.  JAX and
 NumPyro may be used temporarily as numerical oracles during the migration, but
 they must not remain on the production run path after the final cleanup.
+After Phase D, JAX and NumPyro are physically removed from the production
+package source and packaging metadata in this worktree.
 
 This is a backend replacement, not an architecture rollback.  The model-author
 target in `docs/model_refactor_progress.md` remains binding:
@@ -37,6 +39,8 @@ target in `docs/model_refactor_progress.md` remains binding:
   `data.cross_section_path`, or `data.sigma_table_path`.
 - Do not keep NumPyro sampling fields as production config fields once Phase A
   is complete.
+- Do not keep JAX/NumPyro backend modules, package extras, or importable oracle
+  modules in the production package after Phase D is complete.
 - Do not treat CMASS success as final project success.  Sonnenfeld must also be
   wired through the same `numba/emcee` production framework before the final
   goal is considered met.
@@ -280,6 +284,63 @@ Remaining:
   science validation remains a future scientific validation task, separate from
   the backend migration.
 
+## Phase D: Physical JAX/NumPyro Removal
+
+### Goal
+
+Remove the retired JAX/NumPyro backend from this production worktree after both
+CMASS and Sonnenfeld have complete Numba/emcee production paths.
+
+### Planned Work
+
+- Delete `src/cmass_lens_inference/jax_backend/`.
+- Delete `src/cmass_lens_inference/numpyro_sampler.py`.
+- Delete model component modules that exist only to provide JAX hook/oracle
+  implementations.
+- Remove JAX/NumPyro optional package metadata.
+- Remove backward-compatible JAX naming aliases from production interfaces.
+- Add a regression test that fails if production source imports `jax` or
+  `numpyro`, or if packaging metadata exposes a JAX/NumPyro extra.
+- Remove obsolete source-tree documentation that describes the retired
+  JAX/NumPyro Sonnenfeld implementation path.
+
+### Phase D Acceptance
+
+- `src/cmass_lens_inference/jax_backend/` no longer exists.
+- `src/cmass_lens_inference/numpyro_sampler.py` no longer exists.
+- Production Python source does not import `jax` or `numpyro`.
+- `Bayesian_inference/pyproject.toml` no longer declares JAX/NumPyro package
+  extras or dependencies.
+- `model_registry.py`, `runner.py`, and production configs still use
+  `numba/emcee` only.
+- Full Bayesian inference test suite passes, aside from explicitly skipped
+  real-data tests whose local input files are absent.
+
+### Phase D Status
+
+Status: complete.
+
+Completed:
+
+- Added `tests/test_no_jax_numpyro_backend.py` as a physical-removal
+  regression test.  It initially failed on the retired imports and
+  `jax-oracle` extra, then passed after deletion.
+- Deleted `src/cmass_lens_inference/jax_backend/`.
+- Deleted `src/cmass_lens_inference/numpyro_sampler.py`.
+- Deleted JAX hook/oracle-only component modules under
+  `models/components/{common,cmass,sonnenfeld2024_slacs}/`.
+- Removed the `jax-oracle` optional dependency group from
+  `Bayesian_inference/pyproject.toml`.
+- Removed `DataSpec.jax_context_type` and `DataSpec.scalar_context_name`
+  compatibility aliases.
+- Deleted the obsolete source-tree
+  `models/sonnenfeld2024_slacs_implementation.md` document that described the
+  retired JAX/NumPyro Sonnenfeld implementation route.
+
+Remaining:
+
+- No Phase D production-backend blockers remain.
+
 ## Final Acceptance Framework
 
 The final migration is complete only when all of the following are true.
@@ -345,17 +406,25 @@ The final migration is complete only when all of the following are true.
 ### 2026-05-07
 
 - Completed Phase A, Phase B, and Phase C.
-- Final production backend is `numba/emcee`; optional JAX code remains only as
-  oracle/legacy reference code and is not imported by production registry or
-  runner paths.
+- Completed Phase D physical cleanup.
+- Final production backend is `numba/emcee`; JAX/NumPyro backend code,
+  NumPyro sampler code, JAX hook/oracle-only component modules, and
+  JAX/NumPyro package extras have been removed from this production worktree.
+- Added physical-removal regression coverage:
+  - `conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_no_jax_numpyro_backend.py -q`
 - Verification commands:
+  - `conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_no_jax_numpyro_backend.py -q`
   - `conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q`
   - `conda run -n cmass_lens python -m py_compile ...`
+  - `git diff --check`
   - `conda run -n cmass_lens python Bayesian_inference/scripts/benchmark_log_prob.py --config /tmp/cmass_numba_devauc_acceptance.yaml --repeats 3 --output-dir /tmp/cmass_numba_benchmarks`
+- Physical-removal regression result:
+  - `..                                                                       [100%]`
 - Latest full test result:
-  - `........................................................................ [ 62%]`
-  - `.............sss............................                             [100%]`
+  - `........................................................................ [ 61%]`
+  - `...............sss............................                           [100%]`
   - the three skipped tests are real-data tests whose hardcoded b283
     `data/external` files are absent in this worktree; equivalent real-data
     checks were run manually against locally available canonical HDF5 files in
     the 1ca5 data directory.
+- `py_compile` and `git diff --check` both exited with code 0 after Phase D.
