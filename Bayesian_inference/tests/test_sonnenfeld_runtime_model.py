@@ -31,11 +31,9 @@ from cmass_lens_inference.numba_backend.likelihood_engine import (
 from cmass_lens_inference.runner import run_inference
 from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, get_mass_definition
 from cmass_lens_inference.model_registry import get_model_definition
-from cmass_lens_inference.models.components.sonnenfeld2024_slacs import (
-    capabilities,
-    parameters,
-)
-from cmass_lens_inference.models.components.sonnenfeld2024_slacs.preprocessing import (
+from cmass_lens_inference.models.sonnenfeld2024_slacs import assembly as capabilities
+from cmass_lens_inference.models.sonnenfeld2024_slacs import paper_constants as parameters
+from cmass_lens_inference.models.sonnenfeld2024_slacs.preprocessing import (
     build_sonnenfeld_context_from_canonical_dataset,
     _parent_density_grid,
     truncation_mass_threshold,
@@ -171,25 +169,13 @@ def test_sonnenfeld_selection_proxy_uses_paper_fractional_scatter() -> None:
 def test_sonnenfeld_effective_source_redshift_is_ordinary_gaussian() -> None:
     """Equation 33 is an ordinary Gaussian effective source-redshift term."""
 
-    theta_parts = parameters.SonnenfeldTheta(
-        mu5_0=11.2,
-        beta5=0.5,
-        xi5=-0.1,
-        sigma5=0.08,
-        mu_gamma_0=2.0,
-        beta_gamma=0.1,
-        xi_gamma=0.05,
-        sigma_gamma=0.15,
-        mu_zs=0.2,
-        sigma_zs=0.5,
-        theta0=0.2,
-        loga=0.0,
-    )
+    mu_zs = 0.2
+    sigma_zs = 0.5
     negative_zs = -0.1
-    density = normal_pdf(negative_zs, theta_parts.mu_zs, theta_parts.sigma_zs)
+    density = normal_pdf(negative_zs, mu_zs, sigma_zs)
 
     assert float(density) == pytest.approx(
-        float(normal_pdf(negative_zs, theta_parts.mu_zs, theta_parts.sigma_zs))
+        float(normal_pdf(negative_zs, mu_zs, sigma_zs))
     )
 
 
@@ -390,7 +376,7 @@ def test_config_loads_sonnenfeld_parameter_schema(
 
     assert config.model.name == "sonnenfeld2024_slacs"
     assert config.mass_definition == get_mass_definition(5, unit_convention=LEGACY_FIXED_KPC)
-    assert config.parameter_schema.public_parameter_names == parameters.PUBLIC_PARAMETER_NAMES
+    assert config.parameter_schema.public_parameter_names == capabilities.PUBLIC_PARAMETER_NAMES
     assert config.parameter_schema.model_metadata["foreground_population"] == "sonnenfeld2024_table1"
 
 

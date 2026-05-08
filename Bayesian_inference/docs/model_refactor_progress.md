@@ -9,23 +9,26 @@ intentionally:
 
 ```text
 canonical inference dataset
-  -> thin ModelSpec + ModelRuntimeAdapter
-  -> model-specific Numba kernels
-  -> backend-owned posterior reduction and diagnostics
+  -> component-driven model assembly
+  -> model runtime context
+  -> model-owned production adapter
+  -> shared and model-specific Numba kernels
+  -> backend-owned box-prior rejection, diagnostics, and emcee bridge
   -> emcee sampler
   -> emcee HDFBackend chain.h5 outputs
 ```
 
 In final form, a model assembly file should define only:
 
-- sampled parameters and their public config names;
-- model-specific data capability requirements;
+- selected component specs and their global parameter-block order;
+- model-specific data capability requirements aggregated from those components;
 - model metadata and unit/mass-coordinate contract;
 - the backend kernel key that owns the numerical hot path.
 
 Framework code owns config validation, schema construction, canonical HDF5
-loading, runtime context dispatch, emcee sampling, output metadata,
-checkpoints, diagnostics, and production backend execution.
+loading, runtime context construction, box-prior rejection, emcee sampling,
+output metadata, checkpoints, diagnostics, and production backend execution.
+Model-owned `production.py` files own posterior assembly.
 
 JAX/NumPyro are no longer production dependencies or production run-path
 requirements.  Their backend modules, NumPyro sampler, hook/oracle-only
@@ -66,8 +69,23 @@ model:
   name: sonnenfeld2024_slacs_hunit
 ```
 
+The worktree also contains an architecture-acceptance model:
+
+```yaml
+unit_convention: h_units_v1
+model:
+  name: toy_hierarchical
+```
+
+`toy_hierarchical` uses a deterministic synthetic runtime context.  It is not a
+science model; it proves that a new production model can be added through
+`components/`, `models/<model>/`, `model_registry.py`, and tests without adding
+runner, sampler, output, or posterior-reader branches.
+
 Implemented production boundaries:
 
+- `ComponentSpec` declarations own sampled parameter blocks, public names,
+  bounds, required context fields, and component capabilities.
 - `ModelSpec` and `ParameterSpec` describe the human-authored scientific model
   surface.
 - `ModelRuntimeAdapter` builds validated NumPy source contexts from canonical
@@ -75,13 +93,20 @@ Implemented production boundaries:
 - `DataSpec` describes context arrays, scalar packing order, static flags,
   normalization samples, and normalization floors without binding model
   declarations to a specific sampler.
-- `model_registry.py` uses `numba_backend.model_adapter` as the production
-  adapter for CMASS and both Sonnenfeld labels.
-- `numba_backend/likelihood_engine.py` owns box-prior rejection, backend
-  dispatch, posterior reduction, timing diagnostics, and the emcee blob dtype.
+- `model_registry.py` uses `numba_backend/compiled_model_factory.py` to bind
+  each `ModelSpec`, `ModelRuntimeAdapter`, and model-owned production
+  `log_prob` callable into one `ModelDefinition`.
+- `numba_backend/likelihood_engine.py` owns box-prior rejection and then calls
+  `ModelDefinition.evaluate_log_prob`; adding a model no longer requires adding
+  a backend dispatch branch.
+- `numba_backend/diagnostics.py` owns the HDF5-safe emcee blob dtype and common
+  accepted/rejected blob construction.
+- `numba_backend/kernels/` owns shared low- and mid-level Numba helpers for
+  distributions, interpolation, lensing geometry, selection weights,
+  source-redshift densities, observed-sigma likelihoods, and FP sufficient
+  statistics.
 - `numba_backend/cmass_kernels.py` owns CMASS normalization, per-lens
-  likelihood, FP summary, FP prior support, and canonical
-  `theta_E x gamma` cross-section interpolation.
+  likelihood, and CMASS-specific population draws.
 - `numba_backend/sonnenfeld_kernels.py` owns Sonnenfeld normalization,
   per-lens likelihood, velocity-dispersion proxy selection, finite-fibre
   cross-section interpolation, and parent/proposal correction.
@@ -99,10 +124,13 @@ Implemented production boundaries:
   capability-to-block consistency.
 - `canonical_context.py` owns backend-neutral canonical metadata, gamma-axis
   handling, mass-grid interpolation, and sigma-grid normalization helpers.
-- `models/cmass.py` and `models/sonnenfeld2024_slacs.py` are assembly layers;
-  sampler/backend/output logic stays outside model files.
-- `models/*_runtime.py` and `models/components/*/preprocessing.py` own
-  model-specific deterministic context construction.
+- `models/cmass/assembly.py`, `models/sonnenfeld2024_slacs/assembly.py`, and
+  `models/toy_hierarchical/assembly.py` choose component tuples and declare
+  model-level constants.
+- `models/<model>/runtime.py` owns model-specific deterministic context
+  construction.
+- `models/<model>/production.py` owns explicit posterior assembly for that
+  model.
 - `tests/test_no_jax_numpyro_backend.py` prevents the retired JAX/NumPyro stack
   from reappearing as production imports or packaging extras.
 
@@ -182,16 +210,44 @@ Completed:
 - added and verified a regression test that scans production source and package
   metadata for retired JAX/NumPyro imports or extras.
 
+### Phase E: Component-Driven Production Extension Boundary
+
+Completed:
+
+- moved CMASS and Sonnenfeld posterior assembly into
+  `models/<model>/production.py`;
+- split reusable component declarations into top-level `components/` modules;
+- made component specs the source of sampled parameter blocks, public names,
+  bounds, required context fields, and capabilities;
+- rewrote CMASS assembly around lens-observation, enclosed-mass population,
+  gamma population, source-redshift, theta-gamma selection, observed-sigma, and
+  optional FP components;
+- rewrote Sonnenfeld assembly around Table-1 parent density, quadratic size
+  relation, enclosed-mass population, gamma population, source-redshift,
+  finite-fibre selection, and velocity-proxy likelihood components;
+- split shared Numba primitives into `numba_backend/kernels/` by numerical and
+  scientific responsibility;
+- extracted shared mid-level kernels for selection weighting,
+  source-redshift-density choice, observed-sigma likelihood, sigma-model
+  conversion, and FP sufficient statistics;
+- changed `ModelDefinition` to carry a model-owned `evaluate_log_prob` callable,
+  leaving `likelihood_engine.py` generic after host-side box-prior rejection;
+- added `toy_hierarchical` as a synthetic production model proving the intended
+  extension path writes a real emcee `chain.h5` without runner/sampler/output
+  changes;
+- fixed `scripts/benchmark_log_prob.py` so direct script execution establishes
+  OpenMP defaults before importing Numba-backed project modules.
+
 ## Remaining Work
 
-Backend migration blockers: none.
+Backend migration and component-refactor blockers: none.
 
 Future scientific validation work remains separate from the backend migration:
 
 1. Run paper-level Sonnenfeld validation against a realistic SLACS canonical
    dataset and a trusted Sonnenfeld reference implementation.
-2. Promote more utilities into `models/components/common/` only when a second
-   implemented production model needs the same algebra.
+2. Promote more utilities into shared components only when a second implemented
+   production model needs the same algebra.
 3. Add long-chain production benchmarks and posterior-predictive validation for
    final scientific runs.
 
@@ -210,8 +266,8 @@ conda run -n cmass_lens python -m pytest Bayesian_inference/tests -q
 Latest result:
 
 ```text
-........................................................................ [ 61%]
-...............sss............................                           [100%]
+........................................................................ [ 55%]
+...................sss....................................               [100%]
 ```
 
 The three skipped tests are real-data tests whose hardcoded b283
@@ -230,6 +286,7 @@ from cmass_lens_inference.runner import run_inference
 print(get_model_definition("cmass").backend_kernel)
 print(get_model_definition("sonnenfeld2024_slacs").backend_kernel)
 print(get_model_definition("sonnenfeld2024_slacs_hunit").backend_kernel)
+print(get_model_definition("toy_hierarchical").backend_kernel)
 print("jax" in sys.modules, "numpyro" in sys.modules)
 PY'
 ```
@@ -240,7 +297,20 @@ Observed result:
 cmass
 sonnenfeld2024_slacs
 sonnenfeld2024_slacs
+toy_hierarchical
 False False
+```
+
+Toy extension boundary:
+
+```bash
+conda run -n cmass_lens python -m pytest Bayesian_inference/tests/test_toy_hierarchical_extension.py -q
+```
+
+Observed result:
+
+```text
+...                                                                      [100%]
 ```
 
 Physical JAX/NumPyro removal boundary:
@@ -270,9 +340,9 @@ Real devauc canonical-vs-legacy oracle check:
 canonical_log_prob -129.39561603870516
 legacy_log_prob -129.39561603870516
 delta_log_prob 0.0
-canonical_norm 0.4871499982066181
-legacy_norm 0.487149998206618
-delta_norm 1.1102230246251565e-16
+canonical_norm 0.48714999820661803
+legacy_norm 0.48714999820661786
+delta_norm 1.6653345369377348e-16
 ```
 
 Real devauc FP diagnostics:
@@ -313,21 +383,26 @@ acceptance_fraction_mean 0.7083333333333334
 Benchmark command:
 
 ```bash
-conda run -n cmass_lens python Bayesian_inference/scripts/benchmark_log_prob.py --config /tmp/cmass_numba_devauc_acceptance.yaml --repeats 3 --output-dir /tmp/cmass_numba_benchmarks
+conda run -n cmass_lens python Bayesian_inference/scripts/benchmark_log_prob.py --config /tmp/cmass_numba_devauc_acceptance.yaml --repeats 3 --output-dir /tmp/cmass_numba_component_refactor_benchmarks
 ```
 
 Benchmark result:
 
 ```text
-benchmark_path /private/tmp/cmass_numba_benchmarks/20260507_130130_numba_benchmark.json
+benchmark_path /private/tmp/cmass_numba_component_refactor_benchmarks/20260507_222919_numba_benchmark.json
 config_path /private/tmp/cmass_numba_devauc_acceptance.yaml
 normalization_samples 1024
 gamma_points 80
 mstar_points 80
 n_walkers 24
 n_steps 2
-first_call_seconds 0.1836464999942109
-steady_log_prob_median_seconds 0.00052370794583112
-steady_log_prob_mean_seconds 0.000525083354053398
+first_call_seconds 0.1962389579275623
+steady_log_prob_median_seconds 0.0005239590536803007
+steady_log_prob_mean_seconds 0.0005660003516823053
 steady_log_prob_value -129.39561603870513
 ```
+
+The component refactor benchmark is effectively unchanged from the prior
+recorded median `0.00052370794583112 s` and therefore shows no material
+steady-state regression.  Direct script execution no longer emits the OpenMP
+deprecation warning after the benchmark-script environment fix.

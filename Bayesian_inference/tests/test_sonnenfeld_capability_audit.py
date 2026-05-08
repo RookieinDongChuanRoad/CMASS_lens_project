@@ -18,10 +18,8 @@ from cmass_lens_inference.canonical_dataset import (
     CAPABILITY_VELOCITY_DISPERSION_POPULATION_SIGMA_UNIT_V1,
 )
 from cmass_lens_inference.models import sonnenfeld2024_slacs
-from cmass_lens_inference.models.components.sonnenfeld2024_slacs import (
-    capabilities,
-    parameters,
-)
+from cmass_lens_inference.models.sonnenfeld2024_slacs import assembly as capabilities
+from cmass_lens_inference.models.sonnenfeld2024_slacs import paper_constants as parameters
 from test_canonical_dataset import _write_canonical_dataset
 
 
@@ -101,7 +99,7 @@ def test_sonnenfeld_parameter_constants_preserve_paper_mass_scale() -> None:
         parameters.TRUNCATION_MASS_POLYNOMIAL_COEFFICIENTS,
         np.asarray([9.388, 7.855, 48.34, -312.5, 535.7, -274.2]),
     )
-    assert tuple(parameter.internal_name for parameter in parameters.PARAMETER_SPECS) == (
+    assert tuple(parameter.internal_name for parameter in sonnenfeld2024_slacs.PARAMETER_SPECS) == (
         "mu5_0",
         "beta5",
         "xi5",

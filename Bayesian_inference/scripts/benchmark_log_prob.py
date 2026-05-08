@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import time
@@ -23,6 +24,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src"
 OUTPUT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs/benchmarks")
+
+# The script is often invoked from the repository root as
+# `python Bayesian_inference/scripts/benchmark_log_prob.py`.  In that mode
+# Python does not import `Bayesian_inference/sitecustomize.py`, so OpenMP
+# defaults must be established here before importing project modules that import
+# Numba.  The values mirror `sitecustomize.py` and `parallel.py`.
+os.environ.setdefault("OMP_MAX_ACTIVE_LEVELS", "1")
+os.environ.setdefault("KMP_WARNINGS", "0")
 
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))

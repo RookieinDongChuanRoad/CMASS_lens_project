@@ -15,7 +15,7 @@ from cmass_lens_inference.canonical_dataset import (
 )
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.models import cmass, cmass_runtime
-from cmass_lens_inference.models.components.cmass.context import CMASSModelContext
+from cmass_lens_inference.models.cmass.context import CMASSModelContext
 from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, get_mass_definition
 from cmass_lens_inference.model_interfaces import (
     CompiledContextBundle,
@@ -24,7 +24,7 @@ from cmass_lens_inference.model_interfaces import (
     ParameterSpec,
 )
 from cmass_lens_inference.model_registry import get_model_definition
-from cmass_lens_inference.numba_backend.model_adapter import build_model_definition
+from cmass_lens_inference.numba_backend.compiled_model_factory import build_model_definition
 
 
 def _minimal_cmass_config(tmp_path: Path) -> dict:
@@ -232,6 +232,11 @@ def test_model_registry_exposes_cmass_and_sonnenfeld() -> None:
     assert sonnenfeld_hunit_model.resolve_mass_definition(H_UNITS_V1).label == "m5_hinvkpc"
     assert sonnenfeld_hunit_model.required_capabilities == sonnenfeld_model.required_capabilities
 
+    toy_model = get_model_definition("toy_hierarchical")
+    assert toy_model.name == "toy_hierarchical"
+    assert toy_model.backend_kernel == "toy_hierarchical"
+    assert callable(toy_model.evaluate_log_prob)
+
 
 def test_cmass_model_file_exposes_high_level_model_spec() -> None:
     """CMASS should expose a human-authored spec instead of a backend definition."""
@@ -257,7 +262,7 @@ def test_cmass_model_file_exposes_high_level_model_spec() -> None:
     assert runtime_definition.name == model_spec.name
 
 
-def test_generic_model_adapter_builds_schema_without_cmass_fields() -> None:
+def test_generic_compiled_model_factory_builds_schema_without_cmass_fields() -> None:
     """The spec adapter should not depend on CMASS-specific parameter names."""
 
     model_spec = ModelSpec(
@@ -287,7 +292,11 @@ def test_generic_model_adapter_builds_schema_without_cmass_fields() -> None:
         data_spec=cmass_runtime.get_data_spec(),
     )
 
-    model_definition = build_model_definition(model_spec, runtime_adapter)
+    model_definition = build_model_definition(
+        model_spec,
+        runtime_adapter,
+        lambda theta, compiled_model, total_start: (0.0, None),
+    )
     parameter_schema = model_definition.build_parameter_schema(
         mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
         public_box_prior={"alpha": [-0.5, 0.5], "scale": [0.2, 2.0]},
@@ -300,6 +309,7 @@ def test_generic_model_adapter_builds_schema_without_cmass_fields() -> None:
     assert parameter_schema.model_metadata == {"purpose": "adapter-test"}
     assert model_definition.required_capabilities == ("toy.capability.v1",)
     assert model_definition.backend_kernel == "toy_kernel"
+    assert model_definition.evaluate_log_prob is not None
 
 
 def _minimal_cmass_model_context() -> CMASSModelContext:
@@ -430,7 +440,7 @@ def test_runtime_adapter_rejects_old_manual_backend_context_hooks() -> None:
         )
 
 
-def test_generic_model_adapter_uses_spec_bounds_when_box_prior_is_absent() -> None:
+def test_generic_compiled_model_factory_uses_spec_bounds_when_box_prior_is_absent() -> None:
     """A model spec should be able to provide its own default box prior."""
 
     model_definition = get_model_definition("cmass")

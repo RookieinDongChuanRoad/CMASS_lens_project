@@ -13,7 +13,6 @@ import inspect
 
 from cmass_lens_inference.model_registry import get_model_definition
 from cmass_lens_inference.models import cmass
-from cmass_lens_inference.models.components.cmass import parameters
 
 
 def test_cmass_file_is_assembly_only() -> None:
@@ -48,7 +47,7 @@ def test_cmass_model_spec_is_assembled_from_components() -> None:
 
     model_spec = cmass.get_model_spec()
 
-    assert model_spec.parameters is parameters.PARAMETER_SPECS
+    assert model_spec.parameters == cmass.PARAMETER_SPECS
     assert model_spec.name == "cmass"
     assert model_spec.component_key == "default"
     assert model_spec.backend_kernel == "cmass"
@@ -61,7 +60,7 @@ def test_cmass_model_spec_is_assembled_from_components() -> None:
 def test_cmass_parameter_component_exposes_fixed_schema() -> None:
     """The componentized CMASS model should keep the fixed 11D schema."""
 
-    assert parameters.INTERNAL_PARAMETER_NAMES == (
+    assert cmass.INTERNAL_PARAMETER_NAMES == (
         "mu5_0",
         "beta5",
         "xi5",
@@ -74,7 +73,7 @@ def test_cmass_parameter_component_exposes_fixed_schema() -> None:
         "theta0",
         "loga",
     )
-    assert tuple(parameter.public_name for parameter in parameters.PARAMETER_SPECS) == (
+    assert tuple(parameter.public_name for parameter in cmass.PARAMETER_SPECS) == (
         "mu5h_0",
         "beta5h",
         "xi5h",

@@ -166,8 +166,9 @@ class ModelDefinition:
 
     Model modules own scientific declarations and parameter names.  The active
     production backend owns compilation, posterior reduction, and diagnostics.
-    The `backend_kernel` key tells that backend which model-specific hot kernel
-    should consume the runtime context.
+    `evaluate_log_prob` is the model-owned posterior adapter.  Keeping the
+    callable on the registry definition means the backend likelihood engine no
+    longer grows a new dispatch branch whenever a model package is added.
     """
 
     name: str
@@ -176,4 +177,5 @@ class ModelDefinition:
     resolve_mass_definition: Callable[[str], MassDefinition]
     build_parameter_schema: Callable[..., ParameterSchema]
     build_compiled_model: Callable[[RuntimeConfig], CompiledModel]
+    evaluate_log_prob: Callable[[Any, CompiledModel, float], tuple[float, Any]]
     backend_kernel: str

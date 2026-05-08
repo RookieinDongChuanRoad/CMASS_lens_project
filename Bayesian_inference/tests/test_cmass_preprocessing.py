@@ -1,7 +1,7 @@
 """
 Tests for the CMASS deterministic preprocessing boundary.
 
-`models.components.cmass.preprocessing` is allowed to know CMASS formulas and context
+`models.cmass.preprocessing` is allowed to know CMASS formulas and context
 fields.  It should be callable directly from a canonical dataset so
 `cmass_runtime.py` can remain a small glue module.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 import numpy as np
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.models.components.cmass.context import CMASSModelContext
-from cmass_lens_inference.models.components.cmass.preprocessing import (
+from cmass_lens_inference.models.cmass.context import CMASSModelContext
+from cmass_lens_inference.models.cmass.preprocessing import (
     build_cmass_context_from_canonical_dataset,
 )
 
