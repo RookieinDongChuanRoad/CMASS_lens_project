@@ -354,7 +354,7 @@ Smoke-check that the real external files can be loaded by PPC:
 ```bash
 cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
 conda run -n cmass_lens env PYTHONPATH="/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src:/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src" \
-  python -c "from cmass_lens_inference.mass_definition import get_mass_definition; from cmass_posterior_predictive.predictive import SigmaUnitTable; jobs=[('/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_sigma_bundle.h5','boss','devauc'),('/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_sigma_bundle.h5','slit','sersic')]; \
+  python -c "from cmass_lens_inference.mass_definition import get_mass_definition; from lensing_posterior_predictive.predictive import SigmaUnitTable; jobs=[('/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_sigma_bundle.h5','boss','devauc'),('/Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_sigma_bundle.h5','slit','sersic')]; \
 for path, flavor, profile in jobs: \
     table = SigmaUnitTable.from_path(path, mass_definition=get_mass_definition(5), observation_flavor=flavor); \
     print(path, flavor, profile, table.mass_definition_label, table.bundle_leaf_path, table.values.shape, float(table.values.min()), float(table.values.max()))"

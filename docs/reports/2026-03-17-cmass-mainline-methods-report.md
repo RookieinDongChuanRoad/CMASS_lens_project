@@ -644,9 +644,9 @@ $$
 1. `prepare_intepolation_grids` 维护 raw observation HDF5 与 sigma bundle。
 2. `cmass_lens_inference cli run` 分别跑 `devauc` / `sersic` inference。
 3. `cmass_lens_inference cli posterior-corner-latest` 生成 posterior corner。
-4. `cmass_posterior_predictive posterior-predictive-monitor` 生成 PPC。
-5. `cmass_posterior_predictive posterior-trends` 生成 Fig. 8-like 与其它 trend 图。
-6. `cmass_posterior_predictive annotate-fig8-observations` 把 raw HDF5 中的观测点回填到已有 `fig8_like.png`。
+4. `lensing_posterior_predictive posterior-predictive-monitor` 生成 PPC。
+5. `lensing_posterior_predictive posterior-trends` 生成 Fig. 8-like 与其它 trend 图。
+6. `lensing_posterior_predictive annotate-fig8-observations` 把 raw HDF5 中的观测点回填到已有 `fig8_like.png`。
 7. `Bayesian_inference/scripts/compute_bic_after_20260420.py` 汇总 8 条 run 的 BIC 比较。
 
 其中 `2026-04-21` 的 orchestrator 不是“只跑一对 profile”。`outputs/_staging/20260421_full4_slit_good_drop2sigma_within_re/run_full_pipeline.sh` 的真实顺序是：先跑 `devauc/sersic` 两条 `independent` inference，并对这两条 run 完整执行 corner、PPC、posterior trends 与 Fig. 8 回填；随后再跑 `devauc/sersic` 两条 `sigma_star_dependent` inference，并重复相同的后处理链。也就是说，当前主线的“结果产物”本身就已经是按 mode-aware bundle workflow 组织出来的。

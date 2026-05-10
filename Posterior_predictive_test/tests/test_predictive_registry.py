@@ -18,7 +18,7 @@ import pytest
 def test_cmass_predictive_registry_entry_declares_existing_diagnostics() -> None:
     """CMASS should register the current Numba diagnostics through a thin contract."""
 
-    from cmass_posterior_predictive.registry import get_predictive_definition
+    from lensing_posterior_predictive.registry import get_predictive_definition
 
     definition = get_predictive_definition("cmass")
 
@@ -40,7 +40,7 @@ def test_cmass_predictive_registry_entry_declares_existing_diagnostics() -> None
 def test_unsupported_model_predictive_dispatch_fails_before_cmass_fallback() -> None:
     """Unsupported models should fail explicitly instead of silently using CMASS logic."""
 
-    from cmass_posterior_predictive.registry import (
+    from lensing_posterior_predictive.registry import (
         UnsupportedPredictiveModelError,
         get_predictive_definition,
     )
@@ -53,7 +53,7 @@ def test_unsupported_model_predictive_dispatch_fails_before_cmass_fallback() -> 
 def test_sonnenfeld_predictive_registry_entry_declares_independent_schema(model_name: str) -> None:
     """Sonnenfeld models should expose a non-CMASS predictive contract."""
 
-    from cmass_posterior_predictive.registry import get_predictive_definition
+    from lensing_posterior_predictive.registry import get_predictive_definition
 
     definition = get_predictive_definition(model_name)
 
@@ -73,7 +73,7 @@ def test_sonnenfeld_predictive_registry_entry_declares_independent_schema(model_
 def test_ppc_context_builder_uses_predictive_registry_instead_of_model_name_branch() -> None:
     """The generic context builder should dispatch through the predictive registry."""
 
-    from cmass_posterior_predictive import predictive
+    from lensing_posterior_predictive import predictive
 
     source = inspect.getsource(predictive._build_ppc_context)
 
@@ -84,7 +84,7 @@ def test_ppc_context_builder_uses_predictive_registry_instead_of_model_name_bran
 def test_generic_predictive_workflow_does_not_import_cmass_posterior_helpers() -> None:
     """CMASS posterior helpers should live behind the model-specific boundary."""
 
-    from cmass_posterior_predictive import predictive
+    from lensing_posterior_predictive import predictive
 
     source = inspect.getsource(predictive)
 
@@ -96,7 +96,7 @@ def test_generic_predictive_workflow_does_not_import_cmass_posterior_helpers() -
 def test_diagnostics_runner_is_model_definition_owned() -> None:
     """The joint diagnostics workflow should call the active predictive definition."""
 
-    from cmass_posterior_predictive import predictive
+    from lensing_posterior_predictive import predictive
 
     source = inspect.getsource(predictive.run_posterior_diagnostics)
 
@@ -107,7 +107,7 @@ def test_diagnostics_runner_is_model_definition_owned() -> None:
 def test_cmass_context_builder_reuses_inference_model_registry() -> None:
     """CMASS predictive context construction should reuse the inference registry."""
 
-    from cmass_posterior_predictive.adapters import cmass
+    from lensing_posterior_predictive.adapters import cmass
 
     source = inspect.getsource(cmass.build_context)
 
@@ -122,7 +122,7 @@ def test_legacy_raw_config_parser_is_cmass_only() -> None:
 
     from pathlib import Path
 
-    from cmass_posterior_predictive.legacy import load_legacy_ppc_runtime_config
+    from lensing_posterior_predictive.legacy import load_legacy_ppc_runtime_config
 
     with pytest.raises(ValueError, match="only supports model.name='cmass'"):
         load_legacy_ppc_runtime_config(
@@ -134,7 +134,7 @@ def test_legacy_raw_config_parser_is_cmass_only() -> None:
 def test_legacy_parser_is_quarantined_outside_generic_predictive_module() -> None:
     """Generic predictive workflow should not define the legacy CMASS parser."""
 
-    from cmass_posterior_predictive import predictive
+    from lensing_posterior_predictive import predictive
 
     source = inspect.getsource(predictive)
 

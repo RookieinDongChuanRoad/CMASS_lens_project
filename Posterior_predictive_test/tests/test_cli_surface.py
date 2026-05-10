@@ -14,7 +14,7 @@ import pytest
 def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
     """The new standalone package should own the PPT command surface."""
 
-    from cmass_posterior_predictive.cli import build_argument_parser
+    from lensing_posterior_predictive.cli import build_argument_parser
 
     parser = build_argument_parser()
 
@@ -89,7 +89,7 @@ def test_standalone_cli_exposes_only_ppt_family_commands() -> None:
 def test_standalone_cli_output_dir_explicit_override_wins() -> None:
     """Explicit output roots must override the package-level defaults."""
 
-    from cmass_posterior_predictive.cli import build_argument_parser
+    from lensing_posterior_predictive.cli import build_argument_parser
 
     parser = build_argument_parser()
     output_root = "/tmp/custom_output"
@@ -159,7 +159,7 @@ def test_posterior_diagnostics_cli_advertises_numba_backend() -> None:
     and downstream automation often snapshots that help text.
     """
 
-    from cmass_posterior_predictive.cli import build_argument_parser
+    from lensing_posterior_predictive.cli import build_argument_parser
 
     parser = build_argument_parser()
     subparser_action = next(

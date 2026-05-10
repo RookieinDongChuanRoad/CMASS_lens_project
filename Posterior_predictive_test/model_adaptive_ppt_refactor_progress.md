@@ -45,7 +45,7 @@ conda run -n cmass_lens pytest -q Posterior_predictive_test/tests/test_predictiv
 
 - 状态：失败，符合预期。
 - 失败原因：
-  - `cmass_posterior_predictive.registry` 尚不存在；
+  - `lensing_posterior_predictive.registry` 尚不存在；
   - `_build_ppc_context()` 仍未通过 `get_predictive_definition()` dispatch；
   - 当前 context builder 仍包含 `runtime_config.model.name != "cmass"` 的硬编码分支。
 
@@ -53,11 +53,11 @@ conda run -n cmass_lens pytest -q Posterior_predictive_test/tests/test_predictiv
 
 ### 修改文件
 
-- `Posterior_predictive_test/src/cmass_posterior_predictive/interfaces.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/registry.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/adapters/__init__.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/adapters/cmass.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/interfaces.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/registry.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/adapters/__init__.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/adapters/cmass.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
 
 ### 实现内容
 
@@ -95,7 +95,7 @@ conda run -n cmass_lens pytest -q Posterior_predictive_test/tests
 
 - 本轮尚未移动 Numba shared-parent diagnostics 热路径；当前只完成 registry /
   context-building 的最小切片。
-- `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py` 中仍有
+- `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py` 中仍有
   CMASS-only Numba kernel 和 CMASS posterior helper import。后续 Phase 1 的下一步
   应继续把该 kernel 迁出 generic workflow 文件。
 - `--sigma-table` 仍是 CLI 层全局必填；model-declared external input 目前只记录在
@@ -114,9 +114,9 @@ conda run -n cmass_lens pytest -q Posterior_predictive_test/tests
 
 ### 修改文件
 
-- `Posterior_predictive_test/src/cmass_posterior_predictive/interfaces.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/adapters/cmass.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/interfaces.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/adapters/cmass.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
 - `Posterior_predictive_test/tests/test_predictive_registry.py`
 - `Posterior_predictive_test/tests/test_posterior_predictive.py`
 
@@ -175,7 +175,7 @@ conda run -n cmass_lens pytest -q Posterior_predictive_test/tests
 
 ### 修改文件
 
-- `Posterior_predictive_test/src/cmass_posterior_predictive/adapters/cmass.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/adapters/cmass.py`
 - `Posterior_predictive_test/tests/test_predictive_registry.py`
 
 ### 实现内容
@@ -227,10 +227,10 @@ conda run -n cmass_lens pytest -q Posterior_predictive_test/tests
 
 ### 修改文件
 
-- `Posterior_predictive_test/src/cmass_posterior_predictive/interfaces.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/adapters/cmass.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/cli.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/interfaces.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/adapters/cmass.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/cli.py`
 - `Posterior_predictive_test/tests/test_predictive_registry.py`
 - `Posterior_predictive_test/tests/test_posterior_predictive.py`
 
@@ -293,7 +293,7 @@ conda run -n cmass_lens pytest -q Posterior_predictive_test/tests
 - `prepare_dataset/tests/test_canonical_dataset_writer.py`
 - `Bayesian_inference/src/cmass_lens_inference/canonical_dataset.py`
 - `Bayesian_inference/tests/test_canonical_dataset.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
 - `Posterior_predictive_test/tests/test_posterior_predictive.py`
 
 ### 实现内容
@@ -351,10 +351,10 @@ conda run -n cmass_lens pytest -q prepare_dataset/tests/test_canonical_dataset_w
 
 ### 修改文件
 
-- `Posterior_predictive_test/src/cmass_posterior_predictive/adapters/sonnenfeld.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/registry.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/types.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/adapters/sonnenfeld.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/registry.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/types.py`
 - `Posterior_predictive_test/tests/test_predictive_registry.py`
 
 ### 实现内容
@@ -420,9 +420,9 @@ conda run -n cmass_lens pytest -q Bayesian_inference/tests/test_sonnenfeld_runti
 
 ### 修改文件
 
-- `Posterior_predictive_test/src/cmass_posterior_predictive/legacy.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
-- `Posterior_predictive_test/src/cmass_posterior_predictive/cli.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/legacy.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
+- `Posterior_predictive_test/src/lensing_posterior_predictive/cli.py`
 - `Posterior_predictive_test/tests/test_predictive_registry.py`
 - `Posterior_predictive_test/README.md`
 

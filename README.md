@@ -51,8 +51,8 @@ the legacy reference implementation.
 
 Standalone posterior-predictive, trend, monitor, and JAX diagnostics package.
 
-- Package source lives under `Posterior_predictive_test/src/cmass_posterior_predictive/`
-- Provides the `cmass-posterior-predictive` CLI for PPC, trends, diagnostics, and monitor workflows
+- Package source lives under `Posterior_predictive_test/src/lensing_posterior_predictive/`
+- Provides the `lensing-posterior-predictive` CLI for PPC, trends, diagnostics, and monitor workflows
 - Writes its artifacts under `Posterior_predictive_test/results/`
 - Some defaults in this area point outside the repository to
   `/Users/liurongfu/Desktop/Spectrum_reduction/...`
@@ -236,7 +236,7 @@ conda run -n cmass_lens cmass-lens-inference resume --run-dir /Users/liurongfu/W
 
 ### 4. Run posterior predictive tests or posterior trends
 
-These commands use the `cmass-posterior-predictive` CLI from
+These commands use the `lensing-posterior-predictive` CLI from
 `Posterior_predictive_test/` after that package has been installed into the
 same `cmass_lens` environment.
 
@@ -244,7 +244,7 @@ Example devauc posterior predictive run:
 
 ```bash
 cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
-conda run -n cmass_lens cmass-posterior-predictive posterior-predictive \
+conda run -n cmass_lens lensing-posterior-predictive posterior-predictive \
   --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest \
   --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_m5_grid.h5 \
   --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/devauc
@@ -254,7 +254,7 @@ Example sersic posterior-trend run:
 
 ```bash
 cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
-conda run -n cmass_lens cmass-posterior-predictive posterior-trends \
+conda run -n cmass_lens lensing-posterior-predictive posterior-trends \
   --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest \
   --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_m5_grid.h5 \
   --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/sersic

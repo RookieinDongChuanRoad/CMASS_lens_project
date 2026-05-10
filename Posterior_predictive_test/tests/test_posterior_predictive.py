@@ -744,7 +744,7 @@ def test_run_posterior_predictive_generates_expected_artifacts_for_sersic(tmp_pa
     - latent arrays are preserved in the `.npz` output
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "ppc_output"
@@ -803,7 +803,7 @@ def test_run_posterior_predictive_generates_expected_artifacts_for_sersic(tmp_pa
 def test_run_posterior_predictive_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:
     """Omitting `n_replicates` should use the tail-capped full chain by default."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
     result = run_posterior_predictive(
@@ -832,7 +832,7 @@ def test_run_posterior_predictive_defaults_to_tail_capped_full_chain_mode(tmp_pa
 def test_run_posterior_predictive_reads_numpyro_samples_npz_without_chain_h5(tmp_path: Path) -> None:
     """PPC should consume NumPyro `samples.npz` runs that no longer write `chain.h5`."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     samples_by_chain = _replace_chain_with_numpyro_samples_npz(
@@ -872,7 +872,7 @@ def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifac
     default semantics rather than the older PPC-only 100000-candidate default.
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_diagnostics
+    from lensing_posterior_predictive.predictive import run_posterior_diagnostics
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic", mass_radius_kpc=10)
 
@@ -935,7 +935,7 @@ def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifac
 def test_run_posterior_predictive_records_independent_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Independent gamma runs should write the reduced 10D parameter contract into PPC artifacts."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -967,7 +967,7 @@ def test_run_posterior_predictive_records_independent_gamma_mode_and_parameter_o
 def test_run_posterior_predictive_records_sigma_star_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Sigma-star gamma runs should write the 11D parameter contract into PPC artifacts."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -999,7 +999,7 @@ def test_run_posterior_predictive_records_sigma_star_gamma_mode_and_parameter_or
 def test_run_posterior_predictive_supports_devauc_sigma_tables(tmp_path: Path) -> None:
     """The PPC API should also accept the 3D devauc sigma table format."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
 
@@ -1022,8 +1022,8 @@ def test_run_posterior_predictive_supports_devauc_sigma_tables(tmp_path: Path) -
 def test_sigma_unit_table_from_hdf5_exposes_numba_sersic_arrays(tmp_path: Path) -> None:
     """The sigma-table loader should expose dense arrays for the Numba interpolation kernel."""
 
-    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_table_hdf5(tmp_path / "sersic_sigma_table.h5", profile_name="sersic")
     table = SigmaUnitTable.from_path(table_path)
@@ -1044,8 +1044,8 @@ def test_sigma_unit_table_from_hdf5_exposes_numba_sersic_arrays(tmp_path: Path) 
 def test_sigma_unit_table_from_hdf5_preserves_mass_definition_metadata(tmp_path: Path) -> None:
     """The loader should expose the stored mass-definition metadata to PPC callers."""
 
-    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_table_hdf5(
         tmp_path / "sersic_sigma_table_m10.h5",
@@ -1063,8 +1063,8 @@ def test_sigma_unit_table_from_bundle_selects_requested_boss_leaf(tmp_path: Path
     """Bundle loaders must pick the requested flavor/mass leaf and expose its metadata."""
 
     from cmass_lens_inference.mass_definition import get_mass_definition
-    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_bundle_hdf5(tmp_path / "jeans_sers_sigma_bundle.h5", profile_name="sersic")
     table = SigmaUnitTable.from_path(
@@ -1088,8 +1088,8 @@ def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path:
     """Bundle loaders must support the explicit low-dimensional within-Re leaf."""
 
     from cmass_lens_inference.mass_definition import get_mass_definition
-    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_bundle_hdf5(
         tmp_path / "jeans_sers_sigma_bundle.h5",
@@ -1120,7 +1120,7 @@ def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path:
 def test_histogram_panel_writes_left_and_right_tail_labels() -> None:
     """The PPC panel should annotate both posterior-predictive tail percentages."""
 
-    from cmass_posterior_predictive.predictive import _write_histogram_panel
+    from lensing_posterior_predictive.predictive import _write_histogram_panel
 
     figure, axis = plt.subplots()
     try:
@@ -1145,7 +1145,7 @@ def test_histogram_panel_writes_left_and_right_tail_labels() -> None:
 def test_histogram_window_keeps_observed_marker_near_center_without_full_tail_range() -> None:
     """The plotting window should clip extreme tails while keeping the observed line near the center."""
 
-    from cmass_posterior_predictive.predictive import _compute_histogram_x_limits
+    from lensing_posterior_predictive.predictive import _compute_histogram_x_limits
 
     values = np.concatenate((np.linspace(0.9, 1.1, 120), np.array([10.0])))
     x_min, x_max = _compute_histogram_x_limits(values=values, observed=1.0)
@@ -1159,7 +1159,7 @@ def test_histogram_window_keeps_observed_marker_near_center_without_full_tail_ra
 def test_histogram_panel_recomputes_hist_within_display_window() -> None:
     """The histogram bars should be recomputed from the display window, not just clipped by xlim."""
 
-    from cmass_posterior_predictive.predictive import _compute_histogram_x_limits, _write_histogram_panel
+    from lensing_posterior_predictive.predictive import _compute_histogram_x_limits, _write_histogram_panel
 
     values = np.concatenate((np.linspace(0.9, 1.1, 40), np.array([10.0])))
     expected_x_min, expected_x_max = _compute_histogram_x_limits(values=values, observed=1.0)
@@ -1196,7 +1196,7 @@ def test_theta_ein_std_panel_uses_fixed_histogram_window_and_small_negative_padd
     first bin does not visually touch the y-axis spine.
     """
 
-    from cmass_posterior_predictive.predictive import _resolve_histogram_ranges, _write_histogram_panel
+    from lensing_posterior_predictive.predictive import _resolve_histogram_ranges, _write_histogram_panel
 
     values = np.linspace(0.1, 0.8, 80)
     hist_range, display_xlim = _resolve_histogram_ranges(
@@ -1242,7 +1242,7 @@ def test_sigma_std_panel_uses_one_sided_upper_envelope_and_small_negative_paddin
     padding on the visible axis.
     """
 
-    from cmass_posterior_predictive.predictive import _resolve_histogram_ranges
+    from lensing_posterior_predictive.predictive import _resolve_histogram_ranges
 
     values = np.concatenate((np.linspace(15.0, 75.0, 60), np.array([110.0, 140.0])))
     expected_upper_bound = 1.03 * max(25.0, float(np.percentile(values, 99.5)))
@@ -1267,7 +1267,7 @@ def test_only_theta_ein_std_uses_fixed_upper_bound_of_three() -> None:
     the change stays as narrow as the user requested.
     """
 
-    from cmass_posterior_predictive.predictive import (
+    from lensing_posterior_predictive.predictive import (
         _compute_histogram_x_limits,
         _resolve_histogram_ranges,
     )
@@ -1302,7 +1302,7 @@ def test_overview_figure_uses_profile_suptitle_and_latex_panel_titles(
 
     from matplotlib.figure import Figure
 
-    from cmass_posterior_predictive.predictive import _write_overview_figure
+    from lensing_posterior_predictive.predictive import _write_overview_figure
 
     saved: dict[str, object] = {}
 
@@ -1358,7 +1358,7 @@ def test_overview_figure_uses_profile_suptitle_and_latex_panel_titles(
 def test_run_posterior_predictive_supports_hdf5_sigma_tables(tmp_path: Path) -> None:
     """The PPC API should accept the new HDF5 sigma-table schema end-to-end."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(tmp_path, profile_name="devauc")
     sigma_table_path = _write_sigma_table_hdf5(tmp_path / "devauc_sigma_table.h5", profile_name="devauc")
@@ -1381,7 +1381,7 @@ def test_run_posterior_predictive_supports_hdf5_sigma_tables(tmp_path: Path) -> 
 def test_run_posterior_predictive_uses_dynamic_m10_latent_keys_and_metadata(tmp_path: Path) -> None:
     """`m10` runs should serialize public labels and latent array keys as `m10`."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -1414,7 +1414,7 @@ def test_run_posterior_predictive_uses_dynamic_m10_latent_keys_and_metadata(tmp_
 def test_run_posterior_predictive_rejects_sigma_tables_with_wrong_mass_definition(tmp_path: Path) -> None:
     """PPC should fail fast if the sigma table metadata does not match the run definition."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1442,7 +1442,7 @@ def test_run_posterior_predictive_rejects_sigma_tables_with_wrong_mass_definitio
 def test_run_posterior_predictive_uses_bundle_and_records_boss_leaf_metadata(tmp_path: Path) -> None:
     """BOSS runs should auto-select the `/boss/<mass>` bundle leaf from observation metadata."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1477,7 +1477,7 @@ def test_run_posterior_predictive_uses_bundle_and_records_boss_leaf_metadata(tmp
 def test_run_posterior_predictive_rejects_legacy_single_table_for_boss_observations(tmp_path: Path) -> None:
     """Legacy single-table files should not satisfy the BOSS circular-aperture contract."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1506,7 +1506,7 @@ def test_run_posterior_predictive_rejects_legacy_single_table_for_boss_observati
 def test_run_posterior_predictive_rejects_boss_raw_bundle_seeing_mismatch(tmp_path: Path) -> None:
     """BOSS PPC runs must fail when raw observations and bundle metadata disagree on seeing."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1541,7 +1541,7 @@ def test_run_posterior_predictive_rejects_boss_raw_bundle_seeing_mismatch(tmp_pa
 def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tables_are_ready(tmp_path: Path) -> None:
     """The monitor entrypoint should wait on fixed paths, then launch both PPC runs."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(
         tmp_path / "devauc_case",
@@ -1600,7 +1600,7 @@ def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tabl
 def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> None:
     """The monitor entrypoint should not accept files whose mtime predates the trigger baseline."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(tmp_path / "devauc_case", profile_name="devauc")
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
@@ -1642,7 +1642,7 @@ def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> 
 def test_wait_for_external_sigma_tables_rejects_boss_raw_bundle_seeing_mismatch(tmp_path: Path) -> None:
     """The monitor entrypoint must reject BOSS assets when raw and bundle seeing contracts differ."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(
         tmp_path / "devauc_case",
@@ -1703,7 +1703,7 @@ def test_cli_posterior_predictive_command_executes_pipeline(tmp_path: Path) -> N
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-predictive",
             "--run-dir",
             str(run_dir),
@@ -1737,8 +1737,8 @@ def test_cli_posterior_predictive_command_executes_pipeline(tmp_path: Path) -> N
 def test_posterior_predictive_public_defaults_use_1000_replicates() -> None:
     """The public PPC defaults should use canonical tail-capped full-chain mode."""
 
-    from cmass_posterior_predictive.cli import build_argument_parser
-    from cmass_posterior_predictive.predictive import (
+    from lensing_posterior_predictive.cli import build_argument_parser
+    from lensing_posterior_predictive.predictive import (
         DEFAULT_PPC_OUTPUT_ROOT_DIR,
         run_posterior_predictive,
         wait_for_external_sigma_tables_and_run,
@@ -1780,7 +1780,7 @@ def test_posterior_predictive_public_defaults_use_1000_replicates() -> None:
 def test_select_posterior_draws_defaults_to_tail_capped_chain() -> None:
     """The default posterior selection should keep the tail of the flattened chain."""
 
-    from cmass_posterior_predictive.predictive import _select_posterior_draws
+    from lensing_posterior_predictive.predictive import _select_posterior_draws
 
     flattened_chain = np.arange(40, dtype=float).reshape(10, 4)
     selected, mode = _select_posterior_draws(
@@ -1798,7 +1798,7 @@ def test_load_posterior_draws_reads_posterior_nc_without_chain_h5(tmp_path: Path
     """The shared posterior loader should fall back to ArviZ `posterior.nc`."""
 
     import arviz as az
-    from cmass_posterior_predictive.predictive import _load_posterior_draws
+    from lensing_posterior_predictive.predictive import _load_posterior_draws
 
     run_dir = tmp_path / "numpyro_run"
     run_dir.mkdir()
@@ -1829,7 +1829,7 @@ def test_load_posterior_draws_reads_posterior_nc_without_chain_h5(tmp_path: Path
 def test_resolve_candidate_pool_size_uses_new_100000_cap() -> None:
     """The PPC default candidate-pool cap should now be 100000 instead of 4096."""
 
-    from cmass_posterior_predictive.predictive import _resolve_candidate_pool_size
+    from lensing_posterior_predictive.predictive import _resolve_candidate_pool_size
 
     assert _resolve_candidate_pool_size(candidate_pool_size=None, base_normals_count=200000) == 100000
     assert _resolve_candidate_pool_size(candidate_pool_size=None, base_normals_count=128) == 128
@@ -1839,7 +1839,7 @@ def test_resolve_candidate_pool_size_uses_new_100000_cap() -> None:
 def test_run_posterior_predictive_parallel_execution_matches_single_process_results(tmp_path: Path) -> None:
     """Changing worker count should not change PPC outputs for the same seed and posterior draws."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "ppc_output"
@@ -1877,7 +1877,7 @@ def test_run_posterior_predictive_parallel_execution_matches_single_process_resu
 def test_monitor_defaults_to_tail_capped_common_draw_count(tmp_path: Path) -> None:
     """The monitor should align both profiles to the common tail-capped posterior length by default."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(tmp_path / "devauc_case", profile_name="devauc", n_steps=8)
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic", n_steps=5)
@@ -1943,7 +1943,7 @@ def test_cli_posterior_predictive_monitor_command_waits_and_runs_both_profiles(t
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-predictive-monitor",
             "--external-dir",
             str(external_dir),
@@ -1996,7 +1996,7 @@ def test_numba_population_bin_reducer_uses_expected_bin_statistics() -> None:
     - empty bins or zero-weight bins: `NaN` for the weighted categories
     """
 
-    from cmass_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
+    from lensing_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
 
     log_mstar = np.array([10.20, 10.40, 10.70, 11.20], dtype=float)
     values = np.array([1.0, 3.0, 9.0, 20.0], dtype=float)
@@ -2058,7 +2058,7 @@ def test_write_trend_panel_uses_distinct_band_solid_and_dashed_encodings() -> No
     - full_selection: blue dashed `p16` and `p84` boundary lines
     """
 
-    from cmass_posterior_predictive.predictive import _write_trend_panel
+    from lensing_posterior_predictive.predictive import _write_trend_panel
 
     mass_grid = np.array([11.0, 11.4, 11.8], dtype=float)
     summary = {
@@ -2093,7 +2093,7 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     synthetic scientific numbers that may change with implementation detail.
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "trend_output"
@@ -2171,7 +2171,7 @@ def test_run_posterior_trends_preserves_fig8_like_and_writes_gamma_axis_artifact
     - the new summaries must serialize the x-axis metadata needed by downstream consumers
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2241,7 +2241,7 @@ def test_numba_population_bin_reducer_includes_final_bin_right_edge(tmp_path: Pa
     the rightmost observed edge can disappear from the summary.
     """
 
-    from cmass_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
+    from lensing_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
 
     log_mstar = np.array([10.0, 10.5, 11.0, 11.5], dtype=float)
     values = np.array([1.0, 2.0, 3.0, 4.0], dtype=float)
@@ -2286,7 +2286,7 @@ def test_gamma_vs_delta_r_observed_overlay_uses_points_summary(tmp_path: Path) -
     same point-style contract used by the `logre_kpc` trend plot.
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2335,7 +2335,7 @@ def test_gamma_vs_delta_r_observed_overlay_uses_points_summary(tmp_path: Path) -
 def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) -> None:
     """Trend summaries and NPZ payloads should rename the mass axis to `m10` for `m10` runs."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2369,7 +2369,7 @@ def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) ->
 def test_run_posterior_trends_records_independent_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Trend artifacts should expose the 10D contract when the run used independent gamma mode."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2403,7 +2403,7 @@ def test_run_posterior_trends_records_independent_gamma_mode_and_parameter_order
 def test_run_posterior_trends_records_sigma_star_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Trend artifacts should expose the 11D contract for sigma-star gamma mode."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2437,7 +2437,7 @@ def test_run_posterior_trends_records_sigma_star_gamma_mode_and_parameter_order(
 def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:
     """Omitting `n_posterior_draws` should use the tail-capped full chain by default."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
     result = run_posterior_trends(
@@ -2472,7 +2472,7 @@ def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: 
 def test_run_posterior_trends_reads_numpyro_samples_npz_without_chain_h5(tmp_path: Path) -> None:
     """Trend generation should use `samples.npz` when NumPyro runs omit `chain.h5`."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
     samples_by_chain = _replace_chain_with_numpyro_samples_npz(
@@ -2508,7 +2508,7 @@ def test_run_posterior_trends_reads_numpyro_samples_npz_without_chain_h5(tmp_pat
 def test_run_posterior_trends_parallel_execution_matches_single_process_results(tmp_path: Path) -> None:
     """Changing trend worker count should not change outputs for the same seed and posterior draws."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "trend_parallel_output"
@@ -2577,7 +2577,7 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-trends",
             "--run-dir",
             str(run_dir),
@@ -2630,7 +2630,7 @@ def test_cli_posterior_diagnostics_command_executes_shared_parent_pipeline(tmp_p
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-diagnostics",
             "--run-dir",
             str(run_dir),
@@ -2671,10 +2671,10 @@ def test_cli_posterior_diagnostics_command_executes_shared_parent_pipeline(tmp_p
 def test_cli_surface_exposes_canonical_trend_defaults() -> None:
     """The trend CLI should default to canonical full-posterior mode and expose worker control."""
 
-    from cmass_posterior_predictive.cli import build_argument_parser
-    from cmass_posterior_predictive.predictive import DEFAULT_PPC_OUTPUT_ROOT_DIR
-    from cmass_posterior_predictive.predictive import run_posterior_diagnostics
-    from cmass_posterior_predictive.trends import run_posterior_trends
+    from lensing_posterior_predictive.cli import build_argument_parser
+    from lensing_posterior_predictive.predictive import DEFAULT_PPC_OUTPUT_ROOT_DIR
+    from lensing_posterior_predictive.predictive import run_posterior_diagnostics
+    from lensing_posterior_predictive.trends import run_posterior_trends
 
     parser = build_argument_parser()
     args = parser.parse_args(
@@ -2702,7 +2702,7 @@ def test_cli_surface_exposes_canonical_trend_defaults() -> None:
 def test_cmass_diagnostics_requires_declared_sigma_table_input(tmp_path: Path) -> None:
     """Missing external inputs should fail through the model-declared contract."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_diagnostics
+    from lensing_posterior_predictive.predictive import run_posterior_diagnostics
 
     run_dir, _ = _build_completed_run(tmp_path, profile_name="sersic")
 
@@ -2720,7 +2720,7 @@ def test_cmass_diagnostics_requires_declared_sigma_table_input(tmp_path: Path) -
 def test_canonical_observation_contract_uses_metadata_before_filename(tmp_path: Path) -> None:
     """Canonical-only PPC should not infer BOSS/slit flavor from dataset filename."""
 
-    from cmass_posterior_predictive.predictive import _load_observation_contract_from_canonical_dataset_path
+    from lensing_posterior_predictive.predictive import _load_observation_contract_from_canonical_dataset_path
 
     dataset_path = tmp_path / "neutral_canonical_name.hdf5"
     with h5py.File(dataset_path, "w") as handle:
@@ -2742,7 +2742,7 @@ def test_canonical_observation_contract_uses_metadata_before_filename(tmp_path: 
 def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_path: Path) -> None:
     """The figure annotator should resolve raw observations from each run config by default."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
     output_root = tmp_path / "outputs"
@@ -2766,7 +2766,7 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "annotate-fig8-observations",
             "--outputs-root",
             str(output_root),
@@ -2800,7 +2800,7 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
 def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Path) -> None:
     """Explicit `--run-dir` arguments should limit annotation to the requested runs only."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     devauc_run_dir, devauc_sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2874,7 +2874,7 @@ def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Pat
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "annotate-fig8-observations",
             "--outputs-root",
             str(output_root),
@@ -2914,7 +2914,7 @@ def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Pat
 def test_annotate_fig8_observations_uses_legacy_fallback_when_gamma_metadata_missing(tmp_path: Path) -> None:
     """Missing gamma metadata in both summary and config should fall back to dependent mode."""
 
-    from cmass_posterior_predictive.predictive import (
+    from lensing_posterior_predictive.predictive import (
         annotate_existing_fig8_like_figures_with_observations,
         run_posterior_trends,
     )
@@ -2974,7 +2974,7 @@ def test_cli_posterior_trends_rejects_removed_conditional_curve_arguments(tmp_pa
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-trends",
             "--run-dir",
             str(run_dir),

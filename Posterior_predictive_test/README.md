@@ -8,7 +8,7 @@ inference runs.
 - Generic workflow code reads run directories, config snapshots, posterior
   samples, and writes JSON/NPZ/PNG artifacts.
 - Model-specific predictive logic is registered through
-  `cmass_posterior_predictive.registry.get_predictive_definition(model_name)`.
+  `lensing_posterior_predictive.registry.get_predictive_definition(model_name)`.
 - CMASS diagnostics use `adapters/cmass.py` and require the model-declared
   external input `sigma_table`.
 - Sonnenfeld/SLACS diagnostics use `adapters/sonnenfeld.py` and read the

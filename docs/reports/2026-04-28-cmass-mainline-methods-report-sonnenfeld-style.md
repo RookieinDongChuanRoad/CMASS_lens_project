@@ -436,9 +436,9 @@ $$
 1. `prepare_intepolation_grids` 维护 raw HDF5 与 sigma bundle。
 2. `cmass_lens_inference cli run` 分别跑 `devauc` / `sersic` inference。
 3. `cmass_lens_inference cli posterior-corner-latest` 生成 corner plot。
-4. `cmass_posterior_predictive posterior-predictive-monitor` 生成 PPC。
-5. `cmass_posterior_predictive posterior-trends` 生成 Fig. 8-like trends。
-6. `cmass_posterior_predictive annotate-fig8-observations` 回填观测点。
+4. `lensing_posterior_predictive posterior-predictive-monitor` 生成 PPC。
+5. `lensing_posterior_predictive posterior-trends` 生成 Fig. 8-like trends。
+6. `lensing_posterior_predictive annotate-fig8-observations` 回填观测点。
 7. `Bayesian_inference/scripts/compute_bic_after_20260420.py` 汇总 8 条 run 的 BIC。
 
 `2026-04-21` orchestrator 先跑 `devauc/sersic` 的 `independent` pair，再跑 `devauc/sersic` 的 `sigma_star_dependent` pair，并对每一对分别执行 corner、PPC、posterior trends 与 Fig. 8 annotation。

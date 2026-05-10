@@ -28,7 +28,7 @@
 | 决策 | 理由 |
 |------|------|
 | 先写 PPC 测试再写实现 | 遵守 TDD，先锁定行为和接口 |
-| 最终将 PPT / trend / comparison CLI 迁移到 `cmass_posterior_predictive.cli` | 用户明确要求 `Bayesian_inference` 保持纯净，只保留 inference engine 与 `run/resume` |
+| 最终将 PPT / trend / comparison CLI 迁移到 `lensing_posterior_predictive.cli` | 用户明确要求 `Bayesian_inference` 保持纯净，只保留 inference engine 与 `run/resume` |
 | sigma 插值表值定义为 `S_unit = sigma^2 / 10**m5` | 这样质量归一化可在 PPT 端后乘恢复，减少插值维度 |
 | PPC 结果目录采用 `<output_root>/<profile>/<run_id>/` | 与现有 inference 输出按 profile 分目录的习惯一致，便于批量管理 |
 | `candidate_pool_size` 默认独立于 normalization sample count | normalization 的 `1e5` 是每次 `log_prob` 的 MC 估计规模，不适合直接拿来做每个 replicated draw 的显式候选池 |
@@ -43,7 +43,7 @@
 | canonical PPC 默认 `candidate_pool_size` 改为 `100000` | 用户澄清真正要放大的参数是候选池，而不是 replicate 数量 |
 | canonical PPC 主统计量改为 `median/std/p10/p90` | `mean` 已从 summary JSON、NPZ 和 overview 图的主统计量合同中移除 |
 | canonical PPC 用 posterior-draw chunk 的 `process_pool` 并行 | 当前机器 `cpu_count=14`、`reserve_cores=2`，因此真实默认 worker 数是 `12` |
-| `Posterior_predictive_test` 独立包名固定为 `cmass-posterior-predictive`，import 根为 `cmass_posterior_predictive` | 与 `cmass_lens_inference` 物理隔离，避免再次把研究型工作流塞回 inference engine |
+| `Posterior_predictive_test` 独立包名固定为 `lensing-posterior-predictive`，import 根为 `lensing_posterior_predictive` | 与 `cmass_lens_inference` 物理隔离，避免再次把研究型工作流塞回 inference engine |
 | `cmass-lens-inference` CLI 迁移后只保留 `run` / `resume` | 不保留兼容转发，避免包职责再次混淆 |
 | comparison 顶层脚本不再插入 `Bayesian_inference/src` 到 `sys.path` | 独立包已具备正式入口，脚本应使用已安装包 |
 | 本地双包 editable 安装顺序固定为“先 `Bayesian_inference`，后 `Posterior_predictive_test --no-deps`” | `cmass-lens-inference` 是本地包，不可从索引解析；第二个包若直接解析依赖会失败 |
@@ -58,11 +58,11 @@
 | 新包 editable 安装初次失败：`pip` 试图从索引解析 `cmass-lens-inference` | 先将 `Bayesian_inference` editable 安装进环境，再对 `Posterior_predictive_test` 执行 `pip install -e . --no-deps` |
 
 ## 资源
-- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/cli.py`
-- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
-- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/trends.py`
-- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/notebook_comparison.py`
-- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/types.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/cli.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/trends.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/notebook_comparison.py`
+- `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/types.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/tests/conftest.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/cli.py`
 - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/model.py`
@@ -194,13 +194,13 @@
 ## 迁移后实现位置
 - 独立包入口：
   - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/pyproject.toml`
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/__init__.py`
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/cli.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/__init__.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/cli.py`
 - 核心实现：
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/trends.py`
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/notebook_comparison.py`
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/types.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/trends.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/notebook_comparison.py`
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/types.py`
 - 顶层薄脚本：
   - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
 - 迁移后的测试：

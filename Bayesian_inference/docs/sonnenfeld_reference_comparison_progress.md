@@ -97,3 +97,90 @@
 - 运行命令：
   `conda run -n cmass_lens python Bayesian_inference/scripts/compare_sonnenfeld_with_reference.py --reference-root /Users/liurongfu/reference_codes/strong_lensing_tools/papers/slacs_selection --candidate-root /Users/liurongfu/.codex/worktrees/b283/CMASS_lens_project --model sonnenfeld2024_slacs --stages grid --output-dir Bayesian_inference/docs/reports/sonnenfeld_reference_comparison/20260510_phase4_grid`。
 - 后续 Phase 5-8 依赖 Phase 4 的 grid/canonical data gate；在缺失工件补齐前，不能做 normalization、FP prior、per-lens likelihood 或 full posterior 的严格数值 comparison。
+
+## 2026-05-10 数据/Grid 生成与 Phase 4 重新运行
+
+- 稳定 staging 目录：
+  `/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/`。
+- 已补齐输入工件：
+  - `reference_root/fibre_crosssect_grid.hdf5`：复用已存在的 paper-native finite-fibre grid；
+  - `reference_root/slacs_jeans_grids.hdf5`：用 external reference `make_slacs_jeans_grids.py` 重新生成；
+  - `reference_root/slacs_lensing_grids.hdf5`：`m5_grid` 与 `dm5drein_grid` 用 reference 公式生成，`mufibre*_cs_grid` 用 global fibre grid 插值生成并写入 surrogate metadata；
+  - `candidate/inference_dataset_sonnenfeld2024_slacs_m5_fixed_v1.hdf5`：复用已存在的 paper-native canonical dataset。
+- 重新运行 Phase 4 输出目录：
+  `Bayesian_inference/docs/reports/sonnenfeld_reference_comparison/20260510_phase4_grid_generated_v2/`。
+- Phase 4 结果：`failed`。
+- 失败项：
+  - `m5_grid`：最大绝对差约 `2.643e-05 dex`，说明 mass-grid 仍有小的生成路径/常数差异；
+  - `dm5drein_grid`：最大绝对差约 `0.715`，不是容差问题，而是 reference 语义为 `dm5/dR_ein[kpc]`，本地 canonical 字段为 `dmass/dtheta_E[arcsec]`。
+- 已通过项：
+  - SLACS table 字段对 canonical `/lenses`；
+  - `s2_grid`；
+  - global `mufibre3_cs_grid(theta_E,gamma)`；
+  - population sigma-unit schema。
+- 重要结论：Phase 4 解除了缺失工件 gate，但暴露出真实 grid/Jacobian 语义差异；因此后续 full posterior 不能标成 strict reference pass。
+
+## 2026-05-10 Phase 5 完成：Population Normalization Oracle
+
+- 输出目录：
+  `Bayesian_inference/docs/reports/sonnenfeld_reference_comparison/20260510_phase5_8_generated/`。
+- Phase 5 状态：`not_comparable`。
+- 本地 decomposition 已可运行：
+  - parent sample count：`1000`；
+  - selection normalization：`0.03946471741805178`；
+  - `normalization_mc_numba` 与 `population_summary_mc_numba` 的 normalization 内部一致，绝对差 `0.0`。
+- 不可严格对比原因：
+  - supplied reference tree 缺少 `rein_grid.hdf5`、`sigma2_grid.hdf5`、`mz_inference.hdf5`；
+  - external `fit_full.py` 的 normalization 依赖这些 artifacts 和 reference 随机流。
+
+## 2026-05-10 Phase 6 完成：FP Prior Oracle
+
+- 输出目录：
+  `Bayesian_inference/docs/reports/sonnenfeld_reference_comparison/20260510_phase5_8_generated/`。
+- Phase 6 状态：`not_comparable`。
+- 本地 FP diagnostics 已输出：
+  - `fpfit_mu = 2.3078135617031843`；
+  - `fpfit_beta = 0.3293272060875592`；
+  - `fpfit_xi = -0.2103267434044116`；
+  - `fpfit_scatter = 0.055655674942292434`；
+  - `fp_prior_log_term = -4.076783136083912`。
+- 本地 FP diagnostics 全部 finite，说明 Sonnenfeld posterior 当前确实把 FP prior term 接入了 decomposition。
+- 不可严格对比原因：
+  - reference `full_inference.hdf5` 只保存 FP blob，不保存足够的 parent-population replay state；
+  - exact replay 仍依赖缺失的 reference artifacts 和随机流。
+
+## 2026-05-10 Phase 7 完成：Per-Lens Likelihood Oracle
+
+- 输出目录：
+  `Bayesian_inference/docs/reports/sonnenfeld_reference_comparison/20260510_phase5_8_generated/`。
+- Phase 7 状态：`not_comparable`。
+- 已支持 `--lens-index`，本次使用 `--lens-index 0`。
+- 关键发现：
+  - external reference per-lens likelihood 读取 `slacs_lensing_grids.hdf5/<lens>/mufibre3_cs_grid(gamma)`；
+  - 当前本地 likelihood 使用 global `lensing_cross_section.cross_section_grid(theta_E,gamma)`；
+  - 因此 per-lens cross-section term 不是同一条数值路径，不能做 strict per-lens likelihood replay。
+- 后续若要 Phase 7 strict pass，需要本地 per-lens likelihood 支持 reference-compatible `cs_lens_splines`，或明确证明 global grid 在每个观测 `theta_E` 上等价。
+
+## 2026-05-10 Phase 8 完成：Full Posterior Decomposition
+
+- 输出目录：
+  `Bayesian_inference/docs/reports/sonnenfeld_reference_comparison/20260510_phase5_8_generated/`。
+- Phase 8 状态：`not_comparable`。
+- 已比较 3 个 reference-chain theta：
+  - `max_logp`；
+  - `low_logp`；
+  - `theta0_high`。
+- 本地 decomposition 与 production `log_prob` 内部完全一致：
+  - 3 个 theta 的 `local_parts_vs_direct_abs` 最大值为 `0.0`。
+- local total 与 stored reference chain logp 的差异：
+  - `max_logp`：约 `13.175`；
+  - `low_logp`：约 `10.831`；
+  - `theta0_high`：约 `7.671`。
+- 这些差异不能直接解释为单一 posterior bug，因为 Phase 4/7 已发现 grid/Jacobian 与 per-lens cross-section 路径差异，且 reference chain 不保存 normalization/per-lens decomposition。
+
+## 2026-05-10 运行异常记录
+
+- 曾启动 external reference `make_slacs_lensing_grids.py` 的完整 per-lens finite-fibre 版本。
+- 该任务运行约 30 分钟后仍在第一个重计算阶段，CPU 约 `100%`。
+- 启动后发现最初 staging 目录从可见目录树消失，进程仍持有已 unlink 的 cwd/output 文件描述符；因此即使自然完成，也大概率无法从路径回收生成的 HDF5。
+- 按用户运行控制红线，未私自 kill 该进程；已在对话中请求用户确认是否允许终止这个无效长任务。

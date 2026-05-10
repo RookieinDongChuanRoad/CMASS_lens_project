@@ -213,7 +213,7 @@ Bayesian_inference/
         predictive.py          # optional smoke diagnostics hook
 
 Posterior_predictive_test/
-  src/cmass_posterior_predictive/
+  src/lensing_posterior_predictive/
     predictive.py              # public API compatibility layer
     orchestration.py           # generic run/chain/config orchestration
     artifacts.py               # JSON/NPZ/PNG writers
@@ -273,7 +273,7 @@ class PredictiveEngine:
 
 工作内容：
 
-1. 从 `Posterior_predictive_test/src/cmass_posterior_predictive/predictive.py`
+1. 从 `Posterior_predictive_test/src/lensing_posterior_predictive/predictive.py`
    中抽出 CMASS-only Numba diagnostics kernel。
 2. 将 CMASS parent draw、selection、trend binning、sigma simulation 放入
    `Bayesian_inference` 的 CMASS model-owned predictive module，或 PPT 的

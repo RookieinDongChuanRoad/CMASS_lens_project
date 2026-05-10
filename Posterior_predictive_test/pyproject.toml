@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cmass-posterior-predictive"
+name = "lensing-posterior-predictive"
 version = "0.1.0"
 description = "Standalone posterior-predictive workflows for CMASS strong-lens analyses."
 readme = "findings.md"
@@ -25,7 +25,7 @@ dev = [
 ]
 
 [project.scripts]
-cmass-posterior-predictive = "cmass_posterior_predictive.cli:main"
+lensing-posterior-predictive = "lensing_posterior_predictive.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
