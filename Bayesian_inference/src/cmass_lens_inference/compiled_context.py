@@ -4,7 +4,7 @@ Build the compiled array context used by the production `log_prob` path.
 The current project keeps rich typed records for readability and schema
 validation, but the hot path should not traverse Python objects. This module
 performs the one-time transformation from `ObservationRecord` instances to the
-contiguous arrays consumed by the `numba` kernels.
+contiguous arrays consumed by backend kernels.
 """
 
 from __future__ import annotations
@@ -22,9 +22,11 @@ from .io import (
 )
 from .mass_definition import H_UNITS_V1
 from .profiles import build_profile_spec
-from .types import CompiledModelContext, RandomBasis, RuntimeConfig
+from .models.cmass.context import CMASSModelContext
+from .types import RandomBasis, RuntimeConfig
 
 LOG10_2PI = math.log10(2.0 * math.pi)
+DEFAULT_CROSS_SECTION_THETA_E_AXIS = np.linspace(0.0, 5.0, 256, dtype=np.float64)
 
 
 def build_random_basis(num_samples: int, seed: int) -> RandomBasis:
@@ -48,7 +50,7 @@ def _effective_radius_log10_kpc(effective_radius_arcsec: float, z_d: float, cosm
     return math.log10(max(radius_kpc, 1.0e-12))
 
 
-def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModelContext, object, object, FlatLambdaCDM, RandomBasis]:
+def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CMASSModelContext, object, object, FlatLambdaCDM, RandomBasis]:
     """
     Build the numerical context and keep the high-level objects alongside it.
 
@@ -105,6 +107,10 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         left=float(cross_section_grid.cs_over_theta_ein[0]),
         right=float(cross_section_grid.cs_over_theta_ein[-1]),
     ).astype(np.float64)
+    cs_cross_section_grid = np.pi * (
+        DEFAULT_CROSS_SECTION_THETA_E_AXIS[:, None]
+        * np.asarray(cross_section_grid.cs_over_theta_ein, dtype=np.float64)[None, :]
+    ) ** 2
 
     zd = np.zeros(n_lens, dtype=np.float64)
     zs = np.zeros(n_lens, dtype=np.float64)
@@ -259,11 +265,13 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
             fp_sigma_unit_grid = fp_sigma_unit_grid_base
             fp_has_n_axis = 1
 
-    context = CompiledModelContext(
+    context = CMASSModelContext(
         z_grid=np.ascontiguousarray(cosmology.z_table, dtype=np.float64),
         chi_kpc_grid=np.ascontiguousarray(cosmology.comoving_distance_table_mpc * 1000.0, dtype=np.float64),
         cs_gamma_grid=np.ascontiguousarray(cross_section_grid.gamma_grid, dtype=np.float64),
         cs_over_theta_grid=np.ascontiguousarray(cross_section_grid.cs_over_theta_ein, dtype=np.float64),
+        cs_theta_e_axis=np.ascontiguousarray(DEFAULT_CROSS_SECTION_THETA_E_AXIS, dtype=np.float64),
+        cs_cross_section_grid=np.ascontiguousarray(cs_cross_section_grid, dtype=np.float64),
         cs_over_theta_int=np.ascontiguousarray(cs_over_theta_int, dtype=np.float64),
         gamma_grid_int=np.ascontiguousarray(gamma_grid_int, dtype=np.float64),
         mass_grid_int=np.ascontiguousarray(mass_grid_int, dtype=np.float64),

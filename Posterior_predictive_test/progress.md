@@ -123,7 +123,7 @@
 - **状态：** 已完成
 - **开始时间：** 2026-03-11 13:3x CST
 - 已执行动作：
-  - 在 `Posterior_predictive_test/` 下新增 `pyproject.toml`、`src/cmass_posterior_predictive/` 与迁移后的 `tests/`
+  - 在 `Posterior_predictive_test/` 下新增 `pyproject.toml`、`src/lensing_posterior_predictive/` 与迁移后的 `tests/`
   - 将 `posterior_predictive`、`posterior_trends`、`notebook_comparison`、结果 dataclass 与 CLI 全部迁入新包
   - 将 `Bayesian_inference` 的 CLI 收缩到 `run` / `resume`，删除 PPT 源码和对应测试
   - 去掉 `compare_full0103_notebook_vs_pipeline.py` 中的 `sys.path` 注入
@@ -132,7 +132,7 @@
   - 启动过一次 `posterior-predictive-monitor` 真实验证，确认新 CLI 能通过外部表检查并进入多进程计算；为避免长时间占用机器，验证后手动停止该长任务
 - 新建/修改文件：
   - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/pyproject.toml`（新建）
-  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/cmass_posterior_predictive/*.py`（新建）
+  - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/src/lensing_posterior_predictive/*.py`（新建）
   - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/tests/*.py`（新建/迁移）
   - `/Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`（修改）
   - `/Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/src/cmass_lens_inference/cli.py`（修改）
@@ -146,22 +146,22 @@
   - `cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test && conda run -n cmass_lens pytest -q tests` -> `32 passed`
   - `cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference && conda run -n cmass_lens pytest -q tests/test_runner_cli.py` -> `6 passed`
   - `conda run -n cmass_lens cmass-lens-inference --help` -> 仅暴露 `run` / `resume`
-  - `conda run -n cmass_lens cmass-posterior-predictive --help` -> 暴露 `posterior-predictive`、`posterior-predictive-monitor`、`posterior-trends`、`notebook-comparison`
-  - `conda run -n cmass_lens cmass-posterior-predictive posterior-trends --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_grid.h5 --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results` -> `status=completed`
+  - `conda run -n cmass_lens lensing-posterior-predictive --help` -> 暴露 `posterior-predictive`、`posterior-predictive-monitor`、`posterior-trends`、`notebook-comparison`
+  - `conda run -n cmass_lens lensing-posterior-predictive posterior-trends --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_grid.h5 --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results` -> `status=completed`
 
 ### 阶段 13：devauc chain 覆盖后的产物刷新
 - **状态：** 已完成
 - **开始时间：** 2026-03-11 14:31 CST
 - 已执行动作：
   - 对 `/Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest/chain.h5` 做两次 `mtime` 采样，确认 chain 已静止
-  - 运行 `cmass-posterior-predictive posterior-predictive`，覆盖 devauc 的 histogram PPC 工件
-  - 运行 `cmass-posterior-predictive posterior-trends`，覆盖 devauc 的 Fig. 8 类趋势图工件
+  - 运行 `lensing-posterior-predictive posterior-predictive`，覆盖 devauc 的 histogram PPC 工件
+  - 运行 `lensing-posterior-predictive posterior-trends`，覆盖 devauc 的 Fig. 8 类趋势图工件
   - 再次检查 `chain.h5` 的 `mtime`，确认执行期间没有发生第二次覆盖
   - 读取 `run_manifest.json`、`ppc_summary.json`、`fig8_like_summary.json`，核对合同字段
   - 直接查看 `ppc_overview.png` 与 `fig8_like.png`，确认图片已更新到正确目录
 - 关键命令：
-  - `conda run -n cmass_lens cmass-posterior-predictive posterior-predictive --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_grid.h5 --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results --candidate-pool-size 100000 --worker-processes 12`
-  - `conda run -n cmass_lens cmass-posterior-predictive posterior-trends --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_grid.h5 --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results`
+  - `conda run -n cmass_lens lensing-posterior-predictive posterior-predictive --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_grid.h5 --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results --candidate-pool-size 100000 --worker-processes 12`
+  - `conda run -n cmass_lens lensing-posterior-predictive posterior-trends --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_grid.h5 --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results`
 - 关键验证：
   - `chain.h5` 刷新前后 `mtime` 一致：`1773210178.3643317`
   - PPC 返回 `status=completed`，`n_replicates=192000`
@@ -172,7 +172,7 @@
 - **状态：** 已完成
 - **开始时间：** 2026-03-16
 - 已执行动作：
-  - 在 `cmass_posterior_predictive.predictive` 中新增 `DEFAULT_PPC_OUTPUT_ROOT_DIR`
+  - 在 `lensing_posterior_predictive.predictive` 中新增 `DEFAULT_PPC_OUTPUT_ROOT_DIR`
   - 将 `run_posterior_predictive`、`run_posterior_trends`、`wait_for_external_sigma_tables_and_run` 的 `output_root_dir` 改为可选默认参数
   - 将 CLI 里 `posterior-predictive` / `posterior-trends` / `posterior-predictive-monitor` 的 `--output-dir` 从必填改为默认值
   - 在 CLI 帮助文案中显示默认输出路径

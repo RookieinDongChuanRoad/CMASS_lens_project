@@ -1,9 +1,11 @@
 profile:
   name: devauc
-mass_definition:
-  enclosed_radius_kpc: 5
-gamma_model:
-  mode: dependent
+unit_convention: legacy_fixed_kpc
+model:
+  name: cmass_current
+  components:
+    mass_definition: m5
+    gamma_distribution: dependent
 data:
   observation_path: /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_deV_with_m5_grids.hdf5
   cross_section_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/cs_grid_power.h5
@@ -21,9 +23,6 @@ box_prior:
   theta0: [0.0, 3.0]
   loga: [-1.0, 3.0]
 sampling:
-  n_walkers: 24
-  n_steps: 10000
-  warmup: 2000
   random_seed: 7
   initial_center:
     mu5_0: 11.32

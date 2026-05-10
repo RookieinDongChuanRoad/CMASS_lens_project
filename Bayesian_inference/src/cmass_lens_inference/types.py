@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from .mass_definition import MassDefinition
-from .parameter_schema import GammaModelConfig, ParameterSchema
+from .parameter_schema import ParameterSchema
 
 
 def _serialize_json_friendly(value: Any) -> Any:
@@ -110,14 +110,13 @@ class HyperParams:
         """
         Serialize the hyper-parameters using the selected public name family.
 
-        The mass-definition argument stays optional so older call sites can keep
-        passing it while the schema itself remains the single source of truth.
+        The optional mass-definition argument is accepted by a few nearby call
+        sites while the codebase is being split into registry-backed models.
+        It is intentionally ignored here because the schema already stores the
+        exact model-specific public naming surface.
         """
 
-        return self.parameter_schema.serialize_public_values(
-            self.to_dict(),
-            mass_definition=mass_definition,
-        )
+        return self.parameter_schema.serialize_public_values(self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -129,10 +128,18 @@ class ProfileConfig:
 
 @dataclass(frozen=True)
 class DataConfig:
-    """Input file locations required by the inference pipeline."""
+    """
+    Input file locations used by inference and legacy oracle utilities.
 
-    observation_path: Path
-    cross_section_path: Path
+    `inference_dataset_path` is the only path loaded from production YAML.  The
+    raw-path fields remain on the dataclass so tests and migration utilities can
+    still construct legacy oracle contexts explicitly without reopening that
+    deprecated config surface.
+    """
+
+    inference_dataset_path: Path | None = None
+    observation_path: Path | None = None
+    cross_section_path: Path | None = None
     sigma_table_path: Path | None = None
 
 
@@ -141,7 +148,7 @@ class FPPriorConfig:
     """
     Optional population-level Fundamental Plane prior configuration.
 
-    The values mirror the legacy SLACS reference implementation, but the prior
+    The values mirror the Sonnenfeld SLACS reference implementation, but the prior
     remains disabled by default so existing CMASS inference runs preserve their
     historical behavior unless users opt in explicitly.
     """
@@ -149,24 +156,59 @@ class FPPriorConfig:
     enabled: bool
     fit_mstar_min: float = 11.0
     pivot_mstar: float = 11.3
-    fiducial_scatter: float = 0.075
-    scatter_error: float = 0.003
-    mu_v_prior: float = 2.34548
-    mu_v_error: float = 0.00611
-    beta_v_prior: float = 0.176
-    beta_v_error: float = 0.011
+    fiducial_scatter: float = 0.047
+    scatter_error: float = 0.008
+    mu_v_prior: float = 2.341871
+    mu_v_error: float = 0.03
+    beta_v_prior: float = 0.25774
+    beta_v_error: float = 0.03
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """
+    Scientific-model selection for the inference backend.
+
+    A model name now identifies one concrete model implementation.  Variants
+    such as gamma parameterization or mass aperture are model-owned constants,
+    not configurable component switches inside this generic config type.
+    """
+
+    name: str
 
 
 @dataclass(frozen=True)
 class SamplingConfig:
-    """Controls the `emcee` sampler and walker initialization."""
+    """
+    Controls emcee sampling for the production inference path.
 
-    n_walkers: int
-    n_steps: int
-    warmup: int
+    The production backend is now deliberately emcee-native.  `n_walkers` is
+    the ensemble width, `n_steps` is the number of stored proposal steps per
+    run or resume call, and `burn_in` is the post-processing discard count used
+    by readers such as `posterior_corner.py`.  Keeping these names explicit
+    prevents run snapshots from mixing retired warmup/sample terminology with
+    emcee's persistent HDF backend.
+    """
+
     random_seed: int
     initial_center: HyperParams
     initial_jitter_scale: float
+    n_walkers: int
+    n_steps: int
+    burn_in: int
+
+    @property
+    def warmup(self) -> int:
+        """
+        Return the production burn-in count for read-only compatibility.
+
+        Older plotting helpers used the word `warmup` when resolving
+        `burn_in="auto"`.  The production config no longer accepts a YAML
+        `warmup` field, but exposing this property keeps those readers simple
+        while still serializing the actual emcee field name as `burn_in`.
+        """
+
+        return self.burn_in
 
 
 @dataclass(frozen=True)
@@ -222,8 +264,8 @@ class RuntimeConfig:
     unit_convention: str
     h_ref: float
     profile: ProfileConfig
+    model: ModelConfig
     mass_definition: MassDefinition
-    gamma_model: GammaModelConfig
     parameter_schema: ParameterSchema
     fp_prior: FPPriorConfig
     data: DataConfig
@@ -358,77 +400,6 @@ class RandomBasis:
 
 
 @dataclass(frozen=True)
-class CompiledModelContext:
-    """
-    Fully array-compiled numerical context consumed by the production kernels.
-
-    Every field in this dataclass is intentionally `numba`-friendly:
-    contiguous ndarrays, scalar flags, or plain floats. The goal is to move all
-    parameter-independent work out of the hot `log_prob` path so the sampler
-    only pays for kernel execution, not Python object orchestration.
-    """
-
-    z_grid: np.ndarray
-    chi_kpc_grid: np.ndarray
-    cs_gamma_grid: np.ndarray
-    cs_over_theta_grid: np.ndarray
-    cs_over_theta_int: np.ndarray
-    gamma_grid_int: np.ndarray
-    mass_grid_int: np.ndarray
-    dmass_dthetaein_grid_int: np.ndarray
-    s2_grid_int: np.ndarray
-    has_s2: np.ndarray
-    num_sigma: np.ndarray
-    sigma_obs: np.ndarray
-    sigma_err: np.ndarray
-    zd: np.ndarray
-    zs: np.ndarray
-    p_zd_fixed: np.ndarray
-    mstar_grid: np.ndarray
-    mstar_shift11p4: np.ndarray
-    stellar_mass_pivot: float
-    sigma_star_shift9p0_grid: np.ndarray
-    mstar_integrand_base: np.ndarray
-    delta_r_grid: np.ndarray
-    base_normals: np.ndarray
-    mass_radius_kpc: float
-    mass_log_physical_offset: float
-    use_sersic_index: int
-    n_fixed: float
-    mu_n0: float
-    beta_n: float
-    sigma_n: float
-    mass_function_loc: float
-    mass_function_scale: float
-    mass_function_alpha: float
-    mu_r0: float
-    beta_r: float
-    sigma_r: float
-    nu_r: float
-    mu_d: float
-    sigma_d: float
-    gamma_trunc_low: float
-    gamma_trunc_high: float
-    normalization_min_value: float
-    gamma_mode_code: int
-    fp_enabled: int
-    fp_fit_mstar_min: float
-    fp_pivot_mstar: float
-    fp_fiducial_scatter: float
-    fp_scatter_error: float
-    fp_mu_v_prior: float
-    fp_mu_v_error: float
-    fp_beta_v_prior: float
-    fp_beta_v_error: float
-    fp_gamma_axis: np.ndarray
-    fp_zd_axis: np.ndarray
-    fp_log_re_kpc_axis: np.ndarray
-    fp_n_axis: np.ndarray
-    fp_sigma_unit_grid: np.ndarray
-    fp_has_n_axis: int
-
-
-@dataclass(frozen=True)
 class CompiledModel:
     """
     High-level container for the production `log_prob` entrypoint.
@@ -443,7 +414,8 @@ class CompiledModel:
     cross_section_grid: CrossSectionGrid
     cosmology: Any
     parallelism: ResolvedParallelism
-    context: CompiledModelContext
+    context: Any
+    data_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -491,7 +463,7 @@ class RuntimeContext:
     observations: list[ObservationRecord]
     prepared_observations: list[PreparedObservation]
     cross_section_grid: CrossSectionGrid
-    random_basis: RandomBasis
+    random_basis: RandomBasis | None
     cosmology: Any
     parallelism: ResolvedParallelism
     compiled_model: CompiledModel | None = None
@@ -509,6 +481,7 @@ class RunResult:
     completed_steps: int
     acceptance_fraction_mean: float
     config_path: Path | None = None
+    input_inference_dataset_path: Path | None = None
     input_observation_path: Path | None = None
     output_root_dir: Path | None = None
     checkpoint_step: int | None = None

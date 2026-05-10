@@ -14,8 +14,9 @@ import numpy as np
 
 from cmass_lens_inference.outputs import (
     create_run_layout,
+    load_emcee_checkpoint,
     refresh_latest_pointer,
-    save_checkpoint,
+    save_emcee_checkpoint,
 )
 
 
@@ -68,10 +69,13 @@ def test_refresh_latest_pointer_falls_back_to_text_file_when_symlink_fails(
     assert latest_file.read_text(encoding="utf-8").strip() == run_layout.run_id
 
 
-def test_save_checkpoint_writes_all_required_files(tmp_path: Path) -> None:
+def test_save_emcee_checkpoint_writes_all_required_files(tmp_path: Path) -> None:
     """
-    The checkpoint writer should persist walker coordinates, log-probabilities,
-    and the latest step number using the required filenames.
+    The checkpoint writer should persist emcee walker coordinates and log_prob.
+
+    `chain.h5` is the production chain source of truth.  The checkpoint arrays
+    are a lightweight resume safety net, so their shape and step marker must
+    remain stable.
     """
 
     run_layout = create_run_layout(
@@ -81,11 +85,20 @@ def test_save_checkpoint_writes_all_required_files(tmp_path: Path) -> None:
         timestamp_text="20260308_170000",
     )
 
-    coords = np.ones((4, 3))
-    log_prob = np.array([0.1, 0.2, 0.3, 0.4])
-    save_checkpoint(run_layout.checkpoints_dir, coords, log_prob, step=9)
+    walker_coords = np.ones((24, 3))
+    log_prob = np.linspace(-1.0, 1.0, 24)
+    save_emcee_checkpoint(
+        run_layout.checkpoints_dir,
+        walker_coords=walker_coords,
+        log_prob=log_prob,
+        step=9,
+    )
 
-    assert (run_layout.checkpoints_dir / "latest_coords.npy").exists()
+    assert (run_layout.checkpoints_dir / "latest_walker_coords.npy").exists()
     assert (run_layout.checkpoints_dir / "latest_log_prob.npy").exists()
     assert (run_layout.checkpoints_dir / "latest_step.txt").read_text(encoding="utf-8").strip() == "9"
 
+    loaded_coords, loaded_log_prob, loaded_step = load_emcee_checkpoint(run_layout.checkpoints_dir)
+    np.testing.assert_allclose(loaded_coords, walker_coords)
+    np.testing.assert_allclose(loaded_log_prob, log_prob)
+    assert loaded_step == 9

@@ -1,0 +1,36 @@
+{
+  "candidate": {
+    "first_call_seconds": 0.09118816698901355,
+    "first_log_prob_value": -14.650555599645118,
+    "first_normalization_value": 0.7974266161158335,
+    "log_prob_value": -14.650555599645118,
+    "normalization_value": 0.7974266161158335,
+    "steady_log_prob_mean_seconds": 0.00014356171013787388,
+    "steady_log_prob_median_seconds": 0.00013410451356321573,
+    "steady_log_prob_min_seconds": 0.00011991697829216719
+  },
+  "candidate_git_hash": "1dea6776e848370b2058316788913a2fe2fc7bbc",
+  "case_name": "cmass_synthetic_sersic",
+  "comparison": {
+    "log_prob_abs_diff": 1.2286545114648106e-09,
+    "normalization_abs_diff": 6.480528336183511e-10,
+    "steady_speed_ratio_candidate_over_main": 1.0674986481921915
+  },
+  "environment": {
+    "numba_threads": 1,
+    "omp_max_active_levels": "1",
+    "python": "3.14.3",
+    "theta_axis_points": 65537
+  },
+  "main": {
+    "first_call_seconds": 5.321552125038579,
+    "first_log_prob_value": -14.650555600873773,
+    "first_normalization_value": 0.7974266154677807,
+    "log_prob_value": -14.650555600873773,
+    "normalization_value": 0.7974266154677807,
+    "steady_log_prob_mean_seconds": 0.0001289024227298796,
+    "steady_log_prob_median_seconds": 0.00012562499614432454,
+    "steady_log_prob_min_seconds": 0.00011475000064820051
+  },
+  "main_git_hash": "b6e8eeed1e1cc8c5bdbd9aebc1b2600bb7f85316"
+}

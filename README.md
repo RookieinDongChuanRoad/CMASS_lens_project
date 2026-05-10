@@ -12,16 +12,17 @@ and what order of operations is expected when running the project.
 
 ## What Lives Here
 
-### `prepare_intepolation_grids/`
+### `prepare_dataset/`
 
-Prepares or refreshes the HDF5 interpolation content consumed by the inference
-and posterior-predictive workflows.
+Prepares or refreshes the HDF5 data products consumed by inference and
+posterior-predictive workflows.
 
 - Updates the raw observation HDF5 files under `data/raw/`
-- Builds the external sigma-unit tables under `data/external/`
+- Builds cross-section grids, sigma-unit bundles, and canonical inference
+  datasets under `data/external/`
 - Depends on the external `spherical_jeans` package
 - Has its own environment notes in
-  [`prepare_intepolation_grids/README.md`](prepare_intepolation_grids/README.md)
+  [`prepare_dataset/README.md`](prepare_dataset/README.md)
 
 ### `Bayesian_inference/`
 
@@ -49,12 +50,11 @@ the legacy reference implementation.
 
 ### `Posterior_predictive_test/`
 
-Standalone posterior-predictive, trend, monitor, and notebook-comparison package.
+Standalone model-aware posterior-predictive, trend, monitor, and Numba-backed
+diagnostics package.
 
-- Package source lives under `Posterior_predictive_test/src/cmass_posterior_predictive/`
-- Provides the `cmass-posterior-predictive` CLI for PPC, trends, and monitor workflows
-- Keeps the one-off comparison driver:
-  `Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
+- Package source lives under `Posterior_predictive_test/src/lensing_posterior_predictive/`
+- Provides the `lensing-posterior-predictive` CLI for PPC, trends, diagnostics, and monitor workflows
 - Writes its artifacts under `Posterior_predictive_test/results/`
 - Some defaults in this area point outside the repository to
   `/Users/liurongfu/Desktop/Spectrum_reduction/...`
@@ -76,7 +76,8 @@ Canonical output location for primary inference runs.
 
 - `outputs/devauc/`: de Vaucouleurs-profile runs
 - `outputs/sersic/`: Sersic-profile runs
-- `outputs/*/latest`: current canonical latest run links
+- `outputs/*/latest`: convenience symlinks when maintained; verify them before
+  using them as the most recent real run
 - `outputs/benchmarks/`: benchmark logs and timing outputs
 
 ## Hard Assumptions You Must Not Ignore
@@ -86,10 +87,10 @@ Canonical output location for primary inference runs.
 The supported runtime environment is the conda environment `cmass_lens`.
 
 The repository only tracks the baseline environment file in
-[`prepare_intepolation_grids/environment.yml`](prepare_intepolation_grids/environment.yml):
+[`prepare_dataset/environment.yml`](prepare_dataset/environment.yml):
 
 ```bash
-conda env update -n cmass_lens -f /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids/environment.yml
+conda env update -n cmass_lens -f /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset/environment.yml
 ```
 
 That environment file covers baseline scientific packages, but the inference
@@ -103,7 +104,7 @@ conda run -n cmass_lens python -m pip install -e .
 
 ### External dependency
 
-`prepare_intepolation_grids` depends on `spherical_jeans`, which is not
+`prepare_dataset` depends on `spherical_jeans`, which is not
 vendored in this repository. The environment must already be able to import it.
 
 ### Absolute-path assumptions
@@ -117,7 +118,6 @@ Many configs, scripts, and reports assume this exact root path:
 This is especially true for:
 
 - `Bayesian_inference/configs/*.yaml`
-- `Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py`
 - reports and manifests under `key_tests/`
 
 ### Missing large artifacts from Git
@@ -128,6 +128,7 @@ artifacts to exist under the expected directories, especially:
 
 - `data/raw/*.hdf5`
 - `data/external/*.h5`
+- `data/external/inference_dataset_*.hdf5`
 - `outputs/`
 - `key_tests/output/`
 - `Posterior_predictive_test/results/`
@@ -139,82 +140,72 @@ already assumes.
 
 ### 1. Validate the environment
 
-First update the conda environment, then run the grid-preparation environment
-check from the `prepare_intepolation_grids` directory:
+First update the conda environment, then run the data-preparation environment
+check from the `prepare_dataset` directory:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids
-conda run -n cmass_lens python -m interpolation_grids.env_check
+cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
+conda run -n cmass_lens python -m prepare_dataset.env_check
 ```
 
 If you need the inference CLI in that environment, install the editable package
 once from `Bayesian_inference/`.
 
-### 2. Refresh raw interpolation grids or build external sigma tables
+### 2. Refresh data-preparation products
 
-Run these commands from `prepare_intepolation_grids/`.
+Run these commands from `prepare_dataset/`.
 
 Process both standard raw observation files:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids
-conda run -n cmass_lens python -m interpolation_grids --all-default-inputs
+cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
+conda run -n cmass_lens python -m prepare_dataset --all-default-inputs
 ```
 
 Process a single file:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids
-conda run -n cmass_lens python -m interpolation_grids --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
+cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
+conda run -n cmass_lens python -m prepare_dataset --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
 ```
 
-Build both posterior-predictive sigma-unit tables:
+Build posterior-predictive sigma-unit bundle files:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids
-conda run -n cmass_lens python -m interpolation_grids --build-sigma-unit-hdf5 --profile all --workers 14
+cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
+conda run -n cmass_lens python -m prepare_dataset --build-sigma-unit-hdf5 --profile all --observation-flavor all --sigma-definition all --workers 14
 ```
 
 These commands populate or refresh:
 
 - `data/raw/*.updated.hdf5` or in-place replacements
-- `data/external/jeans_deV_m5_grid.h5`
-- `data/external/jeans_deV_m10_grid.h5`
-- `data/external/jeans_sers_m5_grid.h5`
-- `data/external/jeans_sers_m10_grid.h5`
+- `data/external/cs_grid_power.h5`
+- `data/external/fibre_crosssect_grid.hdf5`
+- `data/external/jeans_deV_sigma_bundle.h5`
+- `data/external/jeans_sers_sigma_bundle.h5`
+- `data/external/inference_dataset_*.hdf5` when the canonical dataset writer is run
 
 ### 3. Run the main inference
 
 After installing `Bayesian_inference` into `cmass_lens`, use the packaged CLI.
 The tracked configs already point at the canonical data paths and `outputs/`.
-Every inference config now must include:
+Every production inference config now selects a scientific model by
+`model.name`, declares one unit convention, and points at one canonical dataset:
 
 ```yaml
-mass_definition:
-  enclosed_radius_kpc: 5  # or 10
+unit_convention: h_units_v1
 
-box_prior:
-  mu5_0: [9.0, 12.0]
-  beta5: [-3.0, 3.0]
-  xi5: [-3.0, 3.0]
-  sigma5: [1.0e-2, 0.2]
-  mu_gamma_0: [1.5, 2.5]
-  beta_gamma: [-3.0, 3.0]
-  xi_gamma: [-3.0, 3.0]
-  sigma_gamma: [0.0, 0.5]
-  mu_zs: [1.0, 3.0]
-  sigma_zs: [0.0, 2.0]
-  theta0: [0.0, 3.0]
-  loga: [-1.0, 3.0]
+model:
+  name: cmass
+
+data:
+  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_devauc_slit_m5_hunits_v1.hdf5
 ```
 
-The public hyper-parameter names follow that choice:
-- `5 kpc`: `mu5_0`, `beta5`, `xi5`, `sigma5`
-- `10 kpc`: `mu10_0`, `beta10`, `xi10`, `sigma10`
-
-`box_prior` is now an explicit required contract rather than an implicit code
-default. Historical run-local `config_snapshot.yaml` files may be auto-migrated
-when resumed, but user-authored source configs should be updated in place.
+Top-level `mass_definition` / `gamma_model` sections and raw
+`data.observation_path` / `data.cross_section_path` fields are legacy surfaces.
+Production inference rejects them; build a canonical dataset first and put its
+path in `data.inference_dataset_path`.
 
 Run the de Vaucouleurs branch:
 
@@ -239,7 +230,7 @@ conda run -n cmass_lens cmass-lens-inference resume --run-dir /Users/liurongfu/W
 
 ### 4. Run posterior predictive tests or posterior trends
 
-These commands use the `cmass-posterior-predictive` CLI from
+These commands use the `lensing-posterior-predictive` CLI from
 `Posterior_predictive_test/` after that package has been installed into the
 same `cmass_lens` environment.
 
@@ -247,9 +238,9 @@ Example devauc posterior predictive run:
 
 ```bash
 cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
-conda run -n cmass_lens cmass-posterior-predictive posterior-predictive \
+conda run -n cmass_lens lensing-posterior-predictive posterior-predictive \
   --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest \
-  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_m5_grid.h5 \
+  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_sigma_bundle.h5 \
   --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/devauc
 ```
 
@@ -257,17 +248,19 @@ Example sersic posterior-trend run:
 
 ```bash
 cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
-conda run -n cmass_lens cmass-posterior-predictive posterior-trends \
+conda run -n cmass_lens lensing-posterior-predictive posterior-trends \
   --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest \
-  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_m5_grid.h5 \
+  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_sigma_bundle.h5 \
   --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/sersic
 ```
 
+Prefer a concrete run directory when auditing results. The `latest` symlink can
+lag behind the newest real directory if old output trees were moved or archived.
+
 The CLI also exposes `posterior-predictive-monitor` if you need to wait for
 fresh external sigma tables before running both profile branches. The monitor
-now resolves the expected external filenames from each run's recorded mass
-definition, so an `m10` run waits for `jeans_*_m10_grid.h5` rather than the
-historical `m5` tables.
+now resolves the expected per-profile bundle filename from each run's recorded
+profile and mass definition.
 
 ### 5. Run current-vs-reference comparison checks
 
@@ -282,12 +275,10 @@ conda run -n cmass_lens python run_comparison.py
 This workflow prepares the workspace, refreshes copied reference files, runs
 smoke and compare jobs for both profiles, and rewrites the comparison report.
 
-### 6. Run notebook-vs-pipeline comparison scripts only when the external defaults are valid
+### 6. Run posterior diagnostics through the Numba shared-parent path
 
-`Posterior_predictive_test/compare_full0103_notebook_vs_pipeline.py` is a
-research-side script, not a stable package CLI. Its default paths point to
-desktop-side notebooks and chain files outside this repository. Override those
-arguments if your local setup differs.
+The former notebook-vs-pipeline comparison entrypoint has been retired. Use
+`posterior-diagnostics` for the maintained PPC plus Fig. 8-like trend workflow.
 
 ## Data and Output Conventions
 
@@ -295,8 +286,7 @@ arguments if your local setup differs.
 - Canonical external grids live under `data/external/`
 - Main inference outputs live under `outputs/`
 - Current-vs-reference comparison artifacts live under `key_tests/output/`
-- Notebook-vs-pipeline comparison artifacts live under
-  `Posterior_predictive_test/results/`
+- Posterior diagnostics artifacts live under `Posterior_predictive_test/results/`
 
 Git intentionally ignores most heavy runtime artifacts, so absence from Git
 history does not mean those files are optional for local scientific runs.
@@ -308,15 +298,15 @@ Useful checks already defined in the workspace:
 - Grid-preparation environment check:
 
   ```bash
-  cd /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids
-  conda run -n cmass_lens python -m interpolation_grids.env_check
+  cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
+  conda run -n cmass_lens python -m prepare_dataset.env_check
   ```
 
 - Grid-generation tests:
 
   ```bash
-  cd /Users/liurongfu/Work/CMASS_lens_project/prepare_intepolation_grids
-  conda run -n cmass_lens pytest -q tests/test_jeans_regression.py tests/test_hdf5_processing.py tests/test_sigma_unit_tables.py
+  cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
+  conda run -n cmass_lens python -m pytest tests -q
   ```
 
 - Inference / PPC tests:
@@ -349,6 +339,6 @@ Useful checks already defined in the workspace:
 ## Deeper References
 
 - [`Bayesian_inference/PROJECT_REQUIREMENTS.md`](Bayesian_inference/PROJECT_REQUIREMENTS.md)
-- [`prepare_intepolation_grids/README.md`](prepare_intepolation_grids/README.md)
+- [`prepare_dataset/README.md`](prepare_dataset/README.md)
 - [`data/README.md`](data/README.md)
 - [`key_tests/reports/pipeline_comparison.md`](key_tests/reports/pipeline_comparison.md)

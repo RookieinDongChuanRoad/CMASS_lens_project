@@ -1,0 +1,2774 @@
+{
+  "candidate": {
+    "canonical_dataset": {
+      "hdf5": {
+        "attrs": {},
+        "datasets": {
+          "lenses/lens_id": {
+            "dtype": "object",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/log_mstar_err": {
+            "dtype": "float64",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/log_mstar_obs": {
+            "dtype": "float64",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/log_re_obs": {
+            "dtype": "float64",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/n_obs": {
+            "dtype": "float64",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/num_sigma": {
+            "dtype": "int64",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/sigma_err": {
+            "dtype": "float64",
+            "shape": [
+              59,
+              2
+            ]
+          },
+          "lenses/sigma_obs": {
+            "dtype": "float64",
+            "shape": [
+              59,
+              2
+            ]
+          },
+          "lenses/theta_e_obs": {
+            "dtype": "float64",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/z_d": {
+            "dtype": "float64",
+            "shape": [
+              59
+            ]
+          },
+          "lenses/z_s": {
+            "dtype": "float64",
+            "shape": [
+              59
+            ]
+          },
+          "lensing_cross_section/cross_section_grid": {
+            "dtype": "float64",
+            "shape": [
+              51,
+              81
+            ]
+          },
+          "lensing_cross_section/gamma_axis": {
+            "dtype": "float64",
+            "shape": [
+              81
+            ]
+          },
+          "lensing_cross_section/theta_e_axis": {
+            "dtype": "float64",
+            "shape": [
+              51
+            ]
+          },
+          "lensing_mass_grids/dmass_dthetaein_grid": {
+            "dtype": "float64",
+            "shape": [
+              59,
+              17
+            ]
+          },
+          "lensing_mass_grids/gamma_grid": {
+            "dtype": "float64",
+            "shape": [
+              59,
+              17
+            ]
+          },
+          "lensing_mass_grids/has_s2": {
+            "dtype": "int64",
+            "shape": [
+              59
+            ]
+          },
+          "lensing_mass_grids/log_enclosed_mass_grid": {
+            "dtype": "float64",
+            "shape": [
+              59,
+              17
+            ]
+          },
+          "lensing_mass_grids/s2_grid": {
+            "dtype": "float64",
+            "shape": [
+              59,
+              17
+            ]
+          },
+          "metadata/capabilities": {
+            "dtype": "object",
+            "shape": [
+              5
+            ]
+          },
+          "velocity_dispersion_grids/per_lens_s2/has_s2": {
+            "dtype": "int64",
+            "shape": [
+              59
+            ]
+          },
+          "velocity_dispersion_grids/per_lens_s2/s2_grid": {
+            "dtype": "float64",
+            "shape": [
+              59,
+              17
+            ]
+          },
+          "velocity_dispersion_grids/population_sigma_unit/gamma_axis": {
+            "dtype": "float64",
+            "shape": [
+              17
+            ]
+          },
+          "velocity_dispersion_grids/population_sigma_unit/log_re_kpc_axis": {
+            "dtype": "float64",
+            "shape": [
+              21
+            ]
+          },
+          "velocity_dispersion_grids/population_sigma_unit/profile_name": {
+            "dtype": "|S6",
+            "shape": []
+          },
+          "velocity_dispersion_grids/population_sigma_unit/s_unit_grid": {
+            "dtype": "float64",
+            "shape": [
+              17,
+              21,
+              21
+            ]
+          },
+          "velocity_dispersion_grids/population_sigma_unit/zd_axis": {
+            "dtype": "float64",
+            "shape": [
+              21
+            ]
+          }
+        },
+        "groups": [
+          "lenses",
+          "lensing_cross_section",
+          "lensing_mass_grids",
+          "metadata",
+          "velocity_dispersion_grids",
+          "velocity_dispersion_grids/per_lens_s2",
+          "velocity_dispersion_grids/population_sigma_unit"
+        ],
+        "status": "readable"
+      },
+      "mtime_ns": 1778390843209010302,
+      "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/candidate/inference_dataset_sonnenfeld2024_slacs_m5_fixed_v1.hdf5",
+      "required_for_full_comparison": true,
+      "sha256": "b8f3ddc5ca15a09cee59b1c67dc3bb7c4489df2df2cfc1ee97218cbc49c020ab",
+      "size_bytes": 165896,
+      "status": "present"
+    },
+    "root": "/Users/liurongfu/.codex/worktrees/b283/CMASS_lens_project"
+  },
+  "comparisons": {
+    "reference_grids": {
+      "comparisons": {
+        "dm5drein_grid": {
+          "atol": 5e-07,
+          "local_shape": [
+            59,
+            17
+          ],
+          "max_abs_diff": 0.7150352780243163,
+          "max_rel_diff": 3.9999962174560357,
+          "name": "dm5drein_grid",
+          "note": "Reference finite-difference Jacobian versus canonical dmass_dthetaein_grid.",
+          "reference_shape": [
+            59,
+            17
+          ],
+          "rtol": 5e-05,
+          "status": "failed"
+        },
+        "global_cross_section_gamma_axis": {
+          "atol": 1e-12,
+          "local_shape": [
+            81
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "global_cross_section_gamma_axis",
+          "note": "Reference finite-fibre gamma axis versus canonical cross-section axis.",
+          "reference_shape": [
+            81
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "global_cross_section_theta_axis": {
+          "atol": 1e-12,
+          "local_shape": [
+            51
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "global_cross_section_theta_axis",
+          "note": "Reference finite-fibre theta_E axis versus canonical cross-section axis.",
+          "reference_shape": [
+            51
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "global_mufibre3_cross_section": {
+          "atol": 1e-12,
+          "local_shape": [
+            51,
+            81
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "global_mufibre3_cross_section",
+          "note": "Sonnenfeld finite-fibre areas must be copied directly, not converted as CMASS separable areas.",
+          "reference_shape": [
+            51,
+            81
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "jeans_gamma_axis": {
+          "atol": 1e-12,
+          "local_shape": [
+            17
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "jeans_gamma_axis",
+          "note": "Reference Jeans grid gamma axis versus canonical mass-grid axis.",
+          "reference_shape": [
+            17
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "lensing_gamma_axis": {
+          "atol": 1e-12,
+          "local_shape": [
+            17
+          ],
+          "max_nearest_abs_diff": 4.440892098500626e-16,
+          "name": "lensing_gamma_axis",
+          "note": "Reference per-lens lensing grid has 81 gamma points; canonical fixed-m5 mass grids may use the 17-point dynamics subset.",
+          "reference_shape": [
+            81
+          ],
+          "status": "passed"
+        },
+        "m5_grid": {
+          "atol": 5e-10,
+          "local_shape": [
+            59,
+            17
+          ],
+          "max_abs_diff": 2.6430173246438926e-05,
+          "max_rel_diff": 2.4842429775386234e-06,
+          "name": "m5_grid",
+          "note": "Reference make_slacs_lensing_grids.py m5_grid versus canonical log_enclosed_mass_grid.",
+          "reference_shape": [
+            59,
+            17
+          ],
+          "rtol": 5e-08,
+          "status": "failed"
+        },
+        "population_sigma_unit_schema": {
+          "gamma_axis_shape": [
+            17
+          ],
+          "log_re_kpc_axis_shape": [
+            21
+          ],
+          "mass_definition_label": "m5",
+          "n_axis_shape": [],
+          "name": "population_sigma_unit_schema",
+          "note": "Runtime-required sigma^2 / 10**m5 interpolation table exists and is finite.",
+          "shape": [
+            17,
+            21,
+            21
+          ],
+          "status": "passed",
+          "zd_axis_shape": [
+            21
+          ]
+        },
+        "s2_grid": {
+          "atol": 1e-08,
+          "local_shape": [
+            59,
+            17
+          ],
+          "max_abs_diff": 1.2174252538160531e-10,
+          "max_rel_diff": 6.0855871132237166e-05,
+          "name": "s2_grid",
+          "note": "Reference make_slacs_jeans_grids.py s2_grid versus canonical per-lens s2 grid.",
+          "reference_shape": [
+            59,
+            17
+          ],
+          "rtol": 5e-06,
+          "status": "passed"
+        }
+      },
+      "lens_count": 59,
+      "status": "failed"
+    },
+    "slacs_table": {
+      "comparisons": {
+        "log_mstar_err": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.log_mstar_err",
+          "note": "Raw SLACS_table.cat value compared by lens_id against canonical /lenses block.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "log_mstar_obs": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.log_mstar_obs",
+          "note": "Raw SLACS_table.cat value compared by lens_id against canonical /lenses block.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "log_re_kpc": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.log_re_kpc",
+          "note": "Raw SLACS_table.cat value compared by lens_id against canonical /lenses block.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "sigma_err": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.sigma_err",
+          "note": "First canonical sigma-error slot should preserve the SLACS table uncertainty.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "sigma_obs": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.sigma_obs",
+          "note": "First canonical sigma slot should preserve the SLACS velocity-dispersion measurement.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "theta_e_obs": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.theta_e_obs",
+          "note": "Raw SLACS_table.cat value compared by lens_id against canonical /lenses block.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "z_d": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.z_d",
+          "note": "Raw SLACS_table.cat value compared by lens_id against canonical /lenses block.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        },
+        "z_s": {
+          "atol": 1e-12,
+          "local_shape": [
+            59
+          ],
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "name": "slacs_table.z_s",
+          "note": "Raw SLACS_table.cat value compared by lens_id against canonical /lenses block.",
+          "reference_shape": [
+            59
+          ],
+          "rtol": 1e-12,
+          "status": "passed"
+        }
+      },
+      "lens_count": 59,
+      "status": "passed"
+    }
+  },
+  "created_at_utc": "2026-05-10T05:31:18.650024+00:00",
+  "missing_required_artifacts": [],
+  "model": "sonnenfeld2024_slacs",
+  "phase": "data_grid",
+  "reasons": [
+    "one or more data/grid oracle comparisons failed"
+  ],
+  "reference": {
+    "artifacts": {
+      "SLACS_table.cat": {
+        "mtime_ns": 1778328930146258805,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/SLACS_table.cat",
+        "required_for_full_comparison": true,
+        "sha256": "174e4489246224df749c4e58a6b6447f0562d81cbfb3a78ed39b4831c7b0119e",
+        "size_bytes": 5170,
+        "status": "present"
+      },
+      "fibre_crosssect_grid.hdf5": {
+        "hdf5": {
+          "attrs": {
+            "axis_order": "theta_E,gamma",
+            "fibre_arcsec": 1.5,
+            "generator_name": "prepare_dataset.fibre_cross_section",
+            "muB_min": 1.0,
+            "nbeta": 1001,
+            "nr": 16,
+            "seeing_arcsec": 1.5,
+            "source_reference_sha": "25873a873a5ecbd61b272e61f1da9a62edada7b5",
+            "source_reference_url": "https://raw.githubusercontent.com/astrosonnen/strong_lensing_tools/main/papers/slacs_selection/scripts/make_crosssect_grid.py"
+          },
+          "datasets": {
+            "gamma_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                51,
+                81
+              ]
+            },
+            "mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                51,
+                81
+              ]
+            },
+            "tein_grid": {
+              "dtype": "float64",
+              "shape": [
+                51
+              ]
+            },
+            "ycaust_grid": {
+              "dtype": "float64",
+              "shape": [
+                51,
+                81
+              ]
+            }
+          },
+          "groups": [],
+          "status": "readable"
+        },
+        "mtime_ns": 1778390843206514569,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/fibre_crosssect_grid.hdf5",
+        "required_for_full_comparison": true,
+        "sha256": "05d77acbf4ccd4a757f4ccefbd5f833c8d3d45dc0c48c31a80ab397fbf431ce3",
+        "size_bytes": 108392,
+        "status": "present"
+      },
+      "full_inference.hdf5": {
+        "hdf5": {
+          "attrs": {},
+          "datasets": {
+            "beta_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "beta_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "fpfit": {
+              "dtype": "float64",
+              "shape": [
+                4,
+                100,
+                2000
+              ]
+            },
+            "la_find": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "logp": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "mu_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "mu_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "mu_zs": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "sigma_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "sigma_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "sigma_zs": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "t_find": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "xi_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "xi_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            }
+          },
+          "groups": [],
+          "status": "readable"
+        },
+        "mtime_ns": 1778328930234906176,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/full_inference.hdf5",
+        "required_for_full_comparison": false,
+        "sha256": "78532cb75c9c2bd4506efcb4d6aba00597f0708d729ac65053cf9496c0635988",
+        "size_bytes": 27206144,
+        "status": "present"
+      },
+      "parent_sample.fits": {
+        "mtime_ns": 1778328930553114233,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/parent_sample.fits",
+        "required_for_full_comparison": true,
+        "sha256": "750b755d26ba4bb89eca45dd16c56b45dd02ced51634fab133f95e42c9306b6b",
+        "size_bytes": 19704960,
+        "status": "present"
+      },
+      "slacs_jeans_grids.hdf5": {
+        "hdf5": {
+          "attrs": {},
+          "datasets": {
+            "SDSSJ0029-0055/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0037-0942/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0044+0113/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0216-0813/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0252+0039/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0330-0020/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0728+3835/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0737+3216/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0819+4534/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0822+2652/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0912+0029/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0935-0003/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0936+0913/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0946+1006/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0956+5100/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0959+0410/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ0959+4416/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1016+3859/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1020+1122/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1023+4230/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1029+0420/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1106+5228/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1112+0826/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1134+6027/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1142+1001/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1143-0144/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1153+4612/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1204+0358/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1205+4910/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1213+6708/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1218+0830/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1250+0523/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1306+0600/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1313+4615/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1318-0313/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1330-0148/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1402+6321/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1403+0006/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1416+5136/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1420+6019/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1430+4105/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1436-0000/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1443+0304/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1451-0239/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1525+3327/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1531-0105/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1538+5817/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1614+4522/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1621+3931/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1627-0053/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1630+4520/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1636+4707/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1644+2625/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ1719+2939/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ2238-0754/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ2300+0022/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ2303+1422/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ2321-0939/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "SDSSJ2341+0000/s2_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            },
+            "gamma_grid": {
+              "dtype": "float64",
+              "shape": [
+                17
+              ]
+            }
+          },
+          "groups": [
+            "SDSSJ0029-0055",
+            "SDSSJ0037-0942",
+            "SDSSJ0044+0113",
+            "SDSSJ0216-0813",
+            "SDSSJ0252+0039",
+            "SDSSJ0330-0020",
+            "SDSSJ0728+3835",
+            "SDSSJ0737+3216",
+            "SDSSJ0819+4534",
+            "SDSSJ0822+2652",
+            "SDSSJ0912+0029",
+            "SDSSJ0935-0003",
+            "SDSSJ0936+0913",
+            "SDSSJ0946+1006",
+            "SDSSJ0956+5100",
+            "SDSSJ0959+0410",
+            "SDSSJ0959+4416",
+            "SDSSJ1016+3859",
+            "SDSSJ1020+1122",
+            "SDSSJ1023+4230",
+            "SDSSJ1029+0420",
+            "SDSSJ1106+5228",
+            "SDSSJ1112+0826",
+            "SDSSJ1134+6027",
+            "SDSSJ1142+1001",
+            "SDSSJ1143-0144",
+            "SDSSJ1153+4612",
+            "SDSSJ1204+0358",
+            "SDSSJ1205+4910",
+            "SDSSJ1213+6708",
+            "SDSSJ1218+0830",
+            "SDSSJ1250+0523",
+            "SDSSJ1306+0600",
+            "SDSSJ1313+4615",
+            "SDSSJ1318-0313",
+            "SDSSJ1330-0148",
+            "SDSSJ1402+6321",
+            "SDSSJ1403+0006",
+            "SDSSJ1416+5136",
+            "SDSSJ1420+6019",
+            "SDSSJ1430+4105",
+            "SDSSJ1436-0000",
+            "SDSSJ1443+0304",
+            "SDSSJ1451-0239",
+            "SDSSJ1525+3327",
+            "SDSSJ1531-0105",
+            "SDSSJ1538+5817",
+            "SDSSJ1614+4522",
+            "SDSSJ1621+3931",
+            "SDSSJ1627-0053",
+            "SDSSJ1630+4520",
+            "SDSSJ1636+4707",
+            "SDSSJ1644+2625",
+            "SDSSJ1719+2939",
+            "SDSSJ2238-0754",
+            "SDSSJ2300+0022",
+            "SDSSJ2303+1422",
+            "SDSSJ2321-0939",
+            "SDSSJ2341+0000"
+          ],
+          "status": "readable"
+        },
+        "mtime_ns": 1778390935124373578,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/slacs_jeans_grids.hdf5",
+        "required_for_full_comparison": true,
+        "sha256": "f21e58e6770316ea36d2160052a3c0fc20325065e8a87f34a24bfcb70db8f8b4",
+        "size_bytes": 92208,
+        "status": "present"
+      },
+      "slacs_lensing_grids.hdf5": {
+        "hdf5": {
+          "attrs": {
+            "generation_mode": "reference_formula_m5_dm5_plus_global_fibre_surrogate",
+            "source_fibre_grid": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/fibre_crosssect_grid.hdf5",
+            "source_table": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/SLACS_table.cat",
+            "surrogate_warning": "m5_grid and dm5drein_grid use the reference make_slacs_lensing_grids.py formulas; mufibre*_cs_grid are interpolated from the global fibre_crosssect_grid rather than rerunning the very slow per-lens finite-fibre loop."
+          },
+          "datasets": {
+            "SDSSJ0029-0055/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0029-0055/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0029-0055/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0029-0055/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0037-0942/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0037-0942/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0037-0942/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0037-0942/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0044+0113/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0044+0113/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0044+0113/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0044+0113/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0216-0813/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0216-0813/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0216-0813/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0216-0813/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0252+0039/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0252+0039/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0252+0039/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0252+0039/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0330-0020/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0330-0020/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0330-0020/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0330-0020/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0728+3835/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0728+3835/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0728+3835/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0728+3835/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0737+3216/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0737+3216/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0737+3216/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0737+3216/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0819+4534/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0819+4534/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0819+4534/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0819+4534/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0822+2652/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0822+2652/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0822+2652/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0822+2652/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0912+0029/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0912+0029/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0912+0029/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0912+0029/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0935-0003/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0935-0003/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0935-0003/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0935-0003/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0936+0913/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0936+0913/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0936+0913/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0936+0913/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0946+1006/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0946+1006/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0946+1006/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0946+1006/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0956+5100/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0956+5100/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0956+5100/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0956+5100/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+0410/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+0410/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+0410/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+0410/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+4416/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+4416/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+4416/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ0959+4416/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1016+3859/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1016+3859/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1016+3859/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1016+3859/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1020+1122/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1020+1122/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1020+1122/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1020+1122/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1023+4230/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1023+4230/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1023+4230/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1023+4230/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1029+0420/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1029+0420/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1029+0420/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1029+0420/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1106+5228/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1106+5228/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1106+5228/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1106+5228/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1112+0826/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1112+0826/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1112+0826/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1112+0826/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1134+6027/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1134+6027/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1134+6027/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1134+6027/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1142+1001/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1142+1001/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1142+1001/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1142+1001/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1143-0144/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1143-0144/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1143-0144/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1143-0144/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1153+4612/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1153+4612/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1153+4612/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1153+4612/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1204+0358/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1204+0358/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1204+0358/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1204+0358/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1205+4910/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1205+4910/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1205+4910/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1205+4910/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1213+6708/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1213+6708/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1213+6708/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1213+6708/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1218+0830/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1218+0830/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1218+0830/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1218+0830/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1250+0523/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1250+0523/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1250+0523/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1250+0523/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1306+0600/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1306+0600/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1306+0600/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1306+0600/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1313+4615/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1313+4615/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1313+4615/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1313+4615/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1318-0313/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1318-0313/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1318-0313/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1318-0313/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1330-0148/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1330-0148/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1330-0148/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1330-0148/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1402+6321/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1402+6321/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1402+6321/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1402+6321/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1403+0006/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1403+0006/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1403+0006/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1403+0006/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1416+5136/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1416+5136/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1416+5136/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1416+5136/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1420+6019/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1420+6019/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1420+6019/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1420+6019/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1430+4105/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1430+4105/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1430+4105/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1430+4105/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1436-0000/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1436-0000/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1436-0000/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1436-0000/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1443+0304/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1443+0304/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1443+0304/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1443+0304/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1451-0239/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1451-0239/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1451-0239/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1451-0239/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1525+3327/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1525+3327/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1525+3327/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1525+3327/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1531-0105/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1531-0105/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1531-0105/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1531-0105/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1538+5817/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1538+5817/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1538+5817/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1538+5817/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1614+4522/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1614+4522/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1614+4522/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1614+4522/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1621+3931/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1621+3931/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1621+3931/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1621+3931/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1627-0053/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1627-0053/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1627-0053/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1627-0053/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1630+4520/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1630+4520/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1630+4520/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1630+4520/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1636+4707/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1636+4707/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1636+4707/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1636+4707/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1644+2625/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1644+2625/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1644+2625/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1644+2625/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1719+2939/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1719+2939/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1719+2939/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ1719+2939/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2238-0754/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2238-0754/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2238-0754/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2238-0754/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2300+0022/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2300+0022/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2300+0022/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2300+0022/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2303+1422/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2303+1422/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2303+1422/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2303+1422/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2321-0939/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2321-0939/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2321-0939/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2321-0939/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2341+0000/dm5drein_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2341+0000/m5_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2341+0000/mufibre2_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "SDSSJ2341+0000/mufibre3_cs_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            },
+            "gamma_grid": {
+              "dtype": "float64",
+              "shape": [
+                81
+              ]
+            }
+          },
+          "groups": [
+            "SDSSJ0029-0055",
+            "SDSSJ0037-0942",
+            "SDSSJ0044+0113",
+            "SDSSJ0216-0813",
+            "SDSSJ0252+0039",
+            "SDSSJ0330-0020",
+            "SDSSJ0728+3835",
+            "SDSSJ0737+3216",
+            "SDSSJ0819+4534",
+            "SDSSJ0822+2652",
+            "SDSSJ0912+0029",
+            "SDSSJ0935-0003",
+            "SDSSJ0936+0913",
+            "SDSSJ0946+1006",
+            "SDSSJ0956+5100",
+            "SDSSJ0959+0410",
+            "SDSSJ0959+4416",
+            "SDSSJ1016+3859",
+            "SDSSJ1020+1122",
+            "SDSSJ1023+4230",
+            "SDSSJ1029+0420",
+            "SDSSJ1106+5228",
+            "SDSSJ1112+0826",
+            "SDSSJ1134+6027",
+            "SDSSJ1142+1001",
+            "SDSSJ1143-0144",
+            "SDSSJ1153+4612",
+            "SDSSJ1204+0358",
+            "SDSSJ1205+4910",
+            "SDSSJ1213+6708",
+            "SDSSJ1218+0830",
+            "SDSSJ1250+0523",
+            "SDSSJ1306+0600",
+            "SDSSJ1313+4615",
+            "SDSSJ1318-0313",
+            "SDSSJ1330-0148",
+            "SDSSJ1402+6321",
+            "SDSSJ1403+0006",
+            "SDSSJ1416+5136",
+            "SDSSJ1420+6019",
+            "SDSSJ1430+4105",
+            "SDSSJ1436-0000",
+            "SDSSJ1443+0304",
+            "SDSSJ1451-0239",
+            "SDSSJ1525+3327",
+            "SDSSJ1531-0105",
+            "SDSSJ1538+5817",
+            "SDSSJ1614+4522",
+            "SDSSJ1621+3931",
+            "SDSSJ1627-0053",
+            "SDSSJ1630+4520",
+            "SDSSJ1636+4707",
+            "SDSSJ1644+2625",
+            "SDSSJ1719+2939",
+            "SDSSJ2238-0754",
+            "SDSSJ2300+0022",
+            "SDSSJ2303+1422",
+            "SDSSJ2321-0939",
+            "SDSSJ2341+0000"
+          ],
+          "status": "readable"
+        },
+        "mtime_ns": 1778390902560729025,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/slacs_lensing_grids.hdf5",
+        "required_for_full_comparison": true,
+        "sha256": "fb61a34185f124183604b2c95de224b53f4925f96e07126801d1eebb49751785",
+        "size_bytes": 305504,
+        "status": "present"
+      },
+      "slonly_inference.hdf5": {
+        "hdf5": {
+          "attrs": {},
+          "datasets": {
+            "beta_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "beta_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "logp": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "mu_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "mu_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "mu_ms": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "sigma_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "sigma_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "sigma_ms": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "xi_gamma": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            },
+            "xi_m5": {
+              "dtype": "float64",
+              "shape": [
+                100,
+                2000
+              ]
+            }
+          },
+          "groups": [],
+          "status": "readable"
+        },
+        "mtime_ns": 1778328930625475977,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/slonly_inference.hdf5",
+        "required_for_full_comparison": false,
+        "sha256": "3c8f80710efae21a6c6919f4aa265f2a443382f9327c251d5181e5aa434592f0",
+        "size_bytes": 17606144,
+        "status": "present"
+      }
+    },
+    "root": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root",
+    "scripts": {
+      "scripts/fit_full.py": {
+        "mtime_ns": 1778328930557426229,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/scripts/fit_full.py",
+        "required_for_full_comparison": false,
+        "sha256": "0870166bd895cb16c7164a78e7a5f723747e8b5cf6846041097fa1cc8fc6fd55",
+        "size_bytes": 12593,
+        "status": "present"
+      },
+      "scripts/fit_slonly.py": {
+        "mtime_ns": 1778328930557594851,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/scripts/fit_slonly.py",
+        "required_for_full_comparison": false,
+        "sha256": "068ee1e652342475d75b9453cf57757156377cb726a00a7e6549fd1b14372456",
+        "size_bytes": 5738,
+        "status": "present"
+      },
+      "scripts/fitpars.py": {
+        "mtime_ns": 1778328930557652683,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/scripts/fitpars.py",
+        "required_for_full_comparison": false,
+        "sha256": "084019a5fdf9ff7f8521456c8b06471dfbe0e6fccfab412e49ae92acd9c43ff3",
+        "size_bytes": 791,
+        "status": "present"
+      },
+      "scripts/make_crosssect_grid.py": {
+        "mtime_ns": 1778328930557815138,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/scripts/make_crosssect_grid.py",
+        "required_for_full_comparison": false,
+        "sha256": "b4b4a3c5395ff8461934b096a9b68017106562045668032ce585878a315c2df6",
+        "size_bytes": 5445,
+        "status": "present"
+      },
+      "scripts/make_slacs_jeans_grids.py": {
+        "mtime_ns": 1778328930558002259,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/scripts/make_slacs_jeans_grids.py",
+        "required_for_full_comparison": false,
+        "sha256": "33a220e583a1841f8a0d63720f7a9be6f323464e098c689c79111ee3419c09a6",
+        "size_bytes": 1679,
+        "status": "present"
+      },
+      "scripts/make_slacs_lensing_grids.py": {
+        "mtime_ns": 1778328930558076549,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/scripts/make_slacs_lensing_grids.py",
+        "required_for_full_comparison": false,
+        "sha256": "175b17d6dd6127d7b28b2e6a8e837f5837933eb77a304d930790b2fb057836d7",
+        "size_bytes": 6090,
+        "status": "present"
+      },
+      "scripts/mz_distribution.py": {
+        "mtime_ns": 1778328930558130215,
+        "path": "/Users/liurongfu/Work/CMASS_lens_project/outputs/_staging/sonnenfeld_reference_comparison_20260510_133000/reference_root/scripts/mz_distribution.py",
+        "required_for_full_comparison": false,
+        "sha256": "3fc7edc26d60c327dff862566d99f834c92a58f8a2c1bba16e7152e939ac7256",
+        "size_bytes": 3084,
+        "status": "present"
+      }
+    }
+  },
+  "schema_version": "sonnenfeld_reference_comparison_data_grid_v1",
+  "status": "failed",
+  "status_options": [
+    "passed",
+    "failed",
+    "skipped_data_gated",
+    "not_comparable"
+  ]
+}

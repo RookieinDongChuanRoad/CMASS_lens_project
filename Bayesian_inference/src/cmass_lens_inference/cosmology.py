@@ -5,7 +5,7 @@ The project requirements fix the cosmology, so this module keeps the distance
 calculations local and deterministic. The numerical implementation is
 deliberately straightforward: astropy provides the authoritative cosmological
 distances, while the project keeps a precomputed comoving-distance table and
-linear interpolation so the hot path can stay `numba`-friendly.
+linear interpolation so backend kernels receive fixed-shape numeric arrays.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 Command-line interface for launching or resuming inference runs.
 
 Posterior-predictive workflows have moved to the standalone
-`cmass_posterior_predictive` package. This CLI now only exposes the inference
+`lensing_posterior_predictive` package. This CLI now only exposes the inference
 engine's own responsibilities.
 """
 

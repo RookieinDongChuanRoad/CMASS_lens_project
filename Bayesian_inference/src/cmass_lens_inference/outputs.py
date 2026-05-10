@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
 from .types import RunLayout, RunResult
 
@@ -68,21 +67,44 @@ def refresh_latest_pointer(profile_dir: Path, run_id: str) -> None:
         (profile_dir / "LATEST_RUN").write_text(f"{run_id}\n", encoding="utf-8")
 
 
-def save_checkpoint(checkpoints_dir: Path, coords: np.ndarray, log_prob: np.ndarray, step: int) -> None:
-    """Persist the latest walker state so a run can be resumed later."""
+def save_emcee_checkpoint(
+    checkpoints_dir: Path,
+    walker_coords: np.ndarray,
+    log_prob: np.ndarray,
+    step: int,
+) -> None:
+    """
+    Persist the lightweight emcee resume checkpoint.
 
-    np.save(checkpoints_dir / "latest_coords.npy", coords)
-    np.save(checkpoints_dir / "latest_log_prob.npy", log_prob)
+    `chain.h5` remains the source of truth for production samples.  These small
+    arrays are an operational safety net for interrupted runs where HDFBackend
+    state may not yet be readable but the runner has reached a checkpoint
+    boundary.
+    """
+
+    np.save(checkpoints_dir / "latest_walker_coords.npy", np.asarray(walker_coords, dtype=float))
+    np.save(checkpoints_dir / "latest_log_prob.npy", np.asarray(log_prob, dtype=float))
     (checkpoints_dir / "latest_step.txt").write_text(str(step), encoding="utf-8")
 
 
-def load_checkpoint(checkpoints_dir: Path) -> tuple[np.ndarray, np.ndarray, int]:
-    """Load the latest persisted walker state."""
+def load_emcee_checkpoint(checkpoints_dir: Path) -> tuple[np.ndarray, np.ndarray, int]:
+    """
+    Load the lightweight emcee checkpoint arrays.
 
-    coords = np.load(checkpoints_dir / "latest_coords.npy")
-    log_prob = np.load(checkpoints_dir / "latest_log_prob.npy")
-    step = int((checkpoints_dir / "latest_step.txt").read_text(encoding="utf-8").strip())
-    return coords, log_prob, step
+    The caller decides whether the raw coordinates are good enough to resume or
+    whether a persisted `chain.h5` state should take precedence.
+    """
+
+    coords_path = checkpoints_dir / "latest_walker_coords.npy"
+    log_prob_path = checkpoints_dir / "latest_log_prob.npy"
+    step_path = checkpoints_dir / "latest_step.txt"
+    if not coords_path.exists() or not log_prob_path.exists() or not step_path.exists():
+        raise FileNotFoundError(f"No complete emcee checkpoint exists in {checkpoints_dir}.")
+    return (
+        np.load(coords_path),
+        np.load(log_prob_path),
+        int(step_path.read_text(encoding="utf-8").strip()),
+    )
 
 
 def write_config_snapshot(run_dir: Path, raw_config_text: str) -> Path:
@@ -118,7 +140,7 @@ def write_metadata(
     run_dir: Path,
     profile_name: str,
     config_path: Path,
-    observation_path: Path,
+    inference_dataset_path: Path,
     output_root_dir: Path,
     random_seed: int,
     config_summary: dict[str, Any],
@@ -128,19 +150,18 @@ def write_metadata(
     payload = {
         "profile_name": profile_name,
         "config_path": str(config_path),
-        "input_observation_path": str(observation_path),
+        "input_inference_dataset_path": str(inference_dataset_path),
         "output_root_dir": str(output_root_dir),
         "random_seed": random_seed,
         "started_at": datetime.now().isoformat(),
         "git": _collect_git_metadata(),
         "chain_storage": config_summary.get("chain_storage"),
+        "canonical_capabilities": config_summary.get("data", {}).get("canonical_capabilities", []),
         "unit_convention": config_summary.get("unit_convention"),
         "h_ref": config_summary.get("h_ref"),
-        "mass_definition": config_summary.get("mass_definition", {}),
+        "mass_definition": config_summary.get("mass_definition"),
         "parallelism": config_summary.get("parallelism", {}),
         "fp_prior": config_summary.get("fp_prior", {}),
-        "sigma_table_path": config_summary.get("sigma_table_path"),
-        "sigma_table_mass_definition": config_summary.get("sigma_table_mass_definition"),
         "fp_sigma_definition": config_summary.get("fp_sigma_definition"),
         "fp_sigma_table_leaf_path": config_summary.get("fp_sigma_table_leaf_path"),
         "config_summary": config_summary,

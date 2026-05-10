@@ -2,14 +2,9 @@
 Integration tests for posterior corner-plot generation.
 
 Why these tests exist:
-- the standard pipeline now treats posterior corner plots as required output,
-  so the workflow must be exercised by the automated suite rather than being
-  regenerated manually from an ad hoc notebook
-- the mass-definition migration changed the user-visible parameter names for
-  the first four hyper-parameters, so the corner plot must expose `m10` labels
-  when the run configuration requests `10 kpc`
-- the CLI surface should let the operator regenerate both profile plots in one
-  machine-readable call after inference finishes
+- the standard pipeline now treats posterior corner plots as required output
+- the default CMASS model exposes h-unit public parameter names
+- the CLI surface should regenerate both profile plots in one JSON-producing call
 """
 
 from __future__ import annotations
@@ -27,54 +22,36 @@ import numpy as np
 import yaml
 
 from cmass_lens_inference.config import load_runtime_config
-from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
 
 
-def _box_prior_for_gamma_mode(
-    mass_radius_kpc: int,
-    gamma_mode: str,
-) -> dict[str, list[float]]:
-    """Return the explicit box-prior payload matching one corner-test schema."""
+LEGACY_EMCEE_BLOB_DTYPE = np.dtype(
+    [
+        ("total_log_prob_seconds", np.float64),
+        ("likelihood_seconds", np.float64),
+        ("normalization_seconds", np.float64),
+        ("fp_prior_seconds", np.float64),
+        ("normalization_value", np.float64),
+        ("fp_prior_log_term", np.float64),
+        ("fpfit_mu", np.float64),
+        ("fpfit_beta", np.float64),
+        ("fpfit_xi", np.float64),
+        ("fpfit_scatter", np.float64),
+        ("parallel_strategy", "S16"),
+    ]
+)
 
-    if mass_radius_kpc == 10:
-        mass_bounds = {
-            "mu10_0": [9.0, 12.0],
-            "beta10": [-3.0, 3.0],
-            "xi10": [-3.0, 3.0],
-            "sigma10": [1.0e-2, 0.2],
-        }
-    else:
-        mass_bounds = {
-            "mu5_0": [9.0, 12.0],
-            "beta5": [-3.0, 3.0],
-            "xi5": [-3.0, 3.0],
-            "sigma5": [1.0e-2, 0.2],
-        }
 
-    if gamma_mode == "dependent":
-        gamma_bounds = {
-            "mu_gamma_0": [1.5, 2.5],
-            "beta_gamma": [-3.0, 3.0],
-            "xi_gamma": [-3.0, 3.0],
-            "sigma_gamma": [0.0, 0.5],
-        }
-    elif gamma_mode == "independent":
-        gamma_bounds = {
-            "mu_gamma_0": [1.5, 2.5],
-            "sigma_gamma": [0.0, 0.5],
-        }
-    elif gamma_mode == "sigma_star_dependent":
-        gamma_bounds = {
-            "mu_gamma_0": [1.5, 2.5],
-            "beta_sigma_star_gamma": [-3.0, 3.0],
-            "sigma_gamma": [0.0, 0.5],
-        }
-    else:
-        raise ValueError(f"Unsupported corner-test gamma mode '{gamma_mode}'.")
+def _box_prior_payload() -> dict[str, list[float]]:
+    """Return the fixed CMASS h-unit box-prior payload."""
 
     return {
-        **mass_bounds,
-        **gamma_bounds,
+        "mu5h_0": [9.0, 12.0],
+        "beta5h": [-3.0, 3.0],
+        "xi5h": [-3.0, 3.0],
+        "sigma5h": [1.0e-2, 0.2],
+        "mu_gamma_0": [1.5, 2.5],
+        "beta_sigma_star_gamma": [-3.0, 3.0],
+        "sigma_gamma": [0.0, 0.5],
         "mu_zs": [1.0, 3.0],
         "sigma_zs": [0.0, 2.0],
         "theta0": [0.0, 3.0],
@@ -82,116 +59,57 @@ def _box_prior_for_gamma_mode(
     }
 
 
-def _initial_center_for_gamma_mode(
-    mass_initial_center: dict[str, float],
-    gamma_mode: str,
-) -> dict[str, float]:
-    """Build the public initial-center payload for one gamma parameterization."""
+def _initial_center_payload() -> dict[str, float]:
+    """Build the fixed CMASS public initial-center payload."""
 
-    if gamma_mode == "dependent":
-        return {
-            **mass_initial_center,
-            "mu_gamma_0": 1.99,
-            "beta_gamma": 0.10,
-            "xi_gamma": -0.67,
-            "sigma_gamma": 0.149,
-            "mu_zs": 1.8,
-            "sigma_zs": 0.215,
-            "theta0": 0.93,
-            "loga": 1.0,
-        }
-    if gamma_mode == "independent":
-        return {
-            **mass_initial_center,
-            "mu_gamma_0": 1.99,
-            "sigma_gamma": 0.149,
-            "mu_zs": 1.8,
-            "sigma_zs": 0.215,
-            "theta0": 0.93,
-            "loga": 1.0,
-        }
-    if gamma_mode == "sigma_star_dependent":
-        return {
-            **mass_initial_center,
-            "mu_gamma_0": 1.99,
-            "beta_sigma_star_gamma": 0.24,
-            "sigma_gamma": 0.149,
-            "mu_zs": 1.8,
-            "sigma_zs": 0.215,
-            "theta0": 0.93,
-            "loga": 1.0,
-        }
-    raise ValueError(f"Unsupported corner-test gamma mode '{gamma_mode}'.")
+    return {
+        "mu5h_0": 11.17,
+        "beta5h": 0.59,
+        "xi5h": -0.11,
+        "sigma5h": 0.06,
+        "mu_gamma_0": 1.99,
+        "beta_sigma_star_gamma": 0.24,
+        "sigma_gamma": 0.149,
+        "mu_zs": 1.8,
+        "sigma_zs": 0.215,
+        "theta0": 0.93,
+        "loga": 1.0,
+    }
 
 
-def _parameter_center_for_gamma_mode(
-    mass_radius_kpc: int,
-    gamma_mode: str,
-) -> np.ndarray:
-    """Return one deterministic posterior center matching the config schema."""
+def _parameter_center() -> np.ndarray:
+    """Return one deterministic posterior center matching the fixed schema."""
 
-    if mass_radius_kpc == 10:
-        mass_theta = [11.42, 0.49, -0.21, 0.08]
-    else:
-        mass_theta = [11.32, 0.59, -0.11, 0.06]
-
-    if gamma_mode == "dependent":
-        return np.array([*mass_theta, 1.99, 0.10, -0.67, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
-    if gamma_mode == "independent":
-        return np.array([*mass_theta, 1.99, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
-    if gamma_mode == "sigma_star_dependent":
-        return np.array([*mass_theta, 1.99, 0.24, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
-    raise ValueError(f"Unsupported corner-test gamma mode '{gamma_mode}'.")
+    return np.array([11.17, 0.59, -0.11, 0.06, 1.99, 0.24, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
 
 
 def _write_corner_config(
     path: Path,
     profile_name: str,
     output_root: Path,
-    mass_radius_kpc: int = 10,
     warmup: int = 2,
-    gamma_mode: str = "dependent",
 ) -> Path:
     """
     Create the minimal config snapshot needed by the corner-plot workflow.
 
-    The corner post-processing code only needs a small subset of the original
-    run contract:
-    - the selected profile name for metadata and figure titles
-    - the selected mass definition so the first four public labels are correct
-    - the stored warmup length so `burn_in=\"auto\"` matches production
+    The corner post-processing code only needs the selected profile, fixed
+    model schema, and stored warmup length.
     """
-
-    if mass_radius_kpc == 10:
-        mass_initial_center = {
-            "mu10_0": 11.42,
-            "beta10": 0.49,
-            "xi10": -0.21,
-            "sigma10": 0.08,
-        }
-    else:
-        mass_initial_center = {
-            "mu5_0": 11.32,
-            "beta5": 0.59,
-            "xi5": -0.11,
-            "sigma5": 0.06,
-        }
 
     config = {
         "profile": {"name": profile_name},
-        "mass_definition": {"enclosed_radius_kpc": mass_radius_kpc},
-        "gamma_model": {"mode": gamma_mode},
+        "unit_convention": "h_units_v1",
+        "model": {"name": "cmass"},
         "data": {
-            "observation_path": str(output_root / f"{profile_name}_observations.hdf5"),
-            "cross_section_path": str(output_root / "cs_grid_power.h5"),
+            "inference_dataset_path": str(output_root / f"{profile_name}_canonical_inference_dataset.hdf5"),
         },
-        "box_prior": _box_prior_for_gamma_mode(mass_radius_kpc, gamma_mode),
+        "box_prior": _box_prior_payload(),
         "sampling": {
             "n_walkers": 24,
             "n_steps": 5,
-            "warmup": warmup,
+            "burn_in": warmup,
             "random_seed": 7,
-            "initial_center": _initial_center_for_gamma_mode(mass_initial_center, gamma_mode),
+            "initial_center": _initial_center_payload(),
             "initial_jitter_scale": 1.0e-3,
         },
         "integration": {
@@ -226,8 +144,8 @@ def _write_corner_config(
 def _seed_corner_backend(
     chain_path: Path,
     parameter_center: np.ndarray,
-    n_steps: int = 5,
-    n_walkers: int = 24,
+    sample_count: int = 5,
+    walker_count: int = 24,
 ) -> None:
     """
     Create a deterministic backend chain with small but non-degenerate spread.
@@ -237,28 +155,26 @@ def _seed_corner_backend(
     """
 
     backend = emcee.backends.HDFBackend(str(chain_path))
-    backend.reset(n_walkers, parameter_center.shape[0])
-    blobs = np.zeros(n_walkers, dtype=LOG_PROB_BLOB_DTYPE)
+    backend.reset(walker_count, parameter_center.shape[0])
+    blobs = np.zeros(walker_count, dtype=LEGACY_EMCEE_BLOB_DTYPE)
     blobs["parallel_strategy"] = b"off"
-    backend.grow(n_steps, blobs)
+    backend.grow(sample_count, blobs)
     random_state = np.random.RandomState(123).get_state()
 
-    for step_index in range(n_steps):
-        coords = np.tile(parameter_center, (n_walkers, 1))
+    for step_index in range(sample_count):
+        coords = np.tile(parameter_center, (walker_count, 1))
         coords += 1.0e-3 * step_index
-        coords += np.linspace(0.0, 2.0e-4, n_walkers, dtype=float)[:, None]
-        log_prob = np.full(n_walkers, -5.0 + 0.1 * step_index, dtype=float)
+        coords += np.linspace(0.0, 2.0e-4, walker_count, dtype=float)[:, None]
+        log_prob = np.full(walker_count, -5.0 + 0.1 * step_index, dtype=float)
         state = emcee.State(coords, log_prob=log_prob, blobs=blobs.copy(), random_state=random_state)
-        backend.save_step(state, np.ones(n_walkers, dtype=bool))
+        backend.save_step(state, np.ones(walker_count, dtype=bool))
 
 
 def _build_corner_run(
     tmp_path: Path,
     profile_name: str,
-    mass_radius_kpc: int = 10,
     warmup: int = 2,
-    n_steps: int = 5,
-    gamma_mode: str = "dependent",
+    sample_count: int = 5,
 ) -> Path:
     """Create a minimal completed run directory for the corner-plot tests."""
 
@@ -268,24 +184,22 @@ def _build_corner_run(
         run_dir / "config_snapshot.yaml",
         profile_name=profile_name,
         output_root=tmp_path,
-        mass_radius_kpc=mass_radius_kpc,
         warmup=warmup,
-        gamma_mode=gamma_mode,
     )
     _seed_corner_backend(
         run_dir / "chain.h5",
-        parameter_center=_parameter_center_for_gamma_mode(mass_radius_kpc, gamma_mode),
-        n_steps=n_steps,
+        parameter_center=_parameter_center(),
+        sample_count=sample_count,
     )
     return run_dir
 
 
-def test_run_posterior_corner_generates_expected_artifacts_for_m10(tmp_path: Path) -> None:
-    """A completed `m10` run should produce figure and JSON artifacts in-place."""
+def test_run_posterior_corner_generates_expected_artifacts_for_cmass(tmp_path: Path) -> None:
+    """A completed default CMASS run should produce figure and JSON artifacts in-place."""
 
     from cmass_lens_inference.posterior_corner import run_posterior_corner
 
-    run_dir = _build_corner_run(tmp_path, profile_name="sersic", mass_radius_kpc=10)
+    run_dir = _build_corner_run(tmp_path, profile_name="sersic")
     result = run_posterior_corner(run_dir=str(run_dir), burn_in="auto")
 
     assert result.profile_name == "sersic"
@@ -297,22 +211,22 @@ def test_run_posterior_corner_generates_expected_artifacts_for_m10(tmp_path: Pat
     assert result.result_path.exists()
     assert result.burn_in_applied == 2
     assert result.n_posterior_samples == 3 * 24
-    assert result.metadata["parameter_order"][:4] == ["mu10_0", "beta10", "xi10", "sigma10"]
-    assert result.metadata["mass_definition"]["label"] == "m10"
+    assert result.metadata["parameter_order"][:4] == ["mu5h_0", "beta5h", "xi5h", "sigma5h"]
+    assert result.metadata["mass_definition"]["label"] == "m5_hinvkpc"
 
     payload = json.loads(result.result_path.read_text(encoding="utf-8"))
     assert payload["profile_name"] == "sersic"
     assert payload["status"] == "completed"
     assert payload["burn_in_applied"] == 2
     assert payload["n_posterior_samples"] == 72
-    assert payload["metadata"]["parameter_order"][:4] == ["mu10_0", "beta10", "xi10", "sigma10"]
+    assert payload["metadata"]["parameter_order"][:4] == ["mu5h_0", "beta5h", "xi5h", "sigma5h"]
 
 
-def test_run_posterior_corner_calls_corner_with_public_m10_labels(
+def test_run_posterior_corner_calls_corner_with_public_hunit_labels(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """The corner renderer should expose the selected mass definition in labels."""
+    """The corner renderer should expose h-unit mass labels."""
 
     from matplotlib.figure import Figure
 
@@ -329,15 +243,15 @@ def test_run_posterior_corner_calls_corner_with_public_m10_labels(
     monkeypatch.setattr(Figure, "savefig", lambda self, path, *args, **kwargs: None)
     monkeypatch.setattr(plt, "close", lambda figure: None)
 
-    run_dir = _build_corner_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
+    run_dir = _build_corner_run(tmp_path, profile_name="devauc")
     runtime_config = load_runtime_config(run_dir / "config_snapshot.yaml")
     run_posterior_corner(run_dir=str(run_dir), burn_in="auto")
 
     expected_labels = [
-        r"$\mu_{10,0}$",
-        r"$\beta_{10}$",
-        r"$\xi_{10}$",
-        r"$\sigma_{10}$",
+        r"$\mu_{5,0}$",
+        r"$\beta_{5}$",
+        r"$\xi_{5}$",
+        r"$\sigma_{5}$",
     ]
     assert captured["samples_shape"] == (72, runtime_config.parameter_schema.n_dim)
     assert captured["kwargs"]["labels"][:4] == expected_labels
@@ -349,26 +263,21 @@ def test_run_posterior_corner_calls_corner_with_public_m10_labels(
     assert captured["kwargs"]["levels"] == [0.68, 0.95]
 
 
-def test_run_posterior_corner_uses_schema_driven_parameter_order_for_sigma_star_mode(
+def test_run_posterior_corner_uses_schema_driven_parameter_order_for_cmass(
     tmp_path: Path,
 ) -> None:
-    """Corner metadata should follow the active 11D sigma-star gamma schema."""
+    """Corner metadata should follow the fixed CMASS schema."""
 
     from cmass_lens_inference.posterior_corner import run_posterior_corner
 
-    run_dir = _build_corner_run(
-        tmp_path,
-        profile_name="sersic",
-        mass_radius_kpc=10,
-        gamma_mode="sigma_star_dependent",
-    )
+    run_dir = _build_corner_run(tmp_path, profile_name="sersic")
     result = run_posterior_corner(run_dir=str(run_dir), burn_in="auto")
 
     assert result.metadata["parameter_order"] == [
-        "mu10_0",
-        "beta10",
-        "xi10",
-        "sigma10",
+        "mu5h_0",
+        "beta5h",
+        "xi5h",
+        "sigma5h",
         "mu_gamma_0",
         "beta_sigma_star_gamma",
         "sigma_gamma",
@@ -383,8 +292,8 @@ def test_run_posterior_corner_uses_schema_driven_parameter_order_for_sigma_star_
 def test_cli_posterior_corner_latest_command_generates_both_profiles(tmp_path: Path) -> None:
     """The CLI should regenerate both profile plots and emit machine-readable JSON."""
 
-    devauc_run_dir = _build_corner_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
-    sersic_run_dir = _build_corner_run(tmp_path, profile_name="sersic", mass_radius_kpc=10)
+    devauc_run_dir = _build_corner_run(tmp_path, profile_name="devauc")
+    sersic_run_dir = _build_corner_run(tmp_path, profile_name="sersic")
     project_source_root = Path(__file__).resolve().parents[1] / "src"
 
     completed = subprocess.run(
@@ -414,5 +323,5 @@ def test_cli_posterior_corner_latest_command_generates_both_profiles(tmp_path: P
     assert payload["sersic_result"]["burn_in_applied"] == 2
     assert payload["devauc_result"]["n_posterior_samples"] == 72
     assert payload["sersic_result"]["n_posterior_samples"] == 72
-    assert payload["devauc_result"]["metadata"]["parameter_order"][:4] == ["mu10_0", "beta10", "xi10", "sigma10"]
-    assert payload["sersic_result"]["metadata"]["parameter_order"][:4] == ["mu10_0", "beta10", "xi10", "sigma10"]
+    assert payload["devauc_result"]["metadata"]["parameter_order"][:4] == ["mu5h_0", "beta5h", "xi5h", "sigma5h"]
+    assert payload["sersic_result"]["metadata"]["parameter_order"][:4] == ["mu5h_0", "beta5h", "xi5h", "sigma5h"]

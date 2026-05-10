@@ -1,9 +1,10 @@
 """
-Public run/resume entrypoints.
+Public run/resume entrypoints for production inference.
 
-This module is the orchestration layer: it wires together configuration,
-profile selection, I/O normalization, cosmology setup, sampling, checkpointing,
-and output serialization.
+This module is the orchestration layer.  It wires together configuration,
+canonical-data runtime contexts, the Numba posterior backend, emcee sampling,
+checkpointing, and output metadata.  Scientific formulas stay in model-specific
+Numba kernels; sampler mechanics stay in `emcee_sampler.py`.
 """
 
 from __future__ import annotations
@@ -12,90 +13,95 @@ from dataclasses import replace
 import os
 from pathlib import Path
 
-from .compiled_context import build_compiled_context
+from .canonical_dataset import CAPABILITY_VELOCITY_DISPERSION_FP_WITHIN_RE_V1
 from .config import load_runtime_config
-from .io import WITHIN_RE_SIGMA_DEFINITION
+from .emcee_sampler import (
+    create_chain_backend,
+    load_backend_state,
+    run_emcee_sampler,
+)
 from .mass_definition import mass_definition_metadata
+from .numba_backend.likelihood_engine import build_compiled_model as build_numba_compiled_model
 from .outputs import (
     append_run_log,
     create_run_layout,
-    load_checkpoint,
+    load_emcee_checkpoint,
     refresh_latest_pointer,
-    save_checkpoint,
+    save_emcee_checkpoint,
     write_config_snapshot,
     write_metadata,
     write_run_result,
 )
-from .parallel import resolve_parallelism
-from .sampler import create_chain_backend, load_backend_state, run_ensemble_sampler
-from .types import CompiledModel, RunResult, RuntimeContext
+from .types import RunLayout, RunResult, RuntimeContext
 
 
 def _build_runtime_context(runtime_config) -> RuntimeContext:
-    """Assemble the shared runtime objects needed by the sampler."""
+    """
+    Assemble the shared runtime objects needed by emcee log-prob evaluation.
 
-    compiled_context, profile_spec, cross_section_grid, cosmology, random_basis, observations = build_compiled_context(
-        runtime_config
-    )
-    resolved_parallelism = resolve_parallelism(
-        runtime_config.runtime,
-        runtime_config.sampling.n_walkers,
-    )
-    compiled_model = CompiledModel(
-        config=runtime_config,
-        profile=profile_spec,
-        cross_section_grid=cross_section_grid,
-        cosmology=cosmology,
-        parallelism=resolved_parallelism,
-        context=compiled_context,
-    )
+    The compiled model is a framework container around a model-specific NumPy
+    source context.  It is intentionally opaque to the runner: only the Numba
+    likelihood engine knows which kernel consumes that context.
+    """
+
+    compiled_model = build_numba_compiled_model(runtime_config)
     return RuntimeContext(
         config=runtime_config,
-        profile=profile_spec,
-        observations=observations,
+        profile=compiled_model.profile,
+        observations=[],
         prepared_observations=[],
-        cross_section_grid=cross_section_grid,
-        random_basis=random_basis,
-        cosmology=cosmology,
-        parallelism=resolved_parallelism,
+        cross_section_grid=compiled_model.cross_section_grid,
+        random_basis=None,
+        cosmology=compiled_model.cosmology,
+        parallelism=compiled_model.parallelism,
         compiled_model=compiled_model,
     )
 
 
-def _run_with_layout(
-    runtime_context: RuntimeContext,
-    run_layout,
-    raw_config_text: str,
-    config_path: Path,
-    chain_backend,
-    start_state=None,
-    start_step: int = 0,
-) -> RunResult:
-    """Execute a run once the output layout has already been created."""
+def _config_summary(runtime_context: RuntimeContext) -> dict:
+    """
+    Build the output metadata summary for one production run.
 
-    if runtime_context.config.runtime.disable_hdf5_file_locking:
-        os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+    This payload is intentionally redundant with config files because long
+    inference runs need self-describing artifacts.  The backend/sampler fields
+    are explicit so later audits can prove a run used `numba/emcee`.
+    """
 
-    config_summary = {
+    if runtime_context.compiled_model is None:
+        data_metadata = {}
+    else:
+        data_metadata = dict(runtime_context.compiled_model.data_metadata)
+    canonical_capabilities = list(data_metadata.get("canonical_capabilities", ()))
+    has_fp_within_re = CAPABILITY_VELOCITY_DISPERSION_FP_WITHIN_RE_V1 in set(canonical_capabilities)
+
+    return {
         "profile": runtime_context.config.profile.name,
-        "gamma_mode": runtime_context.config.gamma_model.mode,
+        "model": {
+            "name": runtime_context.config.model.name,
+            "metadata": dict(runtime_context.config.parameter_schema.model_metadata),
+        },
         "unit_convention": runtime_context.config.unit_convention,
-        "h_ref": float(runtime_context.config.h_ref),
+        "h_ref": runtime_context.config.h_ref,
         "mass_definition": mass_definition_metadata(runtime_context.config.mass_definition),
         "sampling": {
             "n_walkers": runtime_context.config.sampling.n_walkers,
             "n_steps": runtime_context.config.sampling.n_steps,
-            "warmup": runtime_context.config.sampling.warmup,
+            "burn_in": runtime_context.config.sampling.burn_in,
             "parameter_order": list(runtime_context.config.parameter_schema.public_parameter_names),
-            "initial_center": runtime_context.config.sampling.initial_center.to_public_dict(
-                runtime_context.config.mass_definition
-            ),
+            "initial_center": runtime_context.config.sampling.initial_center.to_public_dict(),
         },
         "box_prior": runtime_context.config.parameter_schema.serialize_public_box_prior(),
         "integration": {
             "gamma_points": runtime_context.config.integration.gamma_points,
             "mstar_points": runtime_context.config.integration.mstar_points,
             "normalization_samples": runtime_context.config.integration.normalization_samples,
+        },
+        "data": {
+            "inference_dataset_path": str(runtime_context.config.data.inference_dataset_path),
+            "canonical_capabilities": canonical_capabilities,
+            "canonical_schema_version": data_metadata.get("canonical_schema_version"),
+            "canonical_profile_name": data_metadata.get("canonical_profile_name"),
+            "canonical_mass_definition_label": data_metadata.get("canonical_mass_definition_label"),
         },
         "fp_prior": {
             "enabled": runtime_context.config.fp_prior.enabled,
@@ -108,55 +114,92 @@ def _run_with_layout(
             "beta_v_prior": runtime_context.config.fp_prior.beta_v_prior,
             "beta_v_error": runtime_context.config.fp_prior.beta_v_error,
         },
-        "sigma_table_path": (
-            str(runtime_context.config.data.sigma_table_path)
-            if runtime_context.config.data.sigma_table_path is not None
-            else None
-        ),
-        "sigma_table_mass_definition": (
-            runtime_context.config.mass_definition.label
-            if runtime_context.config.data.sigma_table_path is not None
-            else None
-        ),
         "fp_sigma_definition": (
-            WITHIN_RE_SIGMA_DEFINITION
-            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
+            "within_re"
+            if runtime_context.config.fp_prior.enabled and has_fp_within_re
             else None
         ),
         "fp_sigma_table_leaf_path": (
-            f"/{WITHIN_RE_SIGMA_DEFINITION}/{runtime_context.config.mass_definition.label}"
-            if runtime_context.config.fp_prior.enabled and runtime_context.config.data.sigma_table_path is not None
+            "/velocity_dispersion_grids/fp_within_re"
+            if runtime_context.config.fp_prior.enabled and has_fp_within_re
             else None
         ),
         "parallelism": runtime_context.parallelism.to_dict(),
+        "backend": "numba_emcee",
+        "kernel_backend": "numba",
+        "sampler": "emcee",
         "chain_storage": "emcee_hdf_backend",
     }
+
+
+def _run_with_layout(
+    runtime_context: RuntimeContext,
+    run_layout: RunLayout,
+    raw_config_text: str,
+    config_path: Path,
+    *,
+    start_state=None,
+    start_step: int = 0,
+    reset_chain_backend: bool = True,
+) -> RunResult:
+    """Execute one run after the output layout has been created."""
+
+    if runtime_context.config.runtime.disable_hdf5_file_locking:
+        os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
+    if runtime_context.config.data.inference_dataset_path is None:
+        raise ValueError("Production inference requires data.inference_dataset_path.")
+
+    config_summary = _config_summary(runtime_context)
     write_config_snapshot(run_layout.run_dir, raw_config_text)
     write_metadata(
         run_layout.run_dir,
         profile_name=runtime_context.config.profile.name,
         config_path=config_path,
-        observation_path=runtime_context.config.data.observation_path,
+        inference_dataset_path=runtime_context.config.data.inference_dataset_path,
         output_root_dir=runtime_context.config.output.root_dir,
         random_seed=runtime_context.config.sampling.random_seed,
         config_summary=config_summary,
     )
     append_run_log(
         run_layout.logs_dir,
-        f"start profile {runtime_context.config.profile.name} | strategy {runtime_context.parallelism.strategy} | "
-        f"workers {runtime_context.parallelism.worker_processes} | kernel_threads {runtime_context.parallelism.kernel_threads_per_process}",
+        f"start profile {runtime_context.config.profile.name} | backend numba_emcee | "
+        f"model {runtime_context.config.model.name} | strategy {runtime_context.parallelism.strategy} | "
+        f"walkers {runtime_context.config.sampling.n_walkers}",
     )
 
-    final_coords, final_log_prob, acceptance_fraction_mean = run_ensemble_sampler(
+    chain_path = run_layout.run_dir / "chain.h5"
+    chain_backend = create_chain_backend(
+        chain_path,
+        runtime_context.config.sampling.n_walkers,
+        runtime_context.config.parameter_schema.n_dim,
+        reset=reset_chain_backend,
+    )
+    sampler_result = run_emcee_sampler(
         runtime_context,
-        chain_backend=chain_backend,
+        chain_backend,
         start_state=start_state,
         start_step=start_step,
         logs_dir=run_layout.logs_dir,
-        checkpoint_callback=lambda coords, log_prob, step: save_checkpoint(run_layout.checkpoints_dir, coords, log_prob, step),
+        checkpoint_callback=lambda coords, log_prob, step: save_emcee_checkpoint(
+            run_layout.checkpoints_dir,
+            coords,
+            log_prob,
+            step,
+        ),
     )
     completed_steps = start_step + runtime_context.config.sampling.n_steps
-    save_checkpoint(run_layout.checkpoints_dir, final_coords, final_log_prob, completed_steps)
+    save_emcee_checkpoint(
+        run_layout.checkpoints_dir,
+        sampler_result.final_coords,
+        sampler_result.final_log_prob,
+        completed_steps,
+    )
+    append_run_log(
+        run_layout.logs_dir,
+        f"emcee complete | completed_steps {completed_steps} | "
+        f"acceptance_fraction_mean {sampler_result.acceptance_fraction_mean:.6f}",
+    )
     if runtime_context.config.output.overwrite_latest:
         refresh_latest_pointer(run_layout.profile_dir, run_layout.run_id)
 
@@ -167,19 +210,23 @@ def _run_with_layout(
         status="completed",
         start_step=start_step,
         completed_steps=completed_steps,
-        acceptance_fraction_mean=acceptance_fraction_mean,
+        acceptance_fraction_mean=sampler_result.acceptance_fraction_mean,
         config_path=config_path,
-        input_observation_path=runtime_context.config.data.observation_path,
+        input_inference_dataset_path=runtime_context.config.data.inference_dataset_path,
+        input_observation_path=None,
         output_root_dir=runtime_context.config.output.root_dir,
         checkpoint_step=completed_steps,
-        metadata=config_summary,
+        metadata={
+            **config_summary,
+            "chain_path": str(chain_path),
+        },
     )
     write_run_result(run_layout.run_dir, run_result)
     return run_result
 
 
 def run_inference(config_path: str, label: str | None = None) -> RunResult:
-    """Public API for launching a new run from a YAML configuration file."""
+    """Launch a new production emcee run from a YAML configuration file."""
 
     resolved_config_path = Path(config_path).expanduser().resolve()
     runtime_config = load_runtime_config(resolved_config_path)
@@ -199,43 +246,36 @@ def run_inference(config_path: str, label: str | None = None) -> RunResult:
         run_label=runtime_config.output.run_label,
     )
     raw_config_text = resolved_config_path.read_text(encoding="utf-8")
-    chain_backend = create_chain_backend(
-        run_layout.run_dir / "chain.h5",
-        runtime_config.sampling.n_walkers,
-        runtime_config.parameter_schema.n_dim,
-        reset=True,
-    )
     return _run_with_layout(
         runtime_context,
         run_layout,
         raw_config_text,
         resolved_config_path,
-        chain_backend=chain_backend,
+        reset_chain_backend=True,
     )
 
 
 def resume_inference(run_dir: str) -> RunResult:
     """
-    Public API for resuming an existing run from its on-disk artifacts.
+    Resume an existing emcee run from its on-disk artifacts.
 
-    The restart contract is:
-    - read the configuration snapshot stored in the run directory
-    - restore the latest checkpoint if it exists
-    - continue sampling in the same run directory
+    The preferred restart point is `chain.h5` because it stores coordinates,
+    log-probabilities, blobs, and random state.  Lightweight checkpoint arrays
+    are a fallback for interrupted runs where the backend state cannot be read.
     """
 
     resolved_run_dir = Path(run_dir).expanduser().resolve()
     config_snapshot_path = resolved_run_dir / "config_snapshot.yaml"
     runtime_config = load_runtime_config(config_snapshot_path)
     runtime_context = _build_runtime_context(runtime_config)
+
     run_layout = create_run_layout(
         root_dir=runtime_config.output.root_dir,
         profile_name=runtime_config.profile.name,
         run_label=runtime_config.output.run_label,
         timestamp_text="_".join(resolved_run_dir.name.split("_")[:2]),
     )
-    # Reuse the existing run directory rather than creating a fresh one.
-    run_layout = run_layout.__class__(
+    run_layout = RunLayout(
         root_dir=run_layout.root_dir,
         profile_dir=run_layout.profile_dir,
         run_id=resolved_run_dir.name,
@@ -243,61 +283,32 @@ def resume_inference(run_dir: str) -> RunResult:
         checkpoints_dir=resolved_run_dir / "checkpoints",
         logs_dir=resolved_run_dir / "logs",
     )
-    chain_path = resolved_run_dir / "chain.h5"
-    backend_state, backend_step = load_backend_state(chain_path)
-    checkpoint_state = None
-    checkpoint_step = 0
-    try:
-        checkpoint_coords, checkpoint_log_prob, checkpoint_step = load_checkpoint(resolved_run_dir / "checkpoints")
-        checkpoint_state = (checkpoint_coords, checkpoint_log_prob)
-    except FileNotFoundError:
-        checkpoint_state = None
 
-    if backend_state is not None:
-        if getattr(backend_state, "blobs", None) is None:
-            # Older runs or synthetic tests can have a valid backend chain but
-            # no stored blobs. Since the new production path always emits
-            # timing blobs, `emcee` requires us to restart from coordinates
-            # only in this case so it can recompute the missing blob values on
-            # the first resumed step.
-            start_state = backend_state.coords
-            append_run_log(
-                run_layout.logs_dir,
-                f"resume backend missing blobs | backend_step {backend_step} | source backend_coords_only",
-            )
-        else:
-            start_state = backend_state
-        start_step = backend_step
-        if checkpoint_state is not None and checkpoint_step != backend_step:
-            append_run_log(
-                run_layout.logs_dir,
-                f"resume checkpoint/backend mismatch | checkpoint_step {checkpoint_step} | backend_step {backend_step} | source backend",
-            )
-    elif checkpoint_state is not None:
-        start_state = checkpoint_state[0]
-        start_step = checkpoint_step
+    chain_path = resolved_run_dir / "chain.h5"
+    start_state, backend_step = load_backend_state(chain_path)
+    reset_chain_backend = False
+    if start_state is not None:
+        checkpoint_step = backend_step
         append_run_log(
             run_layout.logs_dir,
-            f"resume backend unavailable | checkpoint_step {checkpoint_step} | source checkpoint",
+            f"resume emcee hdf backend | checkpoint_step {checkpoint_step}",
         )
     else:
-        raise FileNotFoundError(
-            f"Run directory {resolved_run_dir} does not contain a usable chain backend or checkpoint."
+        coords, _log_prob, checkpoint_step = load_emcee_checkpoint(resolved_run_dir / "checkpoints")
+        start_state = coords
+        reset_chain_backend = True
+        append_run_log(
+            run_layout.logs_dir,
+            f"resume lightweight emcee checkpoint | checkpoint_step {checkpoint_step}",
         )
 
-    chain_backend = create_chain_backend(
-        chain_path,
-        runtime_config.sampling.n_walkers,
-        runtime_config.parameter_schema.n_dim,
-        reset=False,
-    )
     raw_config_text = config_snapshot_path.read_text(encoding="utf-8")
     return _run_with_layout(
         runtime_context,
         run_layout,
         raw_config_text,
         config_snapshot_path,
-        chain_backend=chain_backend,
         start_state=start_state,
-        start_step=start_step,
+        start_step=checkpoint_step,
+        reset_chain_backend=reset_chain_backend,
     )

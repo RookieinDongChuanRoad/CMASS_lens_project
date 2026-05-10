@@ -1,0 +1,700 @@
+{
+  "comparisons": {
+    "fp": {
+      "status": "not_comparable"
+    },
+    "normalization": {
+      "status": "not_comparable"
+    },
+    "per-lens": {
+      "status": "not_comparable"
+    },
+    "posterior": {
+      "status": "not_comparable"
+    }
+  },
+  "created_at_utc": "2026-05-10T05:35:18.774954+00:00",
+  "model": "sonnenfeld2024_slacs",
+  "phase": "fp,normalization,per-lens,posterior",
+  "reasons": [
+    "External exact normalization is not comparable from the supplied reference tree because fit_full.py also requires rein_grid.hdf5, sigma2_grid.hdf5, and mz_inference.hdf5.",
+    "Reference FP diagnostics depend on the exact parent-population random stream and sigma2_grid.hdf5; the stored full_inference.hdf5 has fpfit blobs but not enough intermediate state for strict replay.",
+    "A strict per-lens likelihood replay needs the reference stochastic importance samples ms_impsamp/gamma_impsamp and the per-lens cs_lens_splines from fit_full.py.",
+    "full_inference.hdf5 stores chain logp and FP blobs, but not selection normalization or per-lens terms; external full posterior can therefore be compared only as a non-exact total-logp diagnostic until reference replay artifacts are available."
+  ],
+  "schema_version": "sonnenfeld_reference_comparison_multi_stage_v1",
+  "stages": {
+    "fp": {
+      "comparisons": {
+        "local_fp_diagnostics_are_finite": {
+          "note": "The local FP-prior implementation returns all four requested diagnostics plus prior term.",
+          "status": "passed"
+        }
+      },
+      "created_at_utc": "2026-05-10T05:35:18.660594+00:00",
+      "local": {
+        "fp_prior_log_term": -4.076783136083912,
+        "fp_summary_count": 639.0,
+        "fpfit_beta": 0.3293272060875592,
+        "fpfit_mu": 2.3078135617031843,
+        "fpfit_scatter": 0.055655674942292434,
+        "fpfit_xi": -0.2103267434044116
+      },
+      "phase": "fp",
+      "reasons": [
+        "Reference FP diagnostics depend on the exact parent-population random stream and sigma2_grid.hdf5; the stored full_inference.hdf5 has fpfit blobs but not enough intermediate state for strict replay."
+      ],
+      "schema_version": "sonnenfeld_reference_comparison_fp_prior_v1",
+      "status": "not_comparable",
+      "status_options": [
+        "passed",
+        "failed",
+        "skipped_data_gated",
+        "not_comparable"
+      ],
+      "theta": {
+        "mapped": {
+          "local_order": [
+            "mu5_0",
+            "beta5",
+            "xi5",
+            "sigma5",
+            "mu_gamma_0",
+            "beta_gamma",
+            "xi_gamma",
+            "sigma_gamma",
+            "mu_zs",
+            "sigma_zs",
+            "theta0",
+            "loga"
+          ],
+          "local_theta": [
+            11.339058248764838,
+            0.5694807713851215,
+            -0.1256081989063541,
+            0.060498336923027,
+            1.9853578626675963,
+            0.05846704771487912,
+            -0.5856938927325899,
+            0.16049952553934554,
+            0.49619474946266623,
+            0.20095891001637375,
+            0.92822761997441,
+            1.0048012668836155
+          ],
+          "local_values": {
+            "beta5": 0.5694807713851215,
+            "beta_gamma": 0.05846704771487912,
+            "loga": 1.0048012668836155,
+            "mu5_0": 11.339058248764838,
+            "mu_gamma_0": 1.9853578626675963,
+            "mu_zs": 0.49619474946266623,
+            "sigma5": 0.060498336923027,
+            "sigma_gamma": 0.16049952553934554,
+            "sigma_zs": 0.20095891001637375,
+            "theta0": 0.92822761997441,
+            "xi5": -0.1256081989063541,
+            "xi_gamma": -0.5856938927325899
+          },
+          "reference_order": [
+            "mu_m5",
+            "sigma_m5",
+            "beta_m5",
+            "xi_m5",
+            "mu_gamma",
+            "sigma_gamma",
+            "beta_gamma",
+            "xi_gamma",
+            "mu_zs",
+            "sigma_zs",
+            "t_find",
+            "la_find"
+          ],
+          "reference_values": {
+            "beta_gamma": 0.05846704771487912,
+            "beta_m5": 0.5694807713851215,
+            "la_find": 1.0048012668836155,
+            "mu_gamma": 1.9853578626675963,
+            "mu_m5": 11.339058248764838,
+            "mu_zs": 0.49619474946266623,
+            "sigma_gamma": 0.16049952553934554,
+            "sigma_m5": 0.060498336923027,
+            "sigma_zs": 0.20095891001637375,
+            "t_find": 0.92822761997441,
+            "xi_gamma": -0.5856938927325899,
+            "xi_m5": -0.1256081989063541
+          }
+        },
+        "reference_logp": 1005.3243542771501,
+        "reference_values": {
+          "beta_gamma": 0.05846704771487912,
+          "beta_m5": 0.5694807713851215,
+          "la_find": 1.0048012668836155,
+          "mu_gamma": 1.9853578626675963,
+          "mu_m5": 11.339058248764838,
+          "mu_zs": 0.49619474946266623,
+          "sigma_gamma": 0.16049952553934554,
+          "sigma_m5": 0.060498336923027,
+          "sigma_zs": 0.20095891001637375,
+          "t_find": 0.92822761997441,
+          "xi_gamma": -0.5856938927325899,
+          "xi_m5": -0.1256081989063541
+        },
+        "selector": "max_logp",
+        "step_index": 301,
+        "walker_index": 42
+      }
+    },
+    "normalization": {
+      "comparisons": {
+        "local_normalization_internal_consistency": {
+          "abs_diff": 0.0,
+          "note": "normalization_mc_numba and population_summary_mc_numba should agree on z_norm.",
+          "status": "passed"
+        }
+      },
+      "created_at_utc": "2026-05-10T05:35:18.616065+00:00",
+      "local": {
+        "fp_prior": {
+          "beta": 0.3293272060875592,
+          "log_term": -4.076783136083912,
+          "mu": 2.3078135617031843,
+          "scatter": 0.055655674942292434,
+          "xi": -0.2103267434044116
+        },
+        "fp_summary_count": 639.0,
+        "fpfit": {
+          "beta": 0.3293272060875592,
+          "mu": 2.3078135617031843,
+          "scatter": 0.055655674942292434,
+          "xi": -0.2103267434044116
+        },
+        "normalization_internal_abs_diff": 0.0,
+        "normalization_only": 0.03946471741805178,
+        "normalization_with_fp_pass": 0.03946471741805178,
+        "parent_sample_count": 1000
+      },
+      "phase": "normalization",
+      "reasons": [
+        "External exact normalization is not comparable from the supplied reference tree because fit_full.py also requires rein_grid.hdf5, sigma2_grid.hdf5, and mz_inference.hdf5."
+      ],
+      "schema_version": "sonnenfeld_reference_comparison_normalization_v1",
+      "status": "not_comparable",
+      "status_options": [
+        "passed",
+        "failed",
+        "skipped_data_gated",
+        "not_comparable"
+      ],
+      "theta": {
+        "mapped": {
+          "local_order": [
+            "mu5_0",
+            "beta5",
+            "xi5",
+            "sigma5",
+            "mu_gamma_0",
+            "beta_gamma",
+            "xi_gamma",
+            "sigma_gamma",
+            "mu_zs",
+            "sigma_zs",
+            "theta0",
+            "loga"
+          ],
+          "local_theta": [
+            11.339058248764838,
+            0.5694807713851215,
+            -0.1256081989063541,
+            0.060498336923027,
+            1.9853578626675963,
+            0.05846704771487912,
+            -0.5856938927325899,
+            0.16049952553934554,
+            0.49619474946266623,
+            0.20095891001637375,
+            0.92822761997441,
+            1.0048012668836155
+          ],
+          "local_values": {
+            "beta5": 0.5694807713851215,
+            "beta_gamma": 0.05846704771487912,
+            "loga": 1.0048012668836155,
+            "mu5_0": 11.339058248764838,
+            "mu_gamma_0": 1.9853578626675963,
+            "mu_zs": 0.49619474946266623,
+            "sigma5": 0.060498336923027,
+            "sigma_gamma": 0.16049952553934554,
+            "sigma_zs": 0.20095891001637375,
+            "theta0": 0.92822761997441,
+            "xi5": -0.1256081989063541,
+            "xi_gamma": -0.5856938927325899
+          },
+          "reference_order": [
+            "mu_m5",
+            "sigma_m5",
+            "beta_m5",
+            "xi_m5",
+            "mu_gamma",
+            "sigma_gamma",
+            "beta_gamma",
+            "xi_gamma",
+            "mu_zs",
+            "sigma_zs",
+            "t_find",
+            "la_find"
+          ],
+          "reference_values": {
+            "beta_gamma": 0.05846704771487912,
+            "beta_m5": 0.5694807713851215,
+            "la_find": 1.0048012668836155,
+            "mu_gamma": 1.9853578626675963,
+            "mu_m5": 11.339058248764838,
+            "mu_zs": 0.49619474946266623,
+            "sigma_gamma": 0.16049952553934554,
+            "sigma_m5": 0.060498336923027,
+            "sigma_zs": 0.20095891001637375,
+            "t_find": 0.92822761997441,
+            "xi_gamma": -0.5856938927325899,
+            "xi_m5": -0.1256081989063541
+          }
+        },
+        "reference_logp": 1005.3243542771501,
+        "reference_values": {
+          "beta_gamma": 0.05846704771487912,
+          "beta_m5": 0.5694807713851215,
+          "la_find": 1.0048012668836155,
+          "mu_gamma": 1.9853578626675963,
+          "mu_m5": 11.339058248764838,
+          "mu_zs": 0.49619474946266623,
+          "sigma_gamma": 0.16049952553934554,
+          "sigma_m5": 0.060498336923027,
+          "sigma_zs": 0.20095891001637375,
+          "t_find": 0.92822761997441,
+          "xi_gamma": -0.5856938927325899,
+          "xi_m5": -0.1256081989063541
+        },
+        "selector": "max_logp",
+        "step_index": 301,
+        "walker_index": 42
+      }
+    },
+    "per-lens": {
+      "comparisons": {
+        "per_lens_cross_section_contract": {
+          "global_cs_at_observed_theta_gamma_min": 0.01948057318590367,
+          "lens_id": "SDSSJ0029-0055",
+          "local_uses_global_theta_gamma_grid": true,
+          "note": "Reference per-lens likelihood reads mufibre3_cs_grid(gamma) from slacs_lensing_grids.hdf5; the current local likelihood uses the global theta_E x gamma cross-section grid.",
+          "observed_theta_e": 0.96,
+          "reference_gamma_shape": [
+            81
+          ],
+          "reference_per_lens_cs_shape": [
+            81
+          ],
+          "status": "not_comparable"
+        }
+      },
+      "created_at_utc": "2026-05-10T05:35:18.704012+00:00",
+      "lens_id": "SDSSJ0029-0055",
+      "lens_index": 0,
+      "local": {
+        "num_sigma": 1,
+        "sigma_err": [
+          18.0,
+          1.0
+        ],
+        "sigma_obs": [
+          229.0,
+          0.0
+        ],
+        "theta_e_obs": 0.96,
+        "z_d": 0.227,
+        "z_s": 0.931
+      },
+      "phase": "per-lens",
+      "reasons": [
+        "A strict per-lens likelihood replay needs the reference stochastic importance samples ms_impsamp/gamma_impsamp and the per-lens cs_lens_splines from fit_full.py."
+      ],
+      "schema_version": "sonnenfeld_reference_comparison_per_lens_v1",
+      "status": "not_comparable",
+      "status_options": [
+        "passed",
+        "failed",
+        "skipped_data_gated",
+        "not_comparable"
+      ]
+    },
+    "posterior": {
+      "comparisons": {
+        "local_decomposition_internal_consistency": {
+          "max_abs_diff": 0.0,
+          "note": "Local decomposition should reconstruct the direct production log_prob value.",
+          "status": "passed"
+        }
+      },
+      "created_at_utc": "2026-05-10T05:35:18.774937+00:00",
+      "phase": "posterior",
+      "reasons": [
+        "full_inference.hdf5 stores chain logp and FP blobs, but not selection normalization or per-lens terms; external full posterior can therefore be compared only as a non-exact total-logp diagnostic until reference replay artifacts are available."
+      ],
+      "schema_version": "sonnenfeld_reference_comparison_full_posterior_v1",
+      "status": "not_comparable",
+      "status_options": [
+        "passed",
+        "failed",
+        "skipped_data_gated",
+        "not_comparable"
+      ],
+      "theta_results": [
+        {
+          "diff": {
+            "chain_total_abs": 13.175174869332523,
+            "local_parts_vs_direct_abs": 0.0
+          },
+          "local": {
+            "direct_blob_fp_prior_log_term": -4.076783136083912,
+            "direct_blob_normalization": 0.03946471741805178,
+            "direct_total_log_prob": 1018.4995291464826,
+            "fp_prior_log_term": -4.076783136083912,
+            "normalization_term": 190.7085459337565,
+            "selection_normalization": 0.03946471741805178,
+            "sum_lens_log_likelihood": 831.86776634881,
+            "total_log_prob_from_parts": 1018.4995291464826
+          },
+          "reference": {
+            "decomposition_available": false,
+            "stored_chain_logp": 1005.3243542771501
+          },
+          "theta": {
+            "mapped": {
+              "local_order": [
+                "mu5_0",
+                "beta5",
+                "xi5",
+                "sigma5",
+                "mu_gamma_0",
+                "beta_gamma",
+                "xi_gamma",
+                "sigma_gamma",
+                "mu_zs",
+                "sigma_zs",
+                "theta0",
+                "loga"
+              ],
+              "local_theta": [
+                11.339058248764838,
+                0.5694807713851215,
+                -0.1256081989063541,
+                0.060498336923027,
+                1.9853578626675963,
+                0.05846704771487912,
+                -0.5856938927325899,
+                0.16049952553934554,
+                0.49619474946266623,
+                0.20095891001637375,
+                0.92822761997441,
+                1.0048012668836155
+              ],
+              "local_values": {
+                "beta5": 0.5694807713851215,
+                "beta_gamma": 0.05846704771487912,
+                "loga": 1.0048012668836155,
+                "mu5_0": 11.339058248764838,
+                "mu_gamma_0": 1.9853578626675963,
+                "mu_zs": 0.49619474946266623,
+                "sigma5": 0.060498336923027,
+                "sigma_gamma": 0.16049952553934554,
+                "sigma_zs": 0.20095891001637375,
+                "theta0": 0.92822761997441,
+                "xi5": -0.1256081989063541,
+                "xi_gamma": -0.5856938927325899
+              },
+              "reference_order": [
+                "mu_m5",
+                "sigma_m5",
+                "beta_m5",
+                "xi_m5",
+                "mu_gamma",
+                "sigma_gamma",
+                "beta_gamma",
+                "xi_gamma",
+                "mu_zs",
+                "sigma_zs",
+                "t_find",
+                "la_find"
+              ],
+              "reference_values": {
+                "beta_gamma": 0.05846704771487912,
+                "beta_m5": 0.5694807713851215,
+                "la_find": 1.0048012668836155,
+                "mu_gamma": 1.9853578626675963,
+                "mu_m5": 11.339058248764838,
+                "mu_zs": 0.49619474946266623,
+                "sigma_gamma": 0.16049952553934554,
+                "sigma_m5": 0.060498336923027,
+                "sigma_zs": 0.20095891001637375,
+                "t_find": 0.92822761997441,
+                "xi_gamma": -0.5856938927325899,
+                "xi_m5": -0.1256081989063541
+              }
+            },
+            "reference_logp": 1005.3243542771501,
+            "reference_values": {
+              "beta_gamma": 0.05846704771487912,
+              "beta_m5": 0.5694807713851215,
+              "la_find": 1.0048012668836155,
+              "mu_gamma": 1.9853578626675963,
+              "mu_m5": 11.339058248764838,
+              "mu_zs": 0.49619474946266623,
+              "sigma_gamma": 0.16049952553934554,
+              "sigma_m5": 0.060498336923027,
+              "sigma_zs": 0.20095891001637375,
+              "t_find": 0.92822761997441,
+              "xi_gamma": -0.5856938927325899,
+              "xi_m5": -0.1256081989063541
+            },
+            "selector": "max_logp",
+            "step_index": 301,
+            "walker_index": 42
+          },
+          "theta_id": "max_logp"
+        },
+        {
+          "diff": {
+            "chain_total_abs": 10.831126176234193,
+            "local_parts_vs_direct_abs": 0.0
+          },
+          "local": {
+            "direct_blob_fp_prior_log_term": -4.657640538269398,
+            "direct_blob_normalization": 0.04600965255909351,
+            "direct_total_log_prob": 1005.8619361822865,
+            "fp_prior_log_term": -4.657640538269398,
+            "normalization_term": 181.65533990962575,
+            "selection_normalization": 0.04600965255909351,
+            "sum_lens_log_likelihood": 828.8642368109303,
+            "total_log_prob_from_parts": 1005.8619361822865
+          },
+          "reference": {
+            "decomposition_available": false,
+            "stored_chain_logp": 995.0308100060523
+          },
+          "theta": {
+            "mapped": {
+              "local_order": [
+                "mu5_0",
+                "beta5",
+                "xi5",
+                "sigma5",
+                "mu_gamma_0",
+                "beta_gamma",
+                "xi_gamma",
+                "sigma_gamma",
+                "mu_zs",
+                "sigma_zs",
+                "theta0",
+                "loga"
+              ],
+              "local_theta": [
+                11.309768331546138,
+                0.4574494775925602,
+                0.027187552380431468,
+                0.08304342867263109,
+                1.9790074923132097,
+                0.19486244569047428,
+                -1.514418742988426,
+                0.14520645356748935,
+                0.506620987330651,
+                0.21611228344809183,
+                0.831405440857114,
+                1.2813054721259804
+              ],
+              "local_values": {
+                "beta5": 0.4574494775925602,
+                "beta_gamma": 0.19486244569047428,
+                "loga": 1.2813054721259804,
+                "mu5_0": 11.309768331546138,
+                "mu_gamma_0": 1.9790074923132097,
+                "mu_zs": 0.506620987330651,
+                "sigma5": 0.08304342867263109,
+                "sigma_gamma": 0.14520645356748935,
+                "sigma_zs": 0.21611228344809183,
+                "theta0": 0.831405440857114,
+                "xi5": 0.027187552380431468,
+                "xi_gamma": -1.514418742988426
+              },
+              "reference_order": [
+                "mu_m5",
+                "sigma_m5",
+                "beta_m5",
+                "xi_m5",
+                "mu_gamma",
+                "sigma_gamma",
+                "beta_gamma",
+                "xi_gamma",
+                "mu_zs",
+                "sigma_zs",
+                "t_find",
+                "la_find"
+              ],
+              "reference_values": {
+                "beta_gamma": 0.19486244569047428,
+                "beta_m5": 0.4574494775925602,
+                "la_find": 1.2813054721259804,
+                "mu_gamma": 1.9790074923132097,
+                "mu_m5": 11.309768331546138,
+                "mu_zs": 0.506620987330651,
+                "sigma_gamma": 0.14520645356748935,
+                "sigma_m5": 0.08304342867263109,
+                "sigma_zs": 0.21611228344809183,
+                "t_find": 0.831405440857114,
+                "xi_gamma": -1.514418742988426,
+                "xi_m5": 0.027187552380431468
+              }
+            },
+            "reference_logp": 995.0308100060523,
+            "reference_values": {
+              "beta_gamma": 0.19486244569047428,
+              "beta_m5": 0.4574494775925602,
+              "la_find": 1.2813054721259804,
+              "mu_gamma": 1.9790074923132097,
+              "mu_m5": 11.309768331546138,
+              "mu_zs": 0.506620987330651,
+              "sigma_gamma": 0.14520645356748935,
+              "sigma_m5": 0.08304342867263109,
+              "sigma_zs": 0.21611228344809183,
+              "t_find": 0.831405440857114,
+              "xi_gamma": -1.514418742988426,
+              "xi_m5": 0.027187552380431468
+            },
+            "selector": "low_logp",
+            "step_index": 1480,
+            "walker_index": 80
+          },
+          "theta_id": "low_logp"
+        },
+        {
+          "diff": {
+            "chain_total_abs": 7.670522555987873,
+            "local_parts_vs_direct_abs": 0.0
+          },
+          "local": {
+            "direct_blob_fp_prior_log_term": -7.42215518240408,
+            "direct_blob_normalization": 0.009921680990401499,
+            "direct_total_log_prob": 997.376934624437,
+            "fp_prior_log_term": -7.42215518240408,
+            "normalization_term": 272.1689421244528,
+            "selection_normalization": 0.009921680990401499,
+            "sum_lens_log_likelihood": 732.6301476823883,
+            "total_log_prob_from_parts": 997.376934624437
+          },
+          "reference": {
+            "decomposition_available": false,
+            "stored_chain_logp": 989.7064120684491
+          },
+          "theta": {
+            "mapped": {
+              "local_order": [
+                "mu5_0",
+                "beta5",
+                "xi5",
+                "sigma5",
+                "mu_gamma_0",
+                "beta_gamma",
+                "xi_gamma",
+                "sigma_gamma",
+                "mu_zs",
+                "sigma_zs",
+                "theta0",
+                "loga"
+              ],
+              "local_theta": [
+                11.34378458760524,
+                0.62493254714021,
+                -0.128064664408435,
+                0.054931258083801546,
+                1.9567916671994101,
+                0.0374175368255303,
+                -0.34823193420843057,
+                0.18455850164976728,
+                0.5415375741782303,
+                0.21015979739841428,
+                1.8026952265865885,
+                0.4886352332742952
+              ],
+              "local_values": {
+                "beta5": 0.62493254714021,
+                "beta_gamma": 0.0374175368255303,
+                "loga": 0.4886352332742952,
+                "mu5_0": 11.34378458760524,
+                "mu_gamma_0": 1.9567916671994101,
+                "mu_zs": 0.5415375741782303,
+                "sigma5": 0.054931258083801546,
+                "sigma_gamma": 0.18455850164976728,
+                "sigma_zs": 0.21015979739841428,
+                "theta0": 1.8026952265865885,
+                "xi5": -0.128064664408435,
+                "xi_gamma": -0.34823193420843057
+              },
+              "reference_order": [
+                "mu_m5",
+                "sigma_m5",
+                "beta_m5",
+                "xi_m5",
+                "mu_gamma",
+                "sigma_gamma",
+                "beta_gamma",
+                "xi_gamma",
+                "mu_zs",
+                "sigma_zs",
+                "t_find",
+                "la_find"
+              ],
+              "reference_values": {
+                "beta_gamma": 0.0374175368255303,
+                "beta_m5": 0.62493254714021,
+                "la_find": 0.4886352332742952,
+                "mu_gamma": 1.9567916671994101,
+                "mu_m5": 11.34378458760524,
+                "mu_zs": 0.5415375741782303,
+                "sigma_gamma": 0.18455850164976728,
+                "sigma_m5": 0.054931258083801546,
+                "sigma_zs": 0.21015979739841428,
+                "t_find": 1.8026952265865885,
+                "xi_gamma": -0.34823193420843057,
+                "xi_m5": -0.128064664408435
+              }
+            },
+            "reference_logp": 989.7064120684491,
+            "reference_values": {
+              "beta_gamma": 0.0374175368255303,
+              "beta_m5": 0.62493254714021,
+              "la_find": 0.4886352332742952,
+              "mu_gamma": 1.9567916671994101,
+              "mu_m5": 11.34378458760524,
+              "mu_zs": 0.5415375741782303,
+              "sigma_gamma": 0.18455850164976728,
+              "sigma_m5": 0.054931258083801546,
+              "sigma_zs": 0.21015979739841428,
+              "t_find": 1.8026952265865885,
+              "xi_gamma": -0.34823193420843057,
+              "xi_m5": -0.128064664408435
+            },
+            "selector": "theta0_high",
+            "step_index": 1381,
+            "walker_index": 5
+          },
+          "theta_id": "theta0_high"
+        }
+      ]
+    }
+  },
+  "status": "not_comparable",
+  "status_options": [
+    "passed",
+    "failed",
+    "skipped_data_gated",
+    "not_comparable"
+  ]
+}

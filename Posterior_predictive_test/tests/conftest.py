@@ -361,9 +361,8 @@ def synthetic_independent_config_path(
     """
     Create a minimal independent-gamma config for dependent-only rejection tests.
 
-    The notebook-comparison workflow must reject this fixture immediately,
-    while the rest of the PPC stack should still be able to consume it once the
-    new mode-aware parameter contract is wired through.
+    The PPC stack should be able to consume this fixture through the
+    mode-aware parameter contract.
     """
 
     path = tmp_path / "synthetic_sersic_independent.yaml"

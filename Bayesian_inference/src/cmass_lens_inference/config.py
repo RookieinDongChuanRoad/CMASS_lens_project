@@ -3,6 +3,8 @@ Configuration parsing.
 
 The loader converts YAML into typed dataclasses immediately so downstream code
 works with validated, explicit objects rather than raw nested dictionaries.
+Scientific model choices are resolved exclusively through ``model.name`` and
+the model registry.
 """
 
 from __future__ import annotations
@@ -11,20 +13,15 @@ from pathlib import Path
 
 import yaml
 
-from .mass_definition import (
-    H_UNITS_V1,
-    LEGACY_FIXED_KPC,
-    get_mass_definition,
-    validate_h_ref,
-    validate_unit_convention,
-)
-from .parameter_schema import GammaModelConfig, build_parameter_schema, default_public_box_prior
+from .mass_definition import validate_h_ref, validate_unit_convention
+from .model_registry import get_model_definition
 from .types import (
     CosmologyConfig,
     DataConfig,
     FPPriorConfig,
     HyperParams,
     IntegrationConfig,
+    ModelConfig,
     OutputConfig,
     ProfileConfig,
     RuntimeConfig,
@@ -34,6 +31,9 @@ from .types import (
 
 
 DEFAULT_OUTPUT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs")
+REMOVED_TOP_LEVEL_MODEL_SECTIONS = ("mass_definition", "gamma_model")
+REMOVED_SAMPLING_FIELDS = ("num_chains", "num_samples", "num_warmup", "chain_method", "thinning", "warmup")
+REMOVED_RAW_DATA_FIELDS = ("observation_path", "cross_section_path", "sigma_table_path")
 
 
 def _require_section(data: dict, section_name: str) -> dict:
@@ -47,32 +47,32 @@ def _require_section(data: dict, section_name: str) -> dict:
     return section
 
 
-def _load_gamma_model_section(path: Path, raw_data: dict) -> GammaModelConfig:
+def _reject_removed_model_sections(raw_data: dict) -> None:
     """
-    Load the gamma-model section and migrate legacy run snapshots when needed.
+    Reject YAML fields that were removed by the model-registry refactor.
 
-    Only stored run snapshots are auto-migrated because those files are part of
-    the pipeline's own managed state. User-authored source configs must declare
-    the mode explicitly so the chosen scientific model is always unambiguous.
+    The old config surface split one scientific model across top-level
+    ``mass_definition`` and ``gamma_model`` sections.  Keeping those fields
+    around would make it ambiguous whether the registry or legacy parser owns
+    the model choice, so the loader fails before normalizing anything else.
     """
 
-    if "gamma_model" not in raw_data:
-        if path.name != "config_snapshot.yaml":
-            raise KeyError("Missing required config section: gamma_model")
-
-        raw_data["gamma_model"] = {"mode": "dependent"}
-        path.write_text(yaml.safe_dump(raw_data, sort_keys=False), encoding="utf-8")
-
-    gamma_model_raw = _require_section(raw_data, "gamma_model")
-    return GammaModelConfig(mode=str(gamma_model_raw["mode"]))
+    removed_present = [name for name in REMOVED_TOP_LEVEL_MODEL_SECTIONS if name in raw_data]
+    if removed_present:
+        raise ValueError(
+            "Top-level mass_definition and gamma_model sections are no longer supported. "
+            "Use model.name to select one concrete model, for example "
+            "model.name: cmass. "
+            f"Removed sections present: {', '.join(removed_present)}."
+        )
 
 
 def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
     """
     Load the optional FP-prior section with the 1D sigma-logM* defaults.
 
-    The section is intentionally optional so existing configurations keep the
-    same posterior unless users opt in explicitly.
+    The section is intentionally optional so existing model configs can opt in
+    only when the required sigma-unit table is available.
     """
 
     fp_prior_raw = raw_data.get("fp_prior")
@@ -85,90 +85,104 @@ def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
         enabled=bool(fp_prior_raw.get("enabled", False)),
         fit_mstar_min=float(fp_prior_raw.get("fit_mstar_min", 11.0)),
         pivot_mstar=float(fp_prior_raw.get("pivot_mstar", 11.3)),
-        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", 0.075)),
-        scatter_error=float(fp_prior_raw.get("scatter_error", 0.003)),
-        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", 2.34548)),
-        mu_v_error=float(fp_prior_raw.get("mu_v_error", 0.00611)),
-        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", 0.176)),
-        beta_v_error=float(fp_prior_raw.get("beta_v_error", 0.011)),
+        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", FPPriorConfig.fiducial_scatter)),
+        scatter_error=float(fp_prior_raw.get("scatter_error", FPPriorConfig.scatter_error)),
+        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", FPPriorConfig.mu_v_prior)),
+        mu_v_error=float(fp_prior_raw.get("mu_v_error", FPPriorConfig.mu_v_error)),
+        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", FPPriorConfig.beta_v_prior)),
+        beta_v_error=float(fp_prior_raw.get("beta_v_error", FPPriorConfig.beta_v_error)),
     )
 
 
-def _load_box_prior_section(
-    path: Path,
-    raw_data: dict,
-    *,
-    gamma_model: GammaModelConfig,
-    mass_definition,
-) -> dict:
+def _load_unit_convention(raw_data: dict) -> str:
+    """Load the global unit convention required by model components and I/O."""
+
+    if "unit_convention" not in raw_data:
+        raise KeyError("Missing required config field: unit_convention")
+    return validate_unit_convention(raw_data["unit_convention"])
+
+
+def _load_model_section(raw_data: dict) -> tuple[ModelConfig, object]:
     """
-    Load the required explicit box-prior mapping.
+    Load and normalize the scientific model registry selection.
 
-    User-authored source configs must declare the section explicitly. Historical
-    run snapshots are the only files that may be auto-migrated because those
-    files are pipeline-owned state.
+    One model name now selects one concrete model.  Component switches are not
+    accepted by the generic parser because they belong in separate model files.
     """
 
-    if "box_prior" not in raw_data:
-        if path.name != "config_snapshot.yaml":
-            raise KeyError("Missing required config section: box_prior")
+    model_raw = _require_section(raw_data, "model")
+    model_name = str(model_raw["name"])
+    model_definition = get_model_definition(model_name)
 
-        raw_data["box_prior"] = default_public_box_prior(
-            gamma_model=gamma_model,
-            mass_definition=mass_definition,
+    if "components" in model_raw:
+        raise ValueError(
+            "Config section 'model.components' is no longer supported. "
+            "Select one concrete model with model.name, for example 'cmass'."
         )
-        path.write_text(yaml.safe_dump(raw_data, sort_keys=False), encoding="utf-8")
+    return ModelConfig(name=model_name), model_definition
+
+
+def _load_box_prior_section(raw_data: dict) -> dict:
+    """Load the required explicit box-prior mapping."""
 
     return _require_section(raw_data, "box_prior")
 
 
-def _resolve_unit_convention(raw_data: dict, mass_definition_raw: dict) -> str:
+def _resolve_optional_path(raw_path: object) -> Path | None:
+    """Resolve an optional filesystem path from YAML."""
+
+    if raw_path is None:
+        return None
+    return Path(raw_path).expanduser().resolve()
+
+
+def _load_data_config(data_raw: dict) -> DataConfig:
     """
-    Resolve the run's unit convention from top-level config and legacy shape.
+    Load the production inference data section.
 
-    New source configs should set `unit_convention` explicitly. The fallback is
-    intentionally conservative for existing project fixtures and historical
-    configs: if an old config only declares `enclosed_radius_kpc`, it is treated
-    as `legacy_fixed_kpc` instead of silently reinterpreting the same number as
-    an h-dependent aperture.
-    """
-
-    if "unit_convention" in raw_data:
-        return validate_unit_convention(raw_data["unit_convention"])
-    if "enclosed_radius_kpc" in mass_definition_raw:
-        return LEGACY_FIXED_KPC
-    return H_UNITS_V1
-
-
-def _load_mass_definition(mass_definition_raw: dict, unit_convention: str):
-    """
-    Load the convention-aware mass definition from the public YAML surface.
-
-    The key names are part of the data contract:
-    - h-units runs use `aperture_hinv_kpc` because `5` means `5 h^-1 kpc`
-    - legacy runs use `enclosed_radius_kpc` because `5` means fixed physical kpc
+    Production inference now starts from one schema-validated canonical HDF5
+    product.  Raw observation, cross-section, and sigma-bundle inputs belong to
+    data preparation or legacy oracle tests; accepting them here would make it
+    unclear whether a run is using the canonical contract or old ad-hoc HDF5
+    normalization.
     """
 
-    if unit_convention == H_UNITS_V1:
-        if "aperture_hinv_kpc" not in mass_definition_raw:
-            raise KeyError(
-                "h_units_v1 requires mass_definition.aperture_hinv_kpc "
-                "with value 5 or 10."
-            )
-        return get_mass_definition(
-            mass_definition_raw["aperture_hinv_kpc"],
-            unit_convention=H_UNITS_V1,
+    removed_present = [name for name in REMOVED_RAW_DATA_FIELDS if name in data_raw]
+    if removed_present:
+        raise ValueError(
+            "Raw data fields data.observation_path, data.cross_section_path, "
+            "and data.sigma_table_path are no longer accepted by production "
+            "inference configs. Prepare one canonical dataset first and set "
+            "data.inference_dataset_path. "
+            f"Removed fields present: {', '.join(removed_present)}."
         )
 
-    if "enclosed_radius_kpc" not in mass_definition_raw:
-        raise KeyError(
-            "legacy_fixed_kpc requires mass_definition.enclosed_radius_kpc "
-            "with value 5 or 10."
-        )
-    return get_mass_definition(
-        mass_definition_raw["enclosed_radius_kpc"],
-        unit_convention=LEGACY_FIXED_KPC,
+    inference_dataset_path = _resolve_optional_path(data_raw.get("inference_dataset_path"))
+    if inference_dataset_path is None:
+        raise KeyError("Config section 'data' must contain inference_dataset_path.")
+
+    return DataConfig(
+        inference_dataset_path=inference_dataset_path,
     )
+
+
+def _reject_removed_sampling_fields(sampling_raw: dict) -> None:
+    """
+    Reject NumPyro-era sampling names before building `SamplingConfig`.
+
+    The production sampler is now emcee only.  Accepting both old and new names
+    would make run snapshots ambiguous, especially when `n_steps` and
+    `num_samples` disagree.  Failing early gives users a direct migration path.
+    """
+
+    removed_present = [name for name in REMOVED_SAMPLING_FIELDS if name in sampling_raw]
+    if removed_present:
+        raise ValueError(
+            "Sampling fields num_chains, num_samples, num_warmup, chain_method, "
+            "thinning, and warmup are no longer supported in production configs. "
+            "Use n_walkers, n_steps, and burn_in instead. "
+            f"Removed fields present: {', '.join(removed_present)}."
+        )
 
 
 def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
@@ -186,43 +200,30 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     if not isinstance(raw_data, dict):
         raise TypeError("Top-level configuration must be a YAML mapping.")
 
+    _reject_removed_model_sections(raw_data)
+
     profile_raw = _require_section(raw_data, "profile")
-    mass_definition_raw = _require_section(raw_data, "mass_definition")
+    model, model_definition = _load_model_section(raw_data)
     data_raw = _require_section(raw_data, "data")
     sampling_raw = _require_section(raw_data, "sampling")
+    _reject_removed_sampling_fields(sampling_raw)
     integration_raw = _require_section(raw_data, "integration")
     cosmology_raw = _require_section(raw_data, "cosmology")
     runtime_raw = _require_section(raw_data, "runtime")
     output_raw = _require_section(raw_data, "output")
-    unit_convention = _resolve_unit_convention(raw_data, mass_definition_raw)
-    mass_definition = _load_mass_definition(
-        mass_definition_raw=mass_definition_raw,
-        unit_convention=unit_convention,
-    )
-    gamma_model = _load_gamma_model_section(path, raw_data)
-    box_prior_raw = _load_box_prior_section(
-        path,
-        raw_data,
-        gamma_model=gamma_model,
-        mass_definition=mass_definition,
-    )
+    unit_convention = _load_unit_convention(raw_data)
+    h_ref = validate_h_ref(float(cosmology_raw["h0"]) / 100.0)
+    mass_definition = model_definition.resolve_mass_definition(unit_convention)
+    box_prior_raw = _load_box_prior_section(raw_data)
     fp_prior = _load_fp_prior_section(raw_data)
 
-    sigma_table_path_raw = data_raw.get("sigma_table_path")
-    sigma_table_path = (
-        Path(sigma_table_path_raw).expanduser().resolve()
-        if sigma_table_path_raw is not None
-        else None
-    )
-    if fp_prior.enabled and sigma_table_path is None:
-        raise ValueError("FP prior requires data.sigma_table_path when fp_prior.enabled is true.")
+    data_config = _load_data_config(data_raw)
 
-    initial_center_raw = _require_section(sampling_raw, "initial_center")
-    parameter_schema = build_parameter_schema(
-        gamma_model=gamma_model,
+    parameter_schema = model_definition.build_parameter_schema(
         mass_definition=mass_definition,
         public_box_prior=box_prior_raw,
     )
+    initial_center_raw = _require_section(sampling_raw, "initial_center")
     initial_center = HyperParams.from_public_dict(
         public_values=initial_center_raw,
         parameter_schema=parameter_schema,
@@ -232,28 +233,27 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
         label="Initial center",
     )
 
-    h_ref = validate_h_ref(float(cosmology_raw["h0"]) / 100.0)
-
     return RuntimeConfig(
         unit_convention=unit_convention,
         h_ref=h_ref,
         profile=ProfileConfig(name=str(profile_raw["name"])),
+        model=model,
         mass_definition=mass_definition,
-        gamma_model=gamma_model,
         parameter_schema=parameter_schema,
         fp_prior=fp_prior,
         data=DataConfig(
-            observation_path=Path(data_raw["observation_path"]).expanduser().resolve(),
-            cross_section_path=Path(data_raw["cross_section_path"]).expanduser().resolve(),
-            sigma_table_path=sigma_table_path,
+            inference_dataset_path=data_config.inference_dataset_path,
+            observation_path=data_config.observation_path,
+            cross_section_path=data_config.cross_section_path,
+            sigma_table_path=data_config.sigma_table_path,
         ),
         sampling=SamplingConfig(
-            n_walkers=int(sampling_raw["n_walkers"]),
-            n_steps=int(sampling_raw["n_steps"]),
-            warmup=int(sampling_raw["warmup"]),
             random_seed=int(sampling_raw["random_seed"]),
             initial_center=initial_center,
             initial_jitter_scale=float(sampling_raw.get("initial_jitter_scale", 1.0e-3)),
+            n_walkers=int(sampling_raw.get("n_walkers", max(2 * parameter_schema.n_dim, 24))),
+            n_steps=int(sampling_raw["n_steps"]),
+            burn_in=int(sampling_raw.get("burn_in", 0)),
         ),
         integration=IntegrationConfig(
             gamma_points=int(integration_raw["gamma_points"]),

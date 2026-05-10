@@ -342,12 +342,12 @@ MC 抽样变量:
 
 采样器固定:
 
-- `emcee`
-- `n_walkers = 24`
-- `n_steps = 10000`
-- `warmup = 2000`（可在实现中配置，但当前标准为 2000）
+- `NumPyro` + `NUTS`
+- `num_chains = 1`（CPU 默认；需要多链时显式配置）
+- `num_samples = 10000`
+- `num_warmup = 2000`（可在实现中配置，但当前标准为 2000）
 - 需要保存 checkpoint
-- 最低输出要求: 保留完整 chain
+- 最低输出要求: 保留完整 posterior samples
 
 初始化策略:
 
@@ -372,11 +372,11 @@ MC 抽样变量:
 
 必须优先优化运行速度:
 
-- 热点函数使用 `numba.njit`。
-- 使用并行（线程优先，避免过度多进程竞争）。
-- 插值选择与 `numba` 兼容的实现（1D 线性插值）。
-- 运行时可见进度条（`tqdm` / emcee progress）。
-- 文件锁策略要避免 HDF5 多进程/多读冲突（必要时禁用 file locking）。
+- 热点函数使用 JAX `jit`/`vmap`，不再依赖 `numba` 作为生产加速路径。
+- 使用 NumPyro/NUTS 执行 Bayesian inference。
+- 插值选择与 JAX 可追踪实现兼容（1D 线性插值）。
+- 运行时可见进度条（NumPyro progress）。
+- 输出采用 NumPyro/ArviZ 友好的文件格式，避免 HDF5 walker backend 锁冲突。
 
 ## 14. 输出与文件管理要求
 
@@ -384,9 +384,11 @@ MC 抽样变量:
 
 - `runs/<run_id>/config_snapshot.yaml`
 - `runs/<run_id>/metadata.json`
-- `runs/<run_id>/chain.h5`
-- `runs/<run_id>/checkpoints/latest_coords.npy`
-- `runs/<run_id>/checkpoints/latest_log_prob.npy`
+- `runs/<run_id>/posterior.nc`
+- `runs/<run_id>/samples.npz`
+- `runs/<run_id>/checkpoints/latest_samples_by_chain.npy`
+- `runs/<run_id>/checkpoints/latest_log_prob_by_chain.npy`
+- `runs/<run_id>/checkpoints/numpyro_last_state.pkl`
 - `runs/<run_id>/checkpoints/latest_step.txt`
 - `runs/<run_id>/run_result.json`
 

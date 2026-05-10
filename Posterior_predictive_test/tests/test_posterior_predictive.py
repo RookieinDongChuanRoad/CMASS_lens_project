@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 import yaml
 
-from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
+from cmass_lens_inference.numba_backend.diagnostics import NUMBA_DIAGNOSTIC_BLOB_DTYPE
 
 
 DEPENDENT_PARAMETER_ORDER = (
@@ -502,7 +502,7 @@ def _seed_backend(chain_path: Path, base_theta: np.ndarray, n_steps: int = 5, n_
 
     backend = emcee.backends.HDFBackend(str(chain_path))
     backend.reset(n_walkers, base_theta.shape[0])
-    blobs = np.zeros(n_walkers, dtype=LOG_PROB_BLOB_DTYPE)
+    blobs = np.zeros(n_walkers, dtype=NUMBA_DIAGNOSTIC_BLOB_DTYPE)
     blobs["parallel_strategy"] = b"off"
     backend.grow(n_steps, blobs)
     random_state = np.random.RandomState(321).get_state()
@@ -866,6 +866,39 @@ def _build_completed_run(
     return run_dir, sigma_table_path
 
 
+def _replace_chain_with_numpyro_samples_npz(
+    run_dir: Path,
+    *,
+    parameter_names: tuple[str, ...],
+    n_chains: int = 2,
+    n_draws: int = 4,
+) -> np.ndarray:
+    """
+    Convert the synthetic emcee fixture into a NumPyro-style `samples.npz`.
+
+    Most legacy PPC fixtures still build `chain.h5` because that was the
+    original production artifact.  This helper reuses those deterministic
+    values, writes the compact NumPyro artifact, and removes `chain.h5` so tests
+    prove the new loader is not falling back to emcee.
+    """
+
+    import emcee
+
+    chain_path = run_dir / "chain.h5"
+    backend = emcee.backends.HDFBackend(str(chain_path), read_only=True)
+    flat_samples = backend.get_chain().reshape(-1, len(parameter_names))
+    samples_by_chain = flat_samples[: n_chains * n_draws].reshape(n_chains, n_draws, len(parameter_names))
+    np.savez_compressed(
+        run_dir / "samples.npz",
+        samples_by_chain=samples_by_chain,
+        flat_samples=samples_by_chain.reshape(-1, samples_by_chain.shape[-1]),
+        log_prob_by_chain=np.zeros(samples_by_chain.shape[:2], dtype=float),
+        parameter_names=np.asarray(parameter_names, dtype="U"),
+    )
+    chain_path.unlink()
+    return samples_by_chain
+
+
 def test_run_posterior_predictive_generates_expected_artifacts_for_sersic(tmp_path: Path) -> None:
     """
     The PPC API should consume a completed run and write all required outputs.
@@ -876,7 +909,7 @@ def test_run_posterior_predictive_generates_expected_artifacts_for_sersic(tmp_pa
     - latent arrays are preserved in the `.npz` output
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "ppc_output"
@@ -935,7 +968,7 @@ def test_run_posterior_predictive_generates_expected_artifacts_for_sersic(tmp_pa
 def test_run_posterior_predictive_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:
     """Omitting `n_replicates` should use the tail-capped full chain by default."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
     result = run_posterior_predictive(
@@ -961,10 +994,113 @@ def test_run_posterior_predictive_defaults_to_tail_capped_full_chain_mode(tmp_pa
     assert np.isfinite(arrays["theta_stat_median"]).all()
 
 
+def test_run_posterior_predictive_reads_numpyro_samples_npz_without_chain_h5(tmp_path: Path) -> None:
+    """PPC should consume NumPyro `samples.npz` runs that no longer write `chain.h5`."""
+
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
+    samples_by_chain = _replace_chain_with_numpyro_samples_npz(
+        run_dir,
+        parameter_names=DEPENDENT_PARAMETER_ORDER,
+        n_chains=2,
+        n_draws=4,
+    )
+
+    result = run_posterior_predictive(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "ppc_output"),
+        burn_in="auto",
+        random_seed=31,
+        candidate_pool_size=64,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    arrays = np.load(result.result_dir / "replicated_statistics.npz")
+
+    assert not (run_dir / "chain.h5").exists()
+    assert payload["posterior_artifact"] == "samples.npz"
+    assert payload["posterior_draw_mode"] == "tail_capped_full_chain"
+    assert payload["n_posterior_draws_used"] == samples_by_chain.shape[0] * samples_by_chain.shape[1]
+    assert arrays["theta_stat_median"].shape[0] == samples_by_chain.shape[0] * samples_by_chain.shape[1]
+
+
+def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifacts(tmp_path: Path) -> None:
+    """
+    The joint diagnostics API should run PPC and trend from one shared parent sample.
+
+    This is the production-facing contract for the Numba acceleration path: the
+    caller launches one workflow, receives both families of artifacts, and the
+    metadata records that the shared-parent backend used the pipeline trend
+    default semantics rather than the older PPC-only 100000-candidate default.
+    """
+
+    from lensing_posterior_predictive.predictive import run_posterior_diagnostics
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic", mass_radius_kpc=10)
+
+    result = run_posterior_diagnostics(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "diagnostics_output"),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=29,
+        parent_sample_size=72,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+    )
+
+    assert result.profile_name == "sersic"
+    assert result.status == "completed"
+    assert result.n_posterior_draws == 3
+    assert result.metadata["backend"] == "numba_shared_parent"
+    assert result.metadata["parent_sample_size"] == 72
+    assert (result.result_dir / "ppc_summary.json").exists()
+    assert (result.result_dir / "replicated_statistics.npz").exists()
+    assert (result.result_dir / "fig8_like_summary.json").exists()
+    assert (result.result_dir / "fig8_like_curves.npz").exists()
+
+    ppc_summary = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    trend_summary = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
+    assert ppc_summary["backend"] == "numba_shared_parent"
+    assert ppc_summary["parent_sample_size"] == 72
+    assert trend_summary["backend"] == "numba_shared_parent"
+    assert trend_summary["n_parent_sample"] == 72
+    assert trend_summary["mass_definition"]["label"] == "m10"
+    for payload in (ppc_summary, trend_summary):
+        assert payload["model_name"] == "cmass"
+        assert payload["predictive_backend"] == "numba_shared_parent"
+        assert payload["predictive_schema_version"] == "cmass_ppt_diagnostics_v1"
+        assert payload["supported_diagnostics"] == [
+            "posterior_diagnostics",
+            "posterior_predictive",
+            "posterior_trends",
+        ]
+        assert payload["required_external_inputs"] == ["sigma_table"]
+    assert trend_summary["panel_order"] == [
+        "m10",
+        "gamma",
+        "sigma_ap",
+        "gamma_vs_sigma_star",
+        "gamma_vs_logre_kpc",
+    ]
+
+    with np.load(result.result_dir / "replicated_statistics.npz") as payload:
+        assert "theta_sample_m10" in payload.files
+        assert "sigma_sample_m10" in payload.files
+        assert "theta_sample_m5" not in payload.files
+        assert "sigma_sample_m5" not in payload.files
+        assert payload["theta_sample_theta_ein"].shape == (3, 23)
+
+
 def test_run_posterior_predictive_records_independent_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Independent gamma runs should write the reduced 10D parameter contract into PPC artifacts."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -996,7 +1132,7 @@ def test_run_posterior_predictive_records_independent_gamma_mode_and_parameter_o
 def test_run_posterior_predictive_records_sigma_star_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Sigma-star gamma runs should write the 11D parameter contract into PPC artifacts."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -1028,7 +1164,7 @@ def test_run_posterior_predictive_records_sigma_star_gamma_mode_and_parameter_or
 def test_run_posterior_predictive_supports_devauc_sigma_tables(tmp_path: Path) -> None:
     """The PPC API should also accept the 3D devauc sigma table format."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
 
@@ -1048,30 +1184,33 @@ def test_run_posterior_predictive_supports_devauc_sigma_tables(tmp_path: Path) -
     assert np.isfinite(arrays["sigma_sample_sigma"]).all()
 
 
-def test_sigma_unit_table_from_hdf5_supports_clipped_sersic_queries(tmp_path: Path) -> None:
-    """The sigma-table loader should understand the new HDF5 schema."""
+def test_sigma_unit_table_from_hdf5_exposes_numba_sersic_arrays(tmp_path: Path) -> None:
+    """The sigma-table loader should expose dense arrays for the Numba interpolation kernel."""
 
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_table_hdf5(tmp_path / "sersic_sigma_table.h5", profile_name="sersic")
     table = SigmaUnitTable.from_path(table_path)
-
-    actual = table.evaluate(
-        gamma=np.array([1.1, 1.8, 2.9]),
-        zd=np.array([0.40, 0.60, 0.90]),
-        log_re_kpc=np.array([0.30, 0.90, 1.50]),
-        n_values=np.array([2.0, 6.0, 12.0]),
-    )
+    arrays = _sigma_table_numba_arrays(table)
 
     assert table.profile_name == "sersic"
     assert table.n_axis is not None
-    assert np.isfinite(actual).all()
+    assert arrays["has_n_axis"] == 1
+    assert np.asarray(arrays["values"]).shape == (
+        table.gamma_axis.size,
+        table.zd_axis.size,
+        table.log_re_kpc_axis.size,
+        table.n_axis.size,
+    )
+    assert np.isfinite(np.asarray(arrays["values"])).all()
 
 
 def test_sigma_unit_table_from_hdf5_preserves_mass_definition_metadata(tmp_path: Path) -> None:
     """The loader should expose the stored mass-definition metadata to PPC callers."""
 
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_table_hdf5(
         tmp_path / "sersic_sigma_table_m10.h5",
@@ -1089,7 +1228,8 @@ def test_sigma_unit_table_from_bundle_selects_requested_boss_leaf(tmp_path: Path
     """Bundle loaders must pick the requested flavor/mass leaf and expose its metadata."""
 
     from cmass_lens_inference.mass_definition import get_mass_definition
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_bundle_hdf5(tmp_path / "jeans_sers_sigma_bundle.h5", profile_name="sersic")
     table = SigmaUnitTable.from_path(
@@ -1098,26 +1238,23 @@ def test_sigma_unit_table_from_bundle_selects_requested_boss_leaf(tmp_path: Path
         observation_flavor="boss",
     )
 
-    actual = table.evaluate(
-        gamma=np.array([1.3, 1.8, 2.7]),
-        zd=np.array([0.45, 0.60, 0.79]),
-        log_re_kpc=np.array([0.55, 0.90, 1.20]),
-        n_values=np.array([2.8, 6.0, 9.5]),
-    )
+    arrays = _sigma_table_numba_arrays(table)
 
     assert table.profile_name == "sersic"
     assert table.mass_definition_label == "m10"
     assert table.observation_flavor == "boss"
     assert table.aperture_shape == "circular"
     assert table.aperture_radius_arcsec == 1.0
-    assert np.isfinite(actual).all()
+    assert arrays["has_n_axis"] == 1
+    assert np.isfinite(np.asarray(arrays["values"])).all()
 
 
 def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path: Path) -> None:
     """Bundle loaders must support the explicit low-dimensional within-Re leaf."""
 
     from cmass_lens_inference.mass_definition import get_mass_definition
-    from cmass_posterior_predictive.predictive import SigmaUnitTable
+    from lensing_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from lensing_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_bundle_hdf5(
         tmp_path / "jeans_sers_sigma_bundle.h5",
@@ -1130,12 +1267,7 @@ def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path:
         bundle_group="within_re",
     )
 
-    actual = table.evaluate(
-        gamma=np.array([1.3, 1.8, 2.7]),
-        zd=np.array([0.45, 0.60, 0.79]),
-        log_re_kpc=np.array([0.55, 0.90, 1.20]),
-        n_values=np.array([2.8, 6.0, 9.5]),
-    )
+    arrays = _sigma_table_numba_arrays(table)
 
     assert table.profile_name == "sersic"
     assert table.mass_definition_label == "m10"
@@ -1144,13 +1276,16 @@ def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path:
     assert table.observation_flavor is None
     assert table.zd_axis is None
     assert table.bundle_leaf_path == "/within_re/m10"
-    assert np.isfinite(actual).all()
+    assert np.asarray(arrays["zd_axis"]).shape == (1,)
+    assert np.asarray(arrays["values"]).ndim == 4
+    assert arrays["has_n_axis"] == 1
+    assert np.isfinite(np.asarray(arrays["values"])).all()
 
 
 def test_histogram_panel_writes_left_and_right_tail_labels() -> None:
     """The PPC panel should annotate both posterior-predictive tail percentages."""
 
-    from cmass_posterior_predictive.predictive import _write_histogram_panel
+    from lensing_posterior_predictive.predictive import _write_histogram_panel
 
     figure, axis = plt.subplots()
     try:
@@ -1175,7 +1310,7 @@ def test_histogram_panel_writes_left_and_right_tail_labels() -> None:
 def test_histogram_window_keeps_observed_marker_near_center_without_full_tail_range() -> None:
     """The plotting window should clip extreme tails while keeping the observed line near the center."""
 
-    from cmass_posterior_predictive.predictive import _compute_histogram_x_limits
+    from lensing_posterior_predictive.predictive import _compute_histogram_x_limits
 
     values = np.concatenate((np.linspace(0.9, 1.1, 120), np.array([10.0])))
     x_min, x_max = _compute_histogram_x_limits(values=values, observed=1.0)
@@ -1189,7 +1324,7 @@ def test_histogram_window_keeps_observed_marker_near_center_without_full_tail_ra
 def test_histogram_panel_recomputes_hist_within_display_window() -> None:
     """The histogram bars should be recomputed from the display window, not just clipped by xlim."""
 
-    from cmass_posterior_predictive.predictive import _compute_histogram_x_limits, _write_histogram_panel
+    from lensing_posterior_predictive.predictive import _compute_histogram_x_limits, _write_histogram_panel
 
     values = np.concatenate((np.linspace(0.9, 1.1, 40), np.array([10.0])))
     expected_x_min, expected_x_max = _compute_histogram_x_limits(values=values, observed=1.0)
@@ -1226,7 +1361,7 @@ def test_theta_ein_std_panel_uses_fixed_histogram_window_and_small_negative_padd
     first bin does not visually touch the y-axis spine.
     """
 
-    from cmass_posterior_predictive.predictive import _resolve_histogram_ranges, _write_histogram_panel
+    from lensing_posterior_predictive.predictive import _resolve_histogram_ranges, _write_histogram_panel
 
     values = np.linspace(0.1, 0.8, 80)
     hist_range, display_xlim = _resolve_histogram_ranges(
@@ -1272,7 +1407,7 @@ def test_sigma_std_panel_uses_one_sided_upper_envelope_and_small_negative_paddin
     padding on the visible axis.
     """
 
-    from cmass_posterior_predictive.predictive import _resolve_histogram_ranges
+    from lensing_posterior_predictive.predictive import _resolve_histogram_ranges
 
     values = np.concatenate((np.linspace(15.0, 75.0, 60), np.array([110.0, 140.0])))
     expected_upper_bound = 1.03 * max(25.0, float(np.percentile(values, 99.5)))
@@ -1297,7 +1432,7 @@ def test_only_theta_ein_std_uses_fixed_upper_bound_of_three() -> None:
     the change stays as narrow as the user requested.
     """
 
-    from cmass_posterior_predictive.predictive import (
+    from lensing_posterior_predictive.predictive import (
         _compute_histogram_x_limits,
         _resolve_histogram_ranges,
     )
@@ -1332,7 +1467,7 @@ def test_overview_figure_uses_profile_suptitle_and_latex_panel_titles(
 
     from matplotlib.figure import Figure
 
-    from cmass_posterior_predictive.predictive import _write_overview_figure
+    from lensing_posterior_predictive.predictive import _write_overview_figure
 
     saved: dict[str, object] = {}
 
@@ -1388,7 +1523,7 @@ def test_overview_figure_uses_profile_suptitle_and_latex_panel_titles(
 def test_run_posterior_predictive_supports_hdf5_sigma_tables(tmp_path: Path) -> None:
     """The PPC API should accept the new HDF5 sigma-table schema end-to-end."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(tmp_path, profile_name="devauc")
     sigma_table_path = _write_sigma_table_hdf5(tmp_path / "devauc_sigma_table.h5", profile_name="devauc")
@@ -1411,7 +1546,7 @@ def test_run_posterior_predictive_supports_hdf5_sigma_tables(tmp_path: Path) -> 
 def test_run_posterior_predictive_uses_dynamic_m10_latent_keys_and_metadata(tmp_path: Path) -> None:
     """`m10` runs should serialize public labels and latent array keys as `m10`."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -1444,7 +1579,7 @@ def test_run_posterior_predictive_uses_dynamic_m10_latent_keys_and_metadata(tmp_
 def test_run_posterior_predictive_rejects_sigma_tables_with_wrong_mass_definition(tmp_path: Path) -> None:
     """PPC should fail fast if the sigma table metadata does not match the run definition."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1472,7 +1607,7 @@ def test_run_posterior_predictive_rejects_sigma_tables_with_wrong_mass_definitio
 def test_run_posterior_predictive_uses_bundle_and_records_boss_leaf_metadata(tmp_path: Path) -> None:
     """BOSS runs should auto-select the `/boss/<mass>` bundle leaf from observation metadata."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1507,7 +1642,7 @@ def test_run_posterior_predictive_uses_bundle_and_records_boss_leaf_metadata(tmp
 def test_run_posterior_predictive_rejects_legacy_single_table_for_boss_observations(tmp_path: Path) -> None:
     """Legacy single-table files should not satisfy the BOSS circular-aperture contract."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1536,7 +1671,7 @@ def test_run_posterior_predictive_rejects_legacy_single_table_for_boss_observati
 def test_run_posterior_predictive_rejects_boss_raw_bundle_seeing_mismatch(tmp_path: Path) -> None:
     """BOSS PPC runs must fail when raw observations and bundle metadata disagree on seeing."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, _ = _build_completed_run(
         tmp_path,
@@ -1568,151 +1703,10 @@ def test_run_posterior_predictive_rejects_boss_raw_bundle_seeing_mismatch(tmp_pa
         )
 
 
-def test_draw_candidate_population_matches_zero_slope_dependent_gamma_mode(tmp_path: Path) -> None:
-    """Independent PPC generation should match dependent mode when the gamma slopes are explicitly zero."""
-
-    from cmass_lens_inference.compiled_context import build_compiled_context
-    from cmass_lens_inference.config import load_runtime_config
-    from cmass_posterior_predictive.predictive import _draw_candidate_population
-
-    dependent_run_dir, _ = _build_completed_run(
-        tmp_path / "dependent_case",
-        profile_name="sersic",
-        gamma_mode="dependent",
-        beta_gamma=0.0,
-        xi_gamma=0.0,
-    )
-    independent_run_dir, _ = _build_completed_run(
-        tmp_path / "independent_case",
-        profile_name="sersic",
-        gamma_mode="independent",
-    )
-
-    dependent_runtime_config = load_runtime_config(dependent_run_dir / "config_snapshot.yaml")
-    independent_runtime_config = load_runtime_config(independent_run_dir / "config_snapshot.yaml")
-    dependent_context, dependent_profile, _, _, _, _ = build_compiled_context(dependent_runtime_config)
-    independent_context, independent_profile, _, _, _, _ = build_compiled_context(independent_runtime_config)
-
-    dependent_population = _draw_candidate_population(
-        theta=dependent_runtime_config.sampling.initial_center.to_array(),
-        profile=dependent_profile,
-        context=dependent_context,
-        rng=np.random.default_rng(101),
-        candidate_pool_size=int(dependent_context.base_normals.shape[0]),
-    )
-    independent_population = _draw_candidate_population(
-        theta=independent_runtime_config.sampling.initial_center.to_array(),
-        profile=independent_profile,
-        context=independent_context,
-        rng=np.random.default_rng(101),
-        candidate_pool_size=int(independent_context.base_normals.shape[0]),
-    )
-
-    for field_name in (
-        "log_mstar",
-        "theta_ein",
-        "gamma",
-        "zd",
-        "zs",
-        "mass",
-        "log_re_kpc",
-        "re_kpc",
-        "n",
-        "detectable_weights",
-        "selected_weights",
-        "weights",
-    ):
-        assert np.allclose(
-            dependent_population[field_name],
-            independent_population[field_name],
-            equal_nan=True,
-        )
-
-
-def test_draw_candidate_population_matches_independent_when_sigma_star_slope_is_zero(tmp_path: Path) -> None:
-    """Sigma-star PPC generation should collapse to the independent mode at zero slope."""
-
-    from cmass_lens_inference.compiled_context import build_compiled_context
-    from cmass_lens_inference.config import load_runtime_config
-    from cmass_posterior_predictive.predictive import _draw_candidate_population
-
-    sigma_run_dir, _ = _build_completed_run(
-        tmp_path / "sigma_star_case",
-        profile_name="sersic",
-        gamma_mode="sigma_star_dependent",
-        beta_sigma_star_gamma=0.0,
-    )
-    independent_run_dir, _ = _build_completed_run(
-        tmp_path / "independent_case",
-        profile_name="sersic",
-        gamma_mode="independent",
-    )
-
-    sigma_runtime_config = load_runtime_config(sigma_run_dir / "config_snapshot.yaml")
-    independent_runtime_config = load_runtime_config(independent_run_dir / "config_snapshot.yaml")
-    sigma_context, sigma_profile, _, _, _, _ = build_compiled_context(sigma_runtime_config)
-    independent_context, independent_profile, _, _, _, _ = build_compiled_context(independent_runtime_config)
-
-    sigma_population = _draw_candidate_population(
-        theta=sigma_runtime_config.sampling.initial_center.to_array(),
-        profile=sigma_profile,
-        context=sigma_context,
-        rng=np.random.default_rng(101),
-        candidate_pool_size=int(sigma_context.base_normals.shape[0]),
-    )
-    independent_population = _draw_candidate_population(
-        theta=independent_runtime_config.sampling.initial_center.to_array(),
-        profile=independent_profile,
-        context=independent_context,
-        rng=np.random.default_rng(101),
-        candidate_pool_size=int(independent_context.base_normals.shape[0]),
-    )
-
-    for field_name in (
-        "log_mstar",
-        "theta_ein",
-        "gamma",
-        "zd",
-        "zs",
-        "mass",
-        "log_re_kpc",
-        "re_kpc",
-        "n",
-        "detectable_weights",
-        "selected_weights",
-        "weights",
-    ):
-        assert np.allclose(
-            sigma_population[field_name],
-            independent_population[field_name],
-            equal_nan=True,
-        )
-
-
-def test_gamma_population_mean_uses_sigma_star_shift_in_sigma_star_mode() -> None:
-    """The PPC gamma mean helper should use `Sigma_* - 9.0` in the third mode."""
-
-    from cmass_posterior_predictive.predictive import _gamma_population_mean
-
-    sigma_star_shift9p0 = np.array([-0.40, 0.15, 0.35], dtype=float)
-    actual = _gamma_population_mean(
-        mu_gamma_0=1.99,
-        beta_gamma=12.0,
-        xi_gamma=-8.0,
-        beta_sigma_star_gamma=0.24,
-        mstar_shift11p4=np.array([0.0, 0.2, -0.1], dtype=float),
-        delta_r=np.array([0.1, -0.3, 0.2], dtype=float),
-        sigma_star_shift9p0=sigma_star_shift9p0,
-        gamma_mode_code=2,
-    )
-
-    np.testing.assert_allclose(actual, 1.99 + 0.24 * sigma_star_shift9p0)
-
-
 def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tables_are_ready(tmp_path: Path) -> None:
     """The monitor entrypoint should wait on fixed paths, then launch both PPC runs."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(
         tmp_path / "devauc_case",
@@ -1771,7 +1765,7 @@ def test_wait_for_external_sigma_tables_runs_both_profiles_when_overwritten_tabl
 def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> None:
     """The monitor entrypoint should not accept files whose mtime predates the trigger baseline."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(tmp_path / "devauc_case", profile_name="devauc")
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
@@ -1813,7 +1807,7 @@ def test_wait_for_external_sigma_tables_rejects_stale_tables(tmp_path: Path) -> 
 def test_wait_for_external_sigma_tables_rejects_boss_raw_bundle_seeing_mismatch(tmp_path: Path) -> None:
     """The monitor entrypoint must reject BOSS assets when raw and bundle seeing contracts differ."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(
         tmp_path / "devauc_case",
@@ -1874,7 +1868,7 @@ def test_cli_posterior_predictive_command_executes_pipeline(tmp_path: Path) -> N
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-predictive",
             "--run-dir",
             str(run_dir),
@@ -1908,8 +1902,8 @@ def test_cli_posterior_predictive_command_executes_pipeline(tmp_path: Path) -> N
 def test_posterior_predictive_public_defaults_use_1000_replicates() -> None:
     """The public PPC defaults should use canonical tail-capped full-chain mode."""
 
-    from cmass_posterior_predictive.cli import build_argument_parser
-    from cmass_posterior_predictive.predictive import (
+    from lensing_posterior_predictive.cli import build_argument_parser
+    from lensing_posterior_predictive.predictive import (
         DEFAULT_PPC_OUTPUT_ROOT_DIR,
         run_posterior_predictive,
         wait_for_external_sigma_tables_and_run,
@@ -1951,7 +1945,7 @@ def test_posterior_predictive_public_defaults_use_1000_replicates() -> None:
 def test_select_posterior_draws_defaults_to_tail_capped_chain() -> None:
     """The default posterior selection should keep the tail of the flattened chain."""
 
-    from cmass_posterior_predictive.predictive import _select_posterior_draws
+    from lensing_posterior_predictive.predictive import _select_posterior_draws
 
     flattened_chain = np.arange(40, dtype=float).reshape(10, 4)
     selected, mode = _select_posterior_draws(
@@ -1965,10 +1959,42 @@ def test_select_posterior_draws_defaults_to_tail_capped_chain() -> None:
     assert np.array_equal(selected, flattened_chain[-6:])
 
 
+def test_load_posterior_draws_reads_posterior_nc_without_chain_h5(tmp_path: Path) -> None:
+    """The shared posterior loader should fall back to ArviZ `posterior.nc`."""
+
+    import arviz as az
+    from lensing_posterior_predictive.predictive import _load_posterior_draws
+
+    run_dir = tmp_path / "numpyro_run"
+    run_dir.mkdir()
+    mu5 = np.arange(6, dtype=float).reshape(2, 3)
+    beta5 = 10.0 + np.arange(6, dtype=float).reshape(2, 3)
+    az.from_dict(
+        posterior={
+            "mu5_0": mu5,
+            "beta5": beta5,
+        }
+    ).to_netcdf(run_dir / "posterior.nc")
+
+    selected, mode, artifact = _load_posterior_draws(
+        chain_path=run_dir / "chain.h5",
+        burn_in=2,
+        rng=np.random.default_rng(19),
+        n_replicates=None,
+        tail_cap=4,
+        parameter_names=("mu5_0", "beta5"),
+    )
+
+    expected = np.stack([mu5, beta5], axis=-1).reshape(-1, 2)[-4:]
+    assert artifact == "posterior.nc"
+    assert mode == "tail_capped_full_chain"
+    np.testing.assert_allclose(selected, expected)
+
+
 def test_resolve_candidate_pool_size_uses_new_100000_cap() -> None:
     """The PPC default candidate-pool cap should now be 100000 instead of 4096."""
 
-    from cmass_posterior_predictive.predictive import _resolve_candidate_pool_size
+    from lensing_posterior_predictive.predictive import _resolve_candidate_pool_size
 
     assert _resolve_candidate_pool_size(candidate_pool_size=None, base_normals_count=200000) == 100000
     assert _resolve_candidate_pool_size(candidate_pool_size=None, base_normals_count=128) == 128
@@ -1978,7 +2004,7 @@ def test_resolve_candidate_pool_size_uses_new_100000_cap() -> None:
 def test_run_posterior_predictive_parallel_execution_matches_single_process_results(tmp_path: Path) -> None:
     """Changing worker count should not change PPC outputs for the same seed and posterior draws."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_predictive
+    from lensing_posterior_predictive.predictive import run_posterior_predictive
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "ppc_output"
@@ -2016,7 +2042,7 @@ def test_run_posterior_predictive_parallel_execution_matches_single_process_resu
 def test_monitor_defaults_to_tail_capped_common_draw_count(tmp_path: Path) -> None:
     """The monitor should align both profiles to the common tail-capped posterior length by default."""
 
-    from cmass_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
+    from lensing_posterior_predictive.predictive import wait_for_external_sigma_tables_and_run
 
     devauc_run_dir, _ = _build_completed_run(tmp_path / "devauc_case", profile_name="devauc", n_steps=8)
     sersic_run_dir, _ = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic", n_steps=5)
@@ -2082,7 +2108,7 @@ def test_cli_posterior_predictive_monitor_command_waits_and_runs_both_profiles(t
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-predictive-monitor",
             "--external-dir",
             str(external_dir),
@@ -2124,75 +2150,7 @@ def test_cli_posterior_predictive_monitor_command_waits_and_runs_both_profiles(t
     assert sersic_result_dir.name == "ppc"
 
 
-def test_draw_trend_parent_population_samples_full_latent_distribution(tmp_path: Path) -> None:
-    """
-    Trend generation must now materialize a full parent population.
-
-    This test replaces the old average-size helper contract with the new one:
-    the trend workflow should draw `logM*`, `Re`, and, for the sersic branch,
-    `n` from the fitted parent-population model rather than freezing them to a
-    representative template before averaging.
-    """
-
-    from cmass_lens_inference.compiled_context import build_compiled_context
-    from cmass_lens_inference.config import load_runtime_config
-    from cmass_posterior_predictive.predictive import (
-        SigmaUnitTable,
-        _draw_trend_parent_population,
-        _load_posterior_draws,
-    )
-
-    devauc_run_dir, devauc_sigma_table_path = _build_completed_run(tmp_path / "devauc_case", profile_name="devauc")
-    sersic_run_dir, sersic_sigma_table_path = _build_completed_run(tmp_path / "sersic_case", profile_name="sersic")
-
-    devauc_runtime_config = load_runtime_config(devauc_run_dir / "config_snapshot.yaml")
-    sersic_runtime_config = load_runtime_config(sersic_run_dir / "config_snapshot.yaml")
-    devauc_context, devauc_profile, _, _, _, _ = build_compiled_context(devauc_runtime_config)
-    sersic_context, sersic_profile, _, _, _, _ = build_compiled_context(sersic_runtime_config)
-    devauc_theta_draws, _ = _load_posterior_draws(
-        devauc_run_dir / "chain.h5",
-        burn_in=2,
-        rng=np.random.default_rng(41),
-        n_replicates=1,
-    )
-    sersic_theta_draws, _ = _load_posterior_draws(
-        sersic_run_dir / "chain.h5",
-        burn_in=2,
-        rng=np.random.default_rng(43),
-        n_replicates=1,
-    )
-    devauc_theta = devauc_theta_draws[0]
-    sersic_theta = sersic_theta_draws[0]
-
-    devauc_population = _draw_trend_parent_population(
-        theta=devauc_theta,
-        profile=devauc_profile,
-        context=devauc_context,
-        sigma_table=SigmaUnitTable.from_path(devauc_sigma_table_path),
-        rng=np.random.default_rng(101),
-        n_parent_sample=128,
-    )
-    sersic_population = _draw_trend_parent_population(
-        theta=sersic_theta,
-        profile=sersic_profile,
-        context=sersic_context,
-        sigma_table=SigmaUnitTable.from_path(sersic_sigma_table_path),
-        rng=np.random.default_rng(103),
-        n_parent_sample=128,
-    )
-
-    assert np.std(devauc_population["log_mstar"]) > 0.0
-    assert np.std(devauc_population["log_re_kpc"]) > 0.0
-    assert np.allclose(devauc_population["n"], 4.0)
-    assert np.isfinite(devauc_population["sigma_ap"]).any()
-
-    assert np.std(sersic_population["log_mstar"]) > 0.0
-    assert np.std(sersic_population["log_re_kpc"]) > 0.0
-    assert np.std(sersic_population["n"]) > 0.0
-    assert np.isfinite(sersic_population["sigma_ap"]).any()
-
-
-def test_reduce_population_to_mass_bins_uses_expected_bin_statistics() -> None:
+def test_numba_population_bin_reducer_uses_expected_bin_statistics() -> None:
     """
     External-style Fig. 8 trends are defined by bin averages, not pointwise curves.
 
@@ -2203,7 +2161,7 @@ def test_reduce_population_to_mass_bins_uses_expected_bin_statistics() -> None:
     - empty bins or zero-weight bins: `NaN` for the weighted categories
     """
 
-    from cmass_posterior_predictive.predictive import _reduce_population_to_mass_bins
+    from lensing_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
 
     log_mstar = np.array([10.20, 10.40, 10.70, 11.20], dtype=float)
     values = np.array([1.0, 3.0, 9.0, 20.0], dtype=float)
@@ -2211,13 +2169,33 @@ def test_reduce_population_to_mass_bins_uses_expected_bin_statistics() -> None:
     selected_weights = np.array([0.5, 1.5, 0.0, 1.0], dtype=float)
     mass_bin_edges = np.array([10.0, 10.5, 11.0, 11.5, 12.0], dtype=float)
 
-    reduced = _reduce_population_to_mass_bins(
-        log_mstar=log_mstar,
-        values=values,
-        mass_bin_edges=mass_bin_edges,
-        detectable_weights=detectable_weights,
-        selected_weights=selected_weights,
+    parent = np.empty(mass_bin_edges.size - 1, dtype=float)
+    detectable = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected = np.empty(mass_bin_edges.size - 1, dtype=float)
+    parent_counts = np.empty(mass_bin_edges.size - 1, dtype=np.int64)
+    detectable_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    _numba_reduce_population_to_bins(
+        log_mstar,
+        values,
+        mass_bin_edges,
+        detectable_weights,
+        selected_weights,
+        parent,
+        detectable,
+        selected,
+        parent_counts,
+        detectable_sums,
+        selected_sums,
     )
+    reduced = {
+        "parent": np.asarray(parent),
+        "detectable": np.asarray(detectable),
+        "selected": np.asarray(selected),
+        "parent_bin_counts": np.asarray(parent_counts),
+        "detectable_weight_sums": np.asarray(detectable_sums),
+        "selected_weight_sums": np.asarray(selected_sums),
+    }
 
     assert np.allclose(reduced["parent"][:3], np.array([2.0, 9.0, 20.0]))
     assert np.isnan(reduced["parent"][3])
@@ -2245,7 +2223,7 @@ def test_write_trend_panel_uses_distinct_band_solid_and_dashed_encodings() -> No
     - full_selection: blue dashed `p16` and `p84` boundary lines
     """
 
-    from cmass_posterior_predictive.predictive import _write_trend_panel
+    from lensing_posterior_predictive.predictive import _write_trend_panel
 
     mass_grid = np.array([11.0, 11.4, 11.8], dtype=float)
     summary = {
@@ -2280,7 +2258,7 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     synthetic scientific numbers that may change with implementation detail.
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "trend_output"
@@ -2316,7 +2294,8 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert payload["n_posterior_draws_used"] == 4
     assert payload["posterior_draw_mode"] == "sampled_subset"
     assert payload["posterior_draw_tail_cap"] == 192000
-    assert payload["parallel_strategy"] == "off"
+    assert payload["backend"] == "numba_shared_parent"
+    assert payload["parallel_strategy"] == "numba_shared_parent"
     assert payload["worker_processes"] == 0
     assert payload["n_parent_sample"] == 96
     assert payload["n_mass_bins"] == 6
@@ -2340,12 +2319,13 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert arrays["detectable_weight_sums_draws"].shape == (4, 6)
     assert arrays["selected_weight_sums_draws"].shape == (4, 6)
     assert np.isfinite(arrays["selected_sigma_ap_draws"]).any()
-    assert result.metadata["generator_mode"] == "sampled_population_binned"
+    assert result.metadata["backend"] == "numba_shared_parent"
+    assert result.metadata["generator_mode"] == "numba_shared_parent_binned"
     assert result.metadata["posterior_draw_mode"] == "sampled_subset"
     assert result.metadata["posterior_draw_tail_cap"] == 192000
     assert result.metadata["gamma_mode"] == "dependent"
     assert result.metadata["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
-    assert result.metadata["parallel_strategy"] == "off"
+    assert result.metadata["parallel_strategy"] == "numba_shared_parent"
     assert result.metadata["worker_processes"] == 0
     assert result.metadata["figure_title"] == "m5 | dependent gamma"
 
@@ -2360,7 +2340,7 @@ def test_run_posterior_trends_preserves_fig8_like_and_writes_gamma_axis_artifact
     - the new summaries must serialize the x-axis metadata needed by downstream consumers
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2421,7 +2401,7 @@ def test_run_posterior_trends_preserves_fig8_like_and_writes_gamma_axis_artifact
     assert delta_r_summary["observed_overlay_mode"] == "points"
 
 
-def test_reduce_population_to_mass_bins_includes_final_bin_right_edge(tmp_path: Path) -> None:
+def test_numba_population_bin_reducer_includes_final_bin_right_edge(tmp_path: Path) -> None:
     """
     The reducer should preserve shapes and keep the last bin closed on the right edge.
 
@@ -2430,28 +2410,40 @@ def test_reduce_population_to_mass_bins_includes_final_bin_right_edge(tmp_path: 
     the rightmost observed edge can disappear from the summary.
     """
 
-    from cmass_posterior_predictive.predictive import _reduce_population_to_mass_bins
+    from lensing_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
 
     log_mstar = np.array([10.0, 10.5, 11.0, 11.5], dtype=float)
     values = np.array([1.0, 2.0, 3.0, 4.0], dtype=float)
     mass_bin_edges = np.array([10.0, 10.5, 11.0, 11.5], dtype=float)
     weights = np.ones_like(values)
 
-    reduced = _reduce_population_to_mass_bins(
-        log_mstar=log_mstar,
-        values=values,
-        mass_bin_edges=mass_bin_edges,
-        detectable_weights=weights,
-        selected_weights=weights,
+    parent = np.empty(mass_bin_edges.size - 1, dtype=float)
+    detectable = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected = np.empty(mass_bin_edges.size - 1, dtype=float)
+    parent_counts = np.empty(mass_bin_edges.size - 1, dtype=np.int64)
+    detectable_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    _numba_reduce_population_to_bins(
+        log_mstar,
+        values,
+        mass_bin_edges,
+        weights,
+        weights,
+        parent,
+        detectable,
+        selected,
+        parent_counts,
+        detectable_sums,
+        selected_sums,
     )
 
-    assert reduced["parent"].shape == (3,)
-    assert reduced["detectable"].shape == (3,)
-    assert reduced["selected"].shape == (3,)
-    assert reduced["parent_bin_counts"].tolist() == [1, 1, 2]
-    assert reduced["parent"].tolist() == [1.0, 2.0, 3.5]
-    assert reduced["detectable"].tolist() == [1.0, 2.0, 3.5]
-    assert reduced["selected"].tolist() == [1.0, 2.0, 3.5]
+    assert parent.shape == (3,)
+    assert detectable.shape == (3,)
+    assert selected.shape == (3,)
+    assert parent_counts.tolist() == [1, 1, 2]
+    assert parent.tolist() == [1.0, 2.0, 3.5]
+    assert detectable.tolist() == [1.0, 2.0, 3.5]
+    assert selected.tolist() == [1.0, 2.0, 3.5]
 
 
 def test_gamma_vs_delta_r_observed_overlay_uses_points_summary(tmp_path: Path) -> None:
@@ -2463,7 +2455,7 @@ def test_gamma_vs_delta_r_observed_overlay_uses_points_summary(tmp_path: Path) -
     same point-style contract used by the `logre_kpc` trend plot.
     """
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2512,7 +2504,7 @@ def test_gamma_vs_delta_r_observed_overlay_uses_points_summary(tmp_path: Path) -
 def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) -> None:
     """Trend summaries and NPZ payloads should rename the mass axis to `m10` for `m10` runs."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2546,7 +2538,7 @@ def test_run_posterior_trends_uses_dynamic_m10_quantity_names(tmp_path: Path) ->
 def test_run_posterior_trends_records_independent_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Trend artifacts should expose the 10D contract when the run used independent gamma mode."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2580,7 +2572,7 @@ def test_run_posterior_trends_records_independent_gamma_mode_and_parameter_order
 def test_run_posterior_trends_records_sigma_star_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
     """Trend artifacts should expose the 11D contract for sigma-star gamma mode."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2614,7 +2606,7 @@ def test_run_posterior_trends_records_sigma_star_gamma_mode_and_parameter_order(
 def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: Path) -> None:
     """Omitting `n_posterior_draws` should use the tail-capped full chain by default."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
     result = run_posterior_trends(
@@ -2638,17 +2630,54 @@ def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: 
     assert payload["n_posterior_draws_used"] == 3 * 24
     assert payload["posterior_draw_mode"] == "tail_capped_full_chain"
     assert payload["posterior_draw_tail_cap"] == 192000
-    assert payload["parallel_strategy"] == "off"
+    assert payload["backend"] == "numba_shared_parent"
+    assert payload["parallel_strategy"] == "numba_shared_parent"
     assert payload["worker_processes"] == 0
     assert arrays["parent_m5_draws"].shape == (3 * 24, 5)
     assert result.metadata["posterior_draw_mode"] == "tail_capped_full_chain"
     assert result.metadata["requested_n_posterior_draws"] is None
 
 
+def test_run_posterior_trends_reads_numpyro_samples_npz_without_chain_h5(tmp_path: Path) -> None:
+    """Trend generation should use `samples.npz` when NumPyro runs omit `chain.h5`."""
+
+    from lensing_posterior_predictive.predictive import run_posterior_trends
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
+    samples_by_chain = _replace_chain_with_numpyro_samples_npz(
+        run_dir,
+        parameter_names=DEPENDENT_PARAMETER_ORDER,
+        n_chains=2,
+        n_draws=3,
+    )
+
+    result = run_posterior_trends(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "trend_output"),
+        burn_in="auto",
+        random_seed=39,
+        n_parent_sample=64,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=1,
+    )
+
+    payload = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
+    arrays = np.load(result.result_dir / "fig8_like_curves.npz")
+
+    assert not (run_dir / "chain.h5").exists()
+    assert payload["posterior_artifact"] == "samples.npz"
+    assert payload["posterior_draw_mode"] == "tail_capped_full_chain"
+    assert payload["n_posterior_draws_used"] == samples_by_chain.shape[0] * samples_by_chain.shape[1]
+    assert arrays["parent_m5_draws"].shape == (samples_by_chain.shape[0] * samples_by_chain.shape[1], 5)
+
+
 def test_run_posterior_trends_parallel_execution_matches_single_process_results(tmp_path: Path) -> None:
     """Changing trend worker count should not change outputs for the same seed and posterior draws."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
     output_root = tmp_path / "trend_parallel_output"
@@ -2717,7 +2746,7 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-trends",
             "--run-dir",
             str(run_dir),
@@ -2752,6 +2781,7 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
     assert payload["n_posterior_draws"] == 3
     assert payload["n_mass_bins"] == 5
     assert payload["metadata"]["n_parent_sample"] == 72
+    assert payload["metadata"]["backend"] == "numba_shared_parent"
     assert payload["metadata"]["worker_processes"] == 0
     assert payload["metadata"]["posterior_draw_mode"] == "sampled_subset"
     result_dir = Path(payload["result_dir"])
@@ -2759,12 +2789,61 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
     assert result_dir.name == "ppc"
 
 
+def test_cli_posterior_diagnostics_command_executes_shared_parent_pipeline(tmp_path: Path) -> None:
+    """The CLI should expose the Numba shared-parent PPC + trend workflow."""
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
+    output_root = tmp_path / "cli_diagnostics_output"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "lensing_posterior_predictive.cli",
+            "posterior-diagnostics",
+            "--run-dir",
+            str(run_dir),
+            "--sigma-table",
+            str(sigma_table_path),
+            "--output-dir",
+            str(output_root),
+            "--n-posterior-draws",
+            "3",
+            "--burn-in",
+            "1",
+            "--seed",
+            "131",
+            "--parent-sample-size",
+            "72",
+            "--n-mass-bins",
+            "5",
+            "--mass-bin-min",
+            "10.9",
+            "--mass-bin-max",
+            "11.9",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(completed.stdout)
+    assert payload["profile_name"] == "devauc"
+    assert payload["n_posterior_draws"] == 3
+    assert payload["parent_sample_size"] == 72
+    assert payload["metadata"]["backend"] == "numba_shared_parent"
+    result_dir = Path(payload["result_dir"])
+    assert (result_dir / "ppc_summary.json").exists()
+    assert (result_dir / "fig8_like_summary.json").exists()
+
+
 def test_cli_surface_exposes_canonical_trend_defaults() -> None:
     """The trend CLI should default to canonical full-posterior mode and expose worker control."""
 
-    from cmass_posterior_predictive.cli import build_argument_parser
-    from cmass_posterior_predictive.predictive import DEFAULT_PPC_OUTPUT_ROOT_DIR
-    from cmass_posterior_predictive.trends import run_posterior_trends
+    from lensing_posterior_predictive.cli import build_argument_parser
+    from lensing_posterior_predictive.predictive import DEFAULT_PPC_OUTPUT_ROOT_DIR
+    from lensing_posterior_predictive.predictive import run_posterior_diagnostics
+    from lensing_posterior_predictive.trends import run_posterior_trends
 
     parser = build_argument_parser()
     args = parser.parse_args(
@@ -2778,16 +2857,61 @@ def test_cli_surface_exposes_canonical_trend_defaults() -> None:
     )
 
     assert args.n_posterior_draws is None
+    assert args.n_parent_sample == 10000
     assert args.worker_processes is None
     assert Path(args.output_dir) == DEFAULT_PPC_OUTPUT_ROOT_DIR
+    diagnostics_args = parser.parse_args(["posterior-diagnostics", "--run-dir", "/tmp/run"])
+    assert diagnostics_args.sigma_table is None
     assert inspect.signature(run_posterior_trends).parameters["n_posterior_draws"].default is None
+    assert inspect.signature(run_posterior_trends).parameters["n_parent_sample"].default == 10000
     assert inspect.signature(run_posterior_trends).parameters["worker_processes"].default is None
+    assert inspect.signature(run_posterior_diagnostics).parameters["parent_sample_size"].default == 10000
+
+
+def test_cmass_diagnostics_requires_declared_sigma_table_input(tmp_path: Path) -> None:
+    """Missing external inputs should fail through the model-declared contract."""
+
+    from lensing_posterior_predictive.predictive import run_posterior_diagnostics
+
+    run_dir, _ = _build_completed_run(tmp_path, profile_name="sersic")
+
+    with pytest.raises(ValueError, match="cmass.*sigma_table"):
+        run_posterior_diagnostics(
+            run_dir=str(run_dir),
+            sigma_table_path=None,
+            output_root_dir=str(tmp_path / "diagnostics_output"),
+            n_posterior_draws=1,
+            burn_in=1,
+            parent_sample_size=64,
+        )
+
+
+def test_canonical_observation_contract_uses_metadata_before_filename(tmp_path: Path) -> None:
+    """Canonical-only PPC should not infer BOSS/slit flavor from dataset filename."""
+
+    from lensing_posterior_predictive.predictive import _load_observation_contract_from_canonical_dataset_path
+
+    dataset_path = tmp_path / "neutral_canonical_name.hdf5"
+    with h5py.File(dataset_path, "w") as handle:
+        metadata = handle.create_group("metadata")
+        metadata.attrs["observation_flavor"] = "boss"
+        metadata.attrs["sigma_definition"] = "observed_aperture"
+        metadata.attrs["aperture_shape"] = "circular"
+        metadata.attrs["aperture_radius_arcsec"] = 1.0
+        metadata.attrs["seeing_fwhm_arcsec"] = 1.5
+
+    contract = _load_observation_contract_from_canonical_dataset_path(dataset_path)
+
+    assert contract.observation_flavor == "boss"
+    assert contract.aperture_shape == "circular"
+    assert contract.aperture_radius_arcsec == pytest.approx(1.0)
+    assert contract.seeing_fwhm_arcsec == pytest.approx(1.5)
 
 
 def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_path: Path) -> None:
     """The figure annotator should resolve raw observations from each run config by default."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc", mass_radius_kpc=10)
     output_root = tmp_path / "outputs"
@@ -2811,7 +2935,7 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "annotate-fig8-observations",
             "--outputs-root",
             str(output_root),
@@ -2845,7 +2969,7 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
 def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Path) -> None:
     """Explicit `--run-dir` arguments should limit annotation to the requested runs only."""
 
-    from cmass_posterior_predictive.predictive import run_posterior_trends
+    from lensing_posterior_predictive.predictive import run_posterior_trends
 
     devauc_run_dir, devauc_sigma_table_path = _build_completed_run(
         tmp_path,
@@ -2919,7 +3043,7 @@ def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Pat
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "annotate-fig8-observations",
             "--outputs-root",
             str(output_root),
@@ -2959,7 +3083,7 @@ def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Pat
 def test_annotate_fig8_observations_uses_legacy_fallback_when_gamma_metadata_missing(tmp_path: Path) -> None:
     """Missing gamma metadata in both summary and config should fall back to dependent mode."""
 
-    from cmass_posterior_predictive.predictive import (
+    from lensing_posterior_predictive.predictive import (
         annotate_existing_fig8_like_figures_with_observations,
         run_posterior_trends,
     )
@@ -3019,7 +3143,7 @@ def test_cli_posterior_trends_rejects_removed_conditional_curve_arguments(tmp_pa
         [
             sys.executable,
             "-m",
-            "cmass_posterior_predictive.cli",
+            "lensing_posterior_predictive.cli",
             "posterior-trends",
             "--run-dir",
             str(run_dir),

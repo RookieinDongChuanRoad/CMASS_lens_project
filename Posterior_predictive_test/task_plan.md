@@ -112,7 +112,7 @@ Phase 12
 ## 已做决策
 | 决策 | 理由 |
 |------|------|
-| PPT 家族代码整体迁移到 `Posterior_predictive_test/src/cmass_posterior_predictive/` | 用户要求保持 `Bayesian_inference` “纯粹”，不再承载研究型 PPT 工作流 |
+| PPT 家族代码整体迁移到 `Posterior_predictive_test/src/lensing_posterior_predictive/` | 用户要求保持 `Bayesian_inference` “纯粹”，不再承载研究型 PPT 工作流 |
 | `theta_E` 与 `sigma` 的 replicated sample 分两次独立抽样 | 这是用户确认的统计口径，且与真实 23-lens / 7-lens 对照最一致 |
 | sigma 侧消费“大插值表”而非逐星系 `s2_grid` | 更接近 `prepare_intepolation_grids` 的职责，也更适合对任意 replicated lens 评估 |
 | planning 文件放在 `Posterior_predictive_test/` | 这是当前任务工作区，满足 `planning-with-files` 约束 |
@@ -130,7 +130,7 @@ Phase 12
 | canonical PPC 默认候选池 cap 提升到 `100000` | 这次用户真正要放大的参数是 `candidate_pool_size`，不是 `n_replicates` |
 | canonical PPC 主统计量改为 `median/std/p10/p90` | 用户明确要求把位置统计从 `mean` 切到 `median` |
 | canonical PPC 默认执行策略为 posterior-draw chunk 的 `process_pool` | `192000 x 100000` 的真实作业必须并行，否则运行时间不可接受 |
-| 新 CLI 根命令为 `cmass-posterior-predictive` | 迁移后 `cmass-lens-inference` 只保留 `run` / `resume`，不做兼容转发 |
+| 新 CLI 根命令为 `lensing-posterior-predictive` | 迁移后 `cmass-lens-inference` 只保留 `run` / `resume`，不做兼容转发 |
 | `Posterior_predictive_test` 通过依赖 `cmass_lens_inference` 复用底层能力 | 可以复用 inference engine，而不再把 PPT 实现放回 engine 包内 |
 | 顶层 comparison 脚本不再做 `sys.path` 注入 | 新包已经可 editable 安装，脚本应通过正式包入口运行 |
 | 本地双包安装顺序固定为先装 `Bayesian_inference`，再对 `Posterior_predictive_test` 执行 `pip install -e . --no-deps` | `cmass-lens-inference` 是本地包而非 PyPI 依赖，直接解析依赖名会失败 |
