@@ -85,12 +85,12 @@ def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
         enabled=bool(fp_prior_raw.get("enabled", False)),
         fit_mstar_min=float(fp_prior_raw.get("fit_mstar_min", 11.0)),
         pivot_mstar=float(fp_prior_raw.get("pivot_mstar", 11.3)),
-        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", 0.075)),
-        scatter_error=float(fp_prior_raw.get("scatter_error", 0.003)),
-        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", 2.34548)),
-        mu_v_error=float(fp_prior_raw.get("mu_v_error", 0.00611)),
-        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", 0.176)),
-        beta_v_error=float(fp_prior_raw.get("beta_v_error", 0.011)),
+        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", FPPriorConfig.fiducial_scatter)),
+        scatter_error=float(fp_prior_raw.get("scatter_error", FPPriorConfig.scatter_error)),
+        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", FPPriorConfig.mu_v_prior)),
+        mu_v_error=float(fp_prior_raw.get("mu_v_error", FPPriorConfig.mu_v_error)),
+        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", FPPriorConfig.beta_v_prior)),
+        beta_v_error=float(fp_prior_raw.get("beta_v_error", FPPriorConfig.beta_v_error)),
     )
 
 

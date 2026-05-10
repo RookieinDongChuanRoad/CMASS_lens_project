@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "cmass_lens_inference"
@@ -56,3 +57,19 @@ def test_model_posteriors_are_single_file_assemblies() -> None:
     """A model-owned posterior should keep its private kernels in the same file."""
 
     assert list((PACKAGE_ROOT / "models").rglob("posterior_kernels.py")) == []
+
+
+def test_sonnenfeld_posterior_reuses_generic_population_kernels() -> None:
+    """Sonnenfeld posterior should not duplicate generic population math."""
+
+    posterior_path = PACKAGE_ROOT / "models" / "sonnenfeld2024_slacs" / "posterior.py"
+    source_tree = ast.parse(posterior_path.read_text(encoding="utf-8"))
+    function_names = {
+        node.name
+        for node in source_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert "_size_relation_mean" not in function_names
+    assert "_parent_density_for_draw" not in function_names
+    assert "_active_truncation_mass_threshold" not in function_names

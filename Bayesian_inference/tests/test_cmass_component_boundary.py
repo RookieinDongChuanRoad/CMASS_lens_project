@@ -89,7 +89,7 @@ def test_cmass_parameter_component_exposes_fixed_schema() -> None:
 
 
 def test_cmass_registry_definition_is_numba_kernel_backed() -> None:
-    """The registry should expose CMASS through the production Numba adapter."""
+    """The registry should expose CMASS through the model-owned posterior."""
 
     model_definition = get_model_definition("cmass")
 

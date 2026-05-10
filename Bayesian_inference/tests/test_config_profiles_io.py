@@ -159,12 +159,12 @@ def test_load_runtime_config_builds_fp_prior_config_when_enabled(
     assert runtime_config.data.sigma_table_path is None
     assert runtime_config.fp_prior.fit_mstar_min == pytest.approx(11.0)
     assert runtime_config.fp_prior.pivot_mstar == pytest.approx(11.3)
-    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.075)
-    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.003)
-    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.34548, abs=1.0e-5)
-    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.00611, abs=1.0e-5)
-    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.176, abs=1.0e-6)
-    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.011)
+    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.047)
+    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.008)
+    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.341871, abs=1.0e-6)
+    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.03)
+    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.25774, abs=1.0e-6)
+    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.03)
 
 
 def test_load_runtime_config_rejects_model_components(synthetic_config_path: Path) -> None:

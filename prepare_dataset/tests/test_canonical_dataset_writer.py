@@ -203,6 +203,39 @@ def test_write_canonical_inference_dataset_creates_expected_schema_blocks(tmp_pa
 
         cross_section = handle["lensing_cross_section"]
         assert cross_section["cross_section_grid"].shape == (3, 3)
+
+
+def test_write_canonical_inference_dataset_records_observation_contract_metadata(tmp_path: Path) -> None:
+    """Canonical metadata should preserve explicit observed-aperture geometry."""
+
+    observation_path = _write_observation_file(tmp_path / "observations.hdf5")
+    with h5py.File(observation_path, "a") as handle:
+        for group in handle.values():
+            group.attrs["observation_flavor"] = "boss"
+            group.attrs["sigma_definition"] = "observed_aperture"
+            group.attrs["aperture_shape"] = "circular"
+            group.attrs["aperture_radius_arcsec"] = 1.0
+            group.attrs["seeing_fwhm_arcsec"] = 1.5
+
+    output_path = write_canonical_inference_dataset(
+        observation_path=observation_path,
+        cross_section_path=_write_cross_section_file(tmp_path / "cross_section.h5"),
+        output_path=tmp_path / "neutral_filename.hdf5",
+        profile_name="sersic",
+        mass_definition_label="m5_hinvkpc",
+        unit_convention=H_UNITS_V1,
+        h_ref=0.7,
+        theta_e_axis=np.asarray([0.5, 1.0, 2.0], dtype=float),
+    )
+
+    with h5py.File(output_path, "r") as handle:
+        metadata = handle["metadata"].attrs
+        assert metadata["observation_flavor"] == "boss"
+        assert metadata["sigma_definition"] == "observed_aperture"
+        assert metadata["aperture_shape"] == "circular"
+        assert metadata["aperture_radius_arcsec"] == pytest.approx(1.0)
+        assert metadata["seeing_fwhm_arcsec"] == pytest.approx(1.5)
+        cross_section = handle["lensing_cross_section"]
         expected = np.pi * (np.asarray([0.5, 1.0, 2.0])[:, None] * np.asarray([0.2, 0.3, 0.4])[None, :]) ** 2
         np.testing.assert_allclose(cross_section["cross_section_grid"][()], expected)
 

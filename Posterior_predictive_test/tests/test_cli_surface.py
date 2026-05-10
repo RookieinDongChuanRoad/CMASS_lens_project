@@ -147,3 +147,29 @@ def test_standalone_cli_output_dir_explicit_override_wins() -> None:
     assert posterior_diagnostics_args.output_dir == output_root
     assert monitor_args.output_dir == output_root
     assert annotate_args.outputs_root == output_root
+
+
+def test_posterior_diagnostics_cli_advertises_numba_backend() -> None:
+    """
+    The combined PPC + trend diagnostics command should advertise the production
+    Numba backend, not the retired JAX implementation.
+
+    This is deliberately a CLI-surface test rather than an implementation
+    import check: users discover the backend contract from the command help,
+    and downstream automation often snapshots that help text.
+    """
+
+    from cmass_posterior_predictive.cli import build_argument_parser
+
+    parser = build_argument_parser()
+    subparser_action = next(
+        action for action in parser._actions if getattr(action, "choices", None)
+    )
+    diagnostics_help = next(
+        choice.help
+        for choice in subparser_action._choices_actions
+        if choice.dest == "posterior-diagnostics"
+    )
+
+    assert "Numba" in diagnostics_help
+    assert "JAX" not in diagnostics_help

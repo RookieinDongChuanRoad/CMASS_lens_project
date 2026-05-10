@@ -9,13 +9,14 @@ the engineering contract needed before real-data validation can happen:
 - the runtime should build a model-specific context from canonical input;
 - paper-native fixed-mass coordinates should keep the paper's mass-location
   constants unshifted, while h-dependent coordinates should shift them before
-  production kernels consume them;
-- the Numba production likelihood backend should be able to evaluate one finite
+  the model posterior consumes them;
+- the Numba likelihood backend should be able to evaluate one finite
   posterior value through the Sonnenfeld kernel.
 """
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,7 @@ from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, g
 from cmass_lens_inference.model_registry import get_model_definition
 from cmass_lens_inference.models.sonnenfeld2024_slacs import assembly as capabilities
 from cmass_lens_inference.models.sonnenfeld2024_slacs import paper_constants as parameters
+from cmass_lens_inference.models.sonnenfeld2024_slacs import posterior as sonnenfeld_posterior
 from cmass_lens_inference.models.sonnenfeld2024_slacs.preprocessing import (
     build_sonnenfeld_context_from_canonical_dataset,
     _parent_density_grid,
@@ -164,6 +166,8 @@ def test_sonnenfeld_selection_proxy_uses_paper_fractional_scatter() -> None:
     """Sonnenfeld Section 4.5 uses a 6.25% velocity-dispersion proxy scatter."""
 
     assert parameters.SIGMA_PROXY_FRACTIONAL_SCATTER == pytest.approx(0.0625)
+    source = inspect.getsource(sonnenfeld_posterior)
+    assert "max(0.1" not in source
 
 
 def test_sonnenfeld_effective_source_redshift_is_ordinary_gaussian() -> None:
@@ -179,11 +183,85 @@ def test_sonnenfeld_effective_source_redshift_is_ordinary_gaussian() -> None:
     )
 
 
-def test_sonnenfeld_parent_density_uses_arctan_truncation() -> None:
-    """Equation 27 uses an arctan completeness term, not a logistic surrogate."""
+def test_sonnenfeld_population_source_redshift_draw_is_nonnegative_truncated() -> None:
+    """The reference population normalization draws source redshifts from z_s >= 0."""
 
-    zd = np.asarray([0.55], dtype=np.float64)
+    theta = np.asarray(
+        [
+            11.2,
+            0.0,
+            0.0,
+            0.05,
+            2.0,
+            0.0,
+            0.0,
+            0.1,
+            0.1,
+            0.1,
+            1.0,
+            0.0,
+        ],
+        dtype=np.float64,
+    )
+    standard_normal_draws = np.zeros(8, dtype=np.float64)
+    standard_normal_draws[5] = -8.0
+
+    _, source_redshift, *_ = sonnenfeld_posterior._draw_population_state(
+        theta,
+        standard_normal_draws,
+        0.2,
+        11.3,
+        0.7,
+        0.0,
+        parameters.MSTAR_PIVOT_PHYSICAL,
+        4.0,
+        0,
+        parameters.GAMMA_TRUNC_LOW,
+        parameters.GAMMA_TRUNC_HIGH,
+    )
+
+    assert source_redshift >= 0.0
+
+
+def test_sonnenfeld_population_source_mask_matches_reference_window() -> None:
+    """The reference normalization keeps only z_s > z_d + 0.05 and 0.05 < z_s < 2."""
+
+    assert sonnenfeld_posterior._passes_reference_source_redshift_mask(
+        0.30,
+        0.36,
+        parameters.SOURCE_Z_MIN,
+        parameters.SOURCE_Z_MAX,
+        parameters.SOURCE_LENS_REDSHIFT_GAP,
+    )
+    assert not sonnenfeld_posterior._passes_reference_source_redshift_mask(
+        0.30,
+        0.34,
+        parameters.SOURCE_Z_MIN,
+        parameters.SOURCE_Z_MAX,
+        parameters.SOURCE_LENS_REDSHIFT_GAP,
+    )
+    assert not sonnenfeld_posterior._passes_reference_source_redshift_mask(
+        0.30,
+        0.05,
+        parameters.SOURCE_Z_MIN,
+        parameters.SOURCE_Z_MAX,
+        parameters.SOURCE_LENS_REDSHIFT_GAP,
+    )
+    assert not sonnenfeld_posterior._passes_reference_source_redshift_mask(
+        0.30,
+        2.00,
+        parameters.SOURCE_Z_MIN,
+        parameters.SOURCE_Z_MAX,
+        parameters.SOURCE_LENS_REDSHIFT_GAP,
+    )
+
+
+def test_sonnenfeld_parent_density_uses_reference_volume_and_arctan_truncation() -> None:
+    """Equation 27 uses reference volume weighting and arctan completeness."""
+
+    zd = np.asarray([0.25], dtype=np.float64)
     mstar_grid = np.asarray([[10.99, 11.56, 11.80]], dtype=np.float64)
+    volume_factor = np.asarray([42.0], dtype=np.float64)
 
     density = _parent_density_grid(
         zd=zd,
@@ -192,6 +270,7 @@ def test_sonnenfeld_parent_density_uses_arctan_truncation() -> None:
         parent_alpha=parameters.PARENT_ALPHA,
         h_ref=0.7,
         unit_convention=LEGACY_FIXED_KPC,
+        volume_factor=volume_factor,
     )
 
     threshold = sum(
@@ -207,7 +286,7 @@ def test_sonnenfeld_parent_density_uses_arctan_truncation() -> None:
     )
     schechter_mass = 10.0 ** (mstar_grid - parameters.MBAR_PHYSICAL)
     expected = (
-        zd[:, None] ** 2
+        volume_factor[:, None]
         * completeness
         * 10.0 ** ((mstar_grid - parameters.MBAR_PHYSICAL) * (parameters.PARENT_ALPHA + 1.0))
         * np.exp(-schechter_mass)
@@ -271,6 +350,71 @@ def test_paper_native_sonnenfeld_preprocessing_uses_quadratic_size_relation(
     assert context.size_mu2 == pytest.approx(parameters.SIZE_MU2_PHYSICAL)
 
 
+def test_sonnenfeld_context_uses_reference_parent_sample_not_runtime_proposal(
+    tmp_path: Path,
+    sonnenfeld_fixed_m5_ready_dataset_path: Path,
+) -> None:
+    """Sonnenfeld runtime must consume parent-distribution samples directly."""
+
+    config_path = _minimal_sonnenfeld_config(
+        tmp_path,
+        sonnenfeld_fixed_m5_ready_dataset_path,
+        model_name="sonnenfeld2024_slacs",
+        unit_convention=LEGACY_FIXED_KPC,
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["integration"]["normalization_samples"] = 64
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    config = load_runtime_config(config_path)
+
+    bundle = build_sonnenfeld_context_from_canonical_dataset(config)
+    context = bundle.context
+
+    assert context.parent_sample_zd.shape == (64,)
+    assert context.parent_sample_mstar.shape == (64,)
+    assert context.parent_sample_log_re.shape == (64,)
+    assert context.parent_sample_delta_r.shape == (64,)
+    assert np.all(context.parent_sample_zd >= parameters.PARENT_ZD_MIN)
+    assert np.all(context.parent_sample_zd <= parameters.PARENT_ZD_MAX)
+    assert np.all(context.parent_sample_mstar >= parameters.PARENT_MSTAR_MIN_PHYSICAL)
+    assert np.all(context.parent_sample_mstar <= parameters.PARENT_MSTAR_MAX_PHYSICAL)
+
+    source = inspect.getsource(sonnenfeld_posterior)
+    assert "proposal_density" not in source
+    assert "parent_density / proposal_density" not in source
+
+
+def test_sonnenfeld_fp_prior_defaults_match_reference_fitpars(
+    tmp_path: Path,
+    sonnenfeld_fixed_m5_ready_dataset_path: Path,
+) -> None:
+    """Enabling the FP prior without overrides should reproduce reference defaults."""
+
+    config_path = _minimal_sonnenfeld_config(
+        tmp_path,
+        sonnenfeld_fixed_m5_ready_dataset_path,
+        model_name="sonnenfeld2024_slacs",
+        unit_convention=LEGACY_FIXED_KPC,
+    )
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    payload["fp_prior"] = {"enabled": True}
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    config = load_runtime_config(config_path)
+
+    bundle = build_sonnenfeld_context_from_canonical_dataset(config)
+    context = bundle.context
+
+    expected_mu_v = 2.2577 + 0.3034 * 0.3 - 0.0761 * 0.3**2
+    expected_beta_v = 0.3034 - 2.0 * 0.0761 * 0.3
+
+    assert context.fp_fiducial_scatter == pytest.approx(0.047)
+    assert context.fp_scatter_error == pytest.approx(0.008)
+    assert context.fp_mu_v_prior == pytest.approx(expected_mu_v)
+    assert context.fp_mu_v_error == pytest.approx(0.03)
+    assert context.fp_beta_v_prior == pytest.approx(expected_beta_v)
+    assert context.fp_beta_v_error == pytest.approx(0.03)
+
+
 def test_sonnenfeld_hunit_preprocessing_builds_context_and_hunit_mass_constants(
     tmp_path: Path,
     sonnenfeld_hunit_ready_dataset_path: Path,
@@ -298,10 +442,10 @@ def test_sonnenfeld_hunit_preprocessing_builds_context_and_hunit_mass_constants(
         parameters.shift_physical_mass_location_to_hunits(parameters.MBAR_PHYSICAL, 0.7)
     )
     assert context.parent_mstar_min == pytest.approx(
-        context.mbar + parameters.PARENT_MSTAR_MIN_OFFSET
+        parameters.shift_physical_mass_location_to_hunits(parameters.PARENT_MSTAR_MIN_PHYSICAL, 0.7)
     )
     assert context.parent_mstar_max == pytest.approx(
-        context.mbar + parameters.PARENT_MSTAR_MAX_OFFSET
+        parameters.shift_physical_mass_location_to_hunits(parameters.PARENT_MSTAR_MAX_PHYSICAL, 0.7)
     )
     assert truncation_mass_threshold(
         np.asarray([context.zd[0]], dtype=np.float64),
@@ -402,6 +546,77 @@ def test_sonnenfeld_numba_log_prob_is_finite_for_synthetic_dataset(
     assert np.isfinite(value)
     assert np.isfinite(float(blob["normalization_value"]))
     assert compiled.context.population_sigma_unit_grid.shape == (3, 2, 2, 2)
+
+
+def test_sonnenfeld_fp_prior_contributes_to_log_prob_when_enabled(
+    tmp_path: Path,
+    sonnenfeld_fixed_m5_ready_dataset_path: Path,
+) -> None:
+    """Enabling the FP prior should add its quadratic penalty to Sonnenfeld."""
+
+    config_path = _minimal_sonnenfeld_config(
+        tmp_path,
+        sonnenfeld_fixed_m5_ready_dataset_path,
+        model_name="sonnenfeld2024_slacs",
+        unit_convention=LEGACY_FIXED_KPC,
+    )
+    base_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    base_payload["integration"]["normalization_samples"] = 256
+    disabled_payload = yaml.safe_load(yaml.safe_dump(base_payload))
+    enabled_payload = yaml.safe_load(yaml.safe_dump(base_payload))
+    disabled_payload["fp_prior"] = {"enabled": False}
+    enabled_payload["fp_prior"] = {
+        "enabled": True,
+        "fit_mstar_min": 11.0,
+        "pivot_mstar": 11.3,
+        # These deliberately loose reference values keep the synthetic fixture
+        # finite while still making a missing prior contribution observable.
+        "fiducial_scatter": 0.1,
+        "scatter_error": 10.0,
+        "mu_v_prior": 1.0,
+        "mu_v_error": 10.0,
+        "beta_v_prior": 1.0,
+        "beta_v_error": 10.0,
+    }
+    disabled_config_path = tmp_path / "sonnenfeld_fp_disabled.yaml"
+    enabled_config_path = tmp_path / "sonnenfeld_fp_enabled.yaml"
+    disabled_config_path.write_text(
+        yaml.safe_dump(disabled_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    enabled_config_path.write_text(
+        yaml.safe_dump(enabled_payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    disabled_config = load_runtime_config(disabled_config_path)
+    enabled_config = load_runtime_config(enabled_config_path)
+    theta = enabled_config.sampling.initial_center.to_array()
+
+    disabled_compiled = build_compiled_model(disabled_config)
+    enabled_compiled = build_compiled_model(enabled_config)
+    disabled_value, disabled_blob = log_prob(theta, disabled_compiled)
+    enabled_value, enabled_blob = log_prob(theta, enabled_compiled)
+    fp_prior_log_term = float(enabled_blob["fp_prior_log_term"])
+
+    assert enabled_compiled.context.fp_enabled == 1
+    assert disabled_compiled.context.fp_enabled == 0
+    assert np.isfinite(disabled_value)
+    assert np.isfinite(enabled_value)
+    assert float(enabled_blob["normalization_value"]) == pytest.approx(
+        float(disabled_blob["normalization_value"]),
+        abs=1.0e-8,
+    )
+    assert np.isfinite(fp_prior_log_term)
+    assert fp_prior_log_term != pytest.approx(0.0)
+    assert np.isfinite(float(enabled_blob["fpfit_mu"]))
+    assert np.isfinite(float(enabled_blob["fpfit_beta"]))
+    assert np.isfinite(float(enabled_blob["fpfit_xi"]))
+    assert np.isfinite(float(enabled_blob["fpfit_scatter"]))
+    assert enabled_value == pytest.approx(
+        disabled_value + fp_prior_log_term,
+        abs=1.0e-8,
+    )
 
 
 def test_sonnenfeld_hunit_numba_log_prob_is_finite_for_synthetic_dataset(

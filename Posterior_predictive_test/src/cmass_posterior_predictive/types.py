@@ -26,7 +26,7 @@ class PosteriorPredictiveResult:
     burn_in_applied: int
     n_replicates: int
     sample_sizes: dict[str, int]
-    sigma_table_path: Path
+    sigma_table_path: Path | None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,7 +82,7 @@ class PosteriorTrendResult:
     burn_in_applied: int
     n_posterior_draws: int
     n_mass_bins: int
-    sigma_table_path: Path
+    sigma_table_path: Path | None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,7 +108,7 @@ class PosteriorDiagnosticsResult:
     n_posterior_draws: int
     parent_sample_size: int
     n_mass_bins: int
-    sigma_table_path: Path
+    sigma_table_path: Path | None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

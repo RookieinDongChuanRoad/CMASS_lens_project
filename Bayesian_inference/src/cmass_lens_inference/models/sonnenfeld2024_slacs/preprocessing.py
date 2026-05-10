@@ -39,6 +39,64 @@ from .assembly import REQUIRED_CAPABILITIES
 from .context import SonnenfeldModelContext
 
 
+_SQRT2 = math.sqrt(2.0)
+
+
+def _standard_normal_cdf(values: np.ndarray) -> np.ndarray:
+    """Map deterministic standard-normal draws to open-interval uniforms."""
+
+    uniforms = np.asarray(
+        [0.5 * (1.0 + math.erf(float(value) / _SQRT2)) for value in values],
+        dtype=np.float64,
+    )
+    return np.clip(uniforms, 1.0e-12, 1.0 - 1.0e-12)
+
+
+def _cumulative_trapezoid(values: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """
+    Return a cumulative trapezoid integral with the same length as `axis`.
+
+    The helper is intentionally local and explicit because this preprocessing
+    step defines the parent-population sampling contract; hiding it behind a
+    generic interpolation utility would make later science audits harder.
+    """
+
+    cumulative = np.zeros(axis.shape[0], dtype=np.float64)
+    if axis.shape[0] <= 1:
+        return cumulative
+    increments = 0.5 * (values[1:] + values[:-1]) * (axis[1:] - axis[:-1])
+    cumulative[1:] = np.cumsum(increments)
+    return cumulative
+
+
+def _reference_volume_factor(zd: np.ndarray, cosmology: FlatLambdaCDM) -> np.ndarray:
+    """
+    Evaluate the reference parent redshift factor `comovd(z)^2 dcomovd/dz`.
+
+    Sonnenfeld's reference `mz_distribution.py` samples the parent population
+    with this comoving-volume factor.  The overall solid-angle constant cancels
+    in the posterior, so the local implementation keeps the same proportional
+    redshift dependence without introducing another unit convention.
+    """
+
+    z_values = np.asarray(zd, dtype=np.float64)
+    comoving_distance = np.interp(
+        z_values,
+        cosmology.z_table,
+        cosmology.comoving_distance_table_mpc,
+    )
+    # Reference `sl_cosmology.dcomovdz` evaluates c / H(z) directly.  Using the
+    # same analytic derivative avoids baking a table-gradient approximation into
+    # the parent population and keeps only the comoving-distance interpolation as
+    # the local backend's deterministic distance-table convention.
+    expansion = np.sqrt(
+        cosmology.omega_lambda
+        + cosmology.omega_m * np.power(1.0 + z_values, 3.0)
+    )
+    dcomoving_dz = (cosmology.speed_of_light_km_s / cosmology.h0) / expansion
+    return np.square(comoving_distance) * dcomoving_dz
+
+
 def load_sonnenfeld_canonical_dataset(
     runtime_config: RuntimeConfig,
     *,
@@ -102,6 +160,59 @@ def _active_mass_locations(runtime_config: RuntimeConfig) -> tuple[float, float]
     )
 
 
+def _active_fp_prior_mass_locations(runtime_config: RuntimeConfig) -> tuple[float, float]:
+    """
+    Return FP-fit mass cut and pivot in the active model coordinate.
+
+    The FP-prior defaults come from the SLACS reference implementation and are
+    physical stellar-mass locations.  Sonnenfeld's h-unit variant shifts all
+    stellar-mass coordinates before runtime kernels see them, so the FP cut and
+    pivot must be shifted by the same rule as the Table-1 mass locations.
+    """
+
+    if runtime_config.unit_convention == LEGACY_FIXED_KPC:
+        return runtime_config.fp_prior.fit_mstar_min, runtime_config.fp_prior.pivot_mstar
+    if runtime_config.unit_convention == H_UNITS_V1:
+        return (
+            parameters.shift_physical_mass_location_to_hunits(
+                runtime_config.fp_prior.fit_mstar_min,
+                runtime_config.h_ref,
+            ),
+            parameters.shift_physical_mass_location_to_hunits(
+                runtime_config.fp_prior.pivot_mstar,
+                runtime_config.h_ref,
+            ),
+        )
+    raise ValueError(
+        "Sonnenfeld FP prior supports unit_convention "
+        f"'{LEGACY_FIXED_KPC}' or '{H_UNITS_V1}', got "
+        f"'{runtime_config.unit_convention}'."
+    )
+
+
+def _active_parent_mstar_bounds(runtime_config: RuntimeConfig) -> tuple[float, float]:
+    """Return reference parent-sample stellar-mass bounds in the active coordinate."""
+
+    if runtime_config.unit_convention == LEGACY_FIXED_KPC:
+        return parameters.PARENT_MSTAR_MIN_PHYSICAL, parameters.PARENT_MSTAR_MAX_PHYSICAL
+    if runtime_config.unit_convention == H_UNITS_V1:
+        return (
+            parameters.shift_physical_mass_location_to_hunits(
+                parameters.PARENT_MSTAR_MIN_PHYSICAL,
+                runtime_config.h_ref,
+            ),
+            parameters.shift_physical_mass_location_to_hunits(
+                parameters.PARENT_MSTAR_MAX_PHYSICAL,
+                runtime_config.h_ref,
+            ),
+        )
+    raise ValueError(
+        "Sonnenfeld parent mass bounds support unit_convention "
+        f"'{LEGACY_FIXED_KPC}' or '{H_UNITS_V1}', got "
+        f"'{runtime_config.unit_convention}'."
+    )
+
+
 def truncation_mass_threshold(
     zd: np.ndarray,
     *,
@@ -138,16 +249,15 @@ def _parent_density_grid(
     parent_alpha: float,
     h_ref: float,
     unit_convention: str,
+    volume_factor: np.ndarray,
 ) -> np.ndarray:
     """
     Evaluate the unnormalized Sonnenfeld parent ``P_g(z_d, m*)`` on a grid.
 
     The normalization cancels between likelihood and selection normalization,
     so the model only needs a positive density up to an overall constant.  The
-    redshift factor is represented by a simple comoving-volume proxy ``z_d^2``
-    in this first production implementation; the expensive survey parent
-    fitting stays outside runtime, consistent with the canonical-dataset
-    boundary.
+    redshift factor is provided by preprocessing and follows the reference
+    `comovd(z)^2 dcomovd/dz` parent-population term.
     """
 
     threshold = truncation_mass_threshold(
@@ -160,8 +270,80 @@ def _parent_density_grid(
     schechter_mass = np.power(10.0, mstar_grid - mbar)
     schechter = np.power(10.0, (mstar_grid - mbar) * (parent_alpha + 1.0))
     schechter *= np.exp(-schechter_mass)
-    volume_proxy = np.square(np.maximum(zd[:, None], 1.0e-6))
-    return np.ascontiguousarray(volume_proxy * completeness * schechter, dtype=np.float64)
+    return np.ascontiguousarray(volume_factor[:, None] * completeness * schechter, dtype=np.float64)
+
+
+def _build_reference_parent_samples(
+    *,
+    runtime_config: RuntimeConfig,
+    cosmology: FlatLambdaCDM,
+    base_normals: np.ndarray,
+    mbar: float,
+    parent_alpha: float,
+    size_mu0: float,
+    size_mu1: float,
+    size_mu2: float,
+    size_sigma: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Draw deterministic samples from the reference `p(z_d, M_*)` distribution.
+
+    This replaces the earlier runtime proposal distribution.  The first two
+    fixed random-basis columns are transformed to uniforms and inverted through
+    the parent CDF: first the marginal `p(z_d)`, then the conditional
+    `p(M_* | z_d)`.  The third basis column supplies the reference Gaussian size
+    residual at fixed stellar mass.
+    """
+
+    parent_mstar_min, parent_mstar_max = _active_parent_mstar_bounds(runtime_config)
+    zd_axis = np.linspace(parameters.PARENT_ZD_MIN, parameters.PARENT_ZD_MAX, 256, dtype=np.float64)
+    mstar_axis = np.linspace(parent_mstar_min, parent_mstar_max, 512, dtype=np.float64)
+    volume_factor = _reference_volume_factor(zd_axis, cosmology)
+    density_grid = _parent_density_grid(
+        zd=zd_axis,
+        mstar_grid=np.repeat(mstar_axis[None, :], zd_axis.shape[0], axis=0),
+        mbar=mbar,
+        parent_alpha=parent_alpha,
+        h_ref=runtime_config.h_ref,
+        unit_convention=runtime_config.unit_convention,
+        volume_factor=volume_factor,
+    )
+    zd_marginal = np.trapezoid(density_grid, mstar_axis, axis=1)
+    zd_cdf = _cumulative_trapezoid(zd_marginal, zd_axis)
+    if zd_cdf[-1] <= 0.0:
+        raise ValueError("Sonnenfeld parent redshift distribution has zero integral.")
+    zd_cdf /= zd_cdf[-1]
+
+    u_zd = _standard_normal_cdf(base_normals[:, 0])
+    u_mstar = _standard_normal_cdf(base_normals[:, 1])
+    parent_zd = np.interp(u_zd, zd_cdf, zd_axis)
+    parent_mstar = np.zeros(base_normals.shape[0], dtype=np.float64)
+
+    for sample_index, zd_value in enumerate(parent_zd):
+        row_density = _parent_density_grid(
+            zd=np.asarray([zd_value], dtype=np.float64),
+            mstar_grid=mstar_axis[None, :],
+            mbar=mbar,
+            parent_alpha=parent_alpha,
+            h_ref=runtime_config.h_ref,
+            unit_convention=runtime_config.unit_convention,
+            volume_factor=_reference_volume_factor(np.asarray([zd_value], dtype=np.float64), cosmology),
+        )[0]
+        mstar_cdf = _cumulative_trapezoid(row_density, mstar_axis)
+        if mstar_cdf[-1] <= 0.0:
+            raise ValueError("Sonnenfeld parent stellar-mass conditional has zero integral.")
+        mstar_cdf /= mstar_cdf[-1]
+        parent_mstar[sample_index] = np.interp(u_mstar[sample_index], mstar_cdf, mstar_axis)
+
+    mu_r = size_mu0 + size_mu1 * parent_mstar + size_mu2 * np.square(parent_mstar)
+    parent_delta_r = size_sigma * np.asarray(base_normals[:, 2], dtype=np.float64)
+    parent_log_re = mu_r + parent_delta_r
+    return (
+        np.ascontiguousarray(parent_zd, dtype=np.float64),
+        np.ascontiguousarray(parent_mstar, dtype=np.float64),
+        np.ascontiguousarray(parent_log_re, dtype=np.float64),
+        np.ascontiguousarray(parent_delta_r, dtype=np.float64),
+    )
 
 
 def _stellar_mass_quadrature_arrays(
@@ -169,6 +351,7 @@ def _stellar_mass_quadrature_arrays(
     runtime_config: RuntimeConfig,
     dataset: CanonicalInferenceDataset,
     profile: ProfileSpec,
+    cosmology: FlatLambdaCDM,
     mstar_pivot: float,
     mbar: float,
     size_mu0: float,
@@ -224,6 +407,10 @@ def _stellar_mass_quadrature_arrays(
         parent_alpha=parameters.PARENT_ALPHA,
         h_ref=runtime_config.h_ref,
         unit_convention=runtime_config.unit_convention,
+        volume_factor=_reference_volume_factor(
+            np.asarray(dataset.lenses.z_d, dtype=np.float64),
+            cosmology,
+        ),
     )
     return (
         np.ascontiguousarray(mstar_grid, dtype=np.float64),
@@ -284,6 +471,7 @@ def build_sonnenfeld_context_from_canonical_dataset(
         runtime_config=runtime_config,
         dataset=active_dataset,
         profile=active_profile,
+        cosmology=cosmology,
         mstar_pivot=mstar_pivot,
         mbar=mbar,
         size_mu0=size_mu0,
@@ -304,6 +492,24 @@ def build_sonnenfeld_context_from_canonical_dataset(
     )
     if population_has_n_axis == 0 and active_profile.fixed_n is None:
         raise ValueError("Sonnenfeld sersic population sigma grid must include n_axis.")
+    fp_fit_mstar_min, fp_pivot_mstar = _active_fp_prior_mass_locations(runtime_config)
+    parent_mstar_min, parent_mstar_max = _active_parent_mstar_bounds(runtime_config)
+    (
+        parent_sample_zd,
+        parent_sample_mstar,
+        parent_sample_log_re,
+        parent_sample_delta_r,
+    ) = _build_reference_parent_samples(
+        runtime_config=runtime_config,
+        cosmology=cosmology,
+        base_normals=random_basis.base_normals,
+        mbar=mbar,
+        parent_alpha=parameters.PARENT_ALPHA,
+        size_mu0=size_mu0,
+        size_mu1=size_mu1,
+        size_mu2=size_mu2,
+        size_sigma=parameters.SIZE_SCATTER,
+    )
 
     context = SonnenfeldModelContext(
         z_grid=np.ascontiguousarray(cosmology.z_table, dtype=np.float64),
@@ -332,11 +538,24 @@ def build_sonnenfeld_context_from_canonical_dataset(
         delta_r_grid=delta_r_grid,
         mstar_shift_grid=mstar_shift_grid,
         base_normals=np.ascontiguousarray(random_basis.base_normals, dtype=np.float64),
+        parent_sample_zd=parent_sample_zd,
+        parent_sample_mstar=parent_sample_mstar,
+        parent_sample_log_re=parent_sample_log_re,
+        parent_sample_delta_r=parent_sample_delta_r,
         population_gamma_axis=np.ascontiguousarray(population_gamma_axis, dtype=np.float64),
         population_zd_axis=np.ascontiguousarray(population_zd_axis, dtype=np.float64),
         population_log_re_kpc_axis=np.ascontiguousarray(population_log_re_axis, dtype=np.float64),
         population_n_axis=np.ascontiguousarray(population_n_axis, dtype=np.float64),
         population_sigma_unit_grid=np.ascontiguousarray(population_sigma_unit_grid, dtype=np.float64),
+        fp_enabled=1 if runtime_config.fp_prior.enabled else 0,
+        fp_fit_mstar_min=float(fp_fit_mstar_min),
+        fp_pivot_mstar=float(fp_pivot_mstar),
+        fp_fiducial_scatter=float(runtime_config.fp_prior.fiducial_scatter),
+        fp_scatter_error=float(runtime_config.fp_prior.scatter_error),
+        fp_mu_v_prior=float(runtime_config.fp_prior.mu_v_prior),
+        fp_mu_v_error=float(runtime_config.fp_prior.mu_v_error),
+        fp_beta_v_prior=float(runtime_config.fp_prior.beta_v_prior),
+        fp_beta_v_error=float(runtime_config.fp_prior.beta_v_error),
         mass_radius_kpc=float(runtime_config.mass_definition.physical_radius_kpc(runtime_config.h_ref)),
         mass_log_physical_offset=float(runtime_config.mass_definition.log_mass_physical_offset(runtime_config.h_ref)),
         mstar_pivot=float(mstar_pivot),
@@ -353,8 +572,11 @@ def build_sonnenfeld_context_from_canonical_dataset(
         gamma_trunc_high=float(parameters.GAMMA_TRUNC_HIGH),
         parent_zd_min=float(parameters.PARENT_ZD_MIN),
         parent_zd_max=float(parameters.PARENT_ZD_MAX),
-        parent_mstar_min=float(mbar + parameters.PARENT_MSTAR_MIN_OFFSET),
-        parent_mstar_max=float(mbar + parameters.PARENT_MSTAR_MAX_OFFSET),
+        parent_mstar_min=float(parent_mstar_min),
+        parent_mstar_max=float(parent_mstar_max),
+        source_z_min=float(parameters.SOURCE_Z_MIN),
+        source_z_max=float(parameters.SOURCE_Z_MAX),
+        source_lens_redshift_gap=float(parameters.SOURCE_LENS_REDSHIFT_GAP),
         sigma_proxy_fractional_scatter=float(parameters.SIGMA_PROXY_FRACTIONAL_SCATTER),
         normalization_min_value=1.0e-12,
     )

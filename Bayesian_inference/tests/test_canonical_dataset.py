@@ -139,6 +139,38 @@ def test_load_canonical_inference_dataset_reads_schema_blocks(tmp_path: Path) ->
     assert dataset.cross_section.cross_section_grid.shape == (3, 3)
 
 
+def test_load_canonical_inference_dataset_exposes_observation_contract_metadata(tmp_path: Path) -> None:
+    """Reader metadata should expose canonical observed-aperture contract attrs."""
+
+    dataset_path = _write_canonical_dataset(tmp_path / "neutral_name.hdf5")
+    with h5py.File(dataset_path, "a") as handle:
+        metadata = handle["metadata"].attrs
+        metadata["observation_flavor"] = "boss"
+        metadata["sigma_definition"] = "observed_aperture"
+        metadata["aperture_shape"] = "circular"
+        metadata["aperture_radius_arcsec"] = 1.0
+        metadata["seeing_fwhm_arcsec"] = 1.5
+
+    dataset = load_canonical_inference_dataset(
+        dataset_path,
+        expected_unit_convention="h_units_v1",
+        expected_h_ref=0.7,
+        expected_profile_name="sersic",
+        expected_mass_definition_label="m5_hinvkpc",
+        required_capabilities=(
+            CAPABILITY_LENS_OBSERVATIONS_V1,
+            CAPABILITY_LENSING_MASS_GRIDS_V1,
+            CAPABILITY_LENSING_CROSS_SECTION_THETA_GAMMA_V1,
+        ),
+    )
+
+    assert dataset.metadata.observation_flavor == "boss"
+    assert dataset.metadata.sigma_definition == "observed_aperture"
+    assert dataset.metadata.aperture_shape == "circular"
+    assert dataset.metadata.aperture_radius_arcsec == pytest.approx(1.0)
+    assert dataset.metadata.seeing_fwhm_arcsec == pytest.approx(1.5)
+
+
 def test_load_canonical_inference_dataset_rejects_missing_required_capability(tmp_path: Path) -> None:
     """Model capability checks should fail before runtime context construction."""
 

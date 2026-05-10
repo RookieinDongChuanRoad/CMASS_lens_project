@@ -148,7 +148,7 @@ class FPPriorConfig:
     """
     Optional population-level Fundamental Plane prior configuration.
 
-    The values mirror the legacy SLACS reference implementation, but the prior
+    The values mirror the Sonnenfeld SLACS reference implementation, but the prior
     remains disabled by default so existing CMASS inference runs preserve their
     historical behavior unless users opt in explicitly.
     """
@@ -156,12 +156,12 @@ class FPPriorConfig:
     enabled: bool
     fit_mstar_min: float = 11.0
     pivot_mstar: float = 11.3
-    fiducial_scatter: float = 0.075
-    scatter_error: float = 0.003
-    mu_v_prior: float = 2.34548
-    mu_v_error: float = 0.00611
-    beta_v_prior: float = 0.176
-    beta_v_error: float = 0.011
+    fiducial_scatter: float = 0.047
+    scatter_error: float = 0.008
+    mu_v_prior: float = 2.341871
+    mu_v_error: float = 0.03
+    beta_v_prior: float = 0.25774
+    beta_v_error: float = 0.03
 
 
 @dataclass(frozen=True)

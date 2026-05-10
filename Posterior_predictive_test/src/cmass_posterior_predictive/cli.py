@@ -33,12 +33,16 @@ from .trends import run_posterior_trends
 def build_argument_parser() -> argparse.ArgumentParser:
     """Create the top-level CLI parser and its PPT-family subcommands."""
 
-    parser = argparse.ArgumentParser(description="CMASS posterior-predictive workflows")
+    parser = argparse.ArgumentParser(description="Model-aware posterior-predictive workflows")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ppc_parser = subparsers.add_parser("posterior-predictive", help="Run posterior predictive checks")
     ppc_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
-    ppc_parser.add_argument("--sigma-table", required=True, help="Path to the Jeans sigma-unit interpolation table")
+    ppc_parser.add_argument(
+        "--sigma-table",
+        default=None,
+        help="Model-declared sigma-unit table path; required by current CMASS diagnostics",
+    )
     ppc_parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
@@ -52,7 +56,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     trend_parser = subparsers.add_parser("posterior-trends", help="Generate Fig. 8-like posterior trend figures")
     trend_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
-    trend_parser.add_argument("--sigma-table", required=True, help="Path to the Jeans sigma-unit interpolation table")
+    trend_parser.add_argument(
+        "--sigma-table",
+        default=None,
+        help="Model-declared sigma-unit table path; required by current CMASS diagnostics",
+    )
     trend_parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
@@ -73,10 +81,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     diagnostics_parser = subparsers.add_parser(
         "posterior-diagnostics",
-        help="Run JAX shared-parent PPC and Fig. 8-like trend diagnostics",
+        help="Run Numba shared-parent PPC and Fig. 8-like trend diagnostics",
     )
     diagnostics_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
-    diagnostics_parser.add_argument("--sigma-table", required=True, help="Path to the Jeans sigma-unit interpolation table")
+    diagnostics_parser.add_argument(
+        "--sigma-table",
+        default=None,
+        help="Model-declared sigma-unit table path; required by current CMASS diagnostics",
+    )
     diagnostics_parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),

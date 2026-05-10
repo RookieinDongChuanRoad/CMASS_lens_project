@@ -35,6 +35,7 @@ from prepare_dataset.dataset_schema.canonical import (
 
 DEFAULT_THETA_E_AXIS = np.linspace(0.0, 5.0, 256, dtype=float)
 MAX_SIGMA_OBSERVATIONS = 2
+OBSERVED_APERTURE_SIGMA_DEFINITION = "observed_aperture"
 
 
 def _decode_scalar_string(value: Any) -> str:
@@ -63,6 +64,128 @@ def _read_optional_attr(group: h5py.Group, aliases: tuple[str, ...], default: An
         if alias in group.attrs:
             return group.attrs[alias]
     return default
+
+
+def _optional_contract_string(group: h5py.Group, name: str) -> str | None:
+    """Read one optional observation-contract string attr from a raw lens group."""
+
+    if name not in group.attrs:
+        return None
+    value = _decode_scalar_string(group.attrs[name]).strip().lower()
+    return value or None
+
+
+def _optional_contract_float(group: h5py.Group, name: str) -> float | None:
+    """Read one optional observation-contract float attr from a raw lens group."""
+
+    if name not in group.attrs:
+        return None
+    value = group.attrs[name]
+    if isinstance(value, np.ndarray) and value.shape == ():
+        value = value.item()
+    numeric_value = float(value)
+    return None if np.isnan(numeric_value) else numeric_value
+
+
+def _observation_contract_from_group(group: h5py.Group) -> dict[str, str | float | None] | None:
+    """
+    Resolve explicit aperture metadata from one raw observation group.
+
+    Missing metadata returns ``None`` so legacy raw files remain readable.  Once
+    a group declares `aperture_shape`, the contract must be complete; otherwise
+    the canonical writer would produce an HDF5 file that looks self-describing
+    but cannot be validated by downstream PPC.
+    """
+
+    aperture_shape = _optional_contract_string(group, "aperture_shape")
+    if aperture_shape is None:
+        return None
+
+    seeing_fwhm_arcsec = _optional_contract_float(group, "seeing_fwhm_arcsec")
+    if seeing_fwhm_arcsec is None:
+        raise ValueError(f"{group.name} declares aperture_shape but is missing seeing_fwhm_arcsec.")
+
+    aperture_width_arcsec = _optional_contract_float(group, "aperture_width_arcsec")
+    aperture_height_arcsec = _optional_contract_float(group, "aperture_height_arcsec")
+    aperture_radius_arcsec = _optional_contract_float(group, "aperture_radius_arcsec")
+    observation_flavor = _optional_contract_string(group, "observation_flavor")
+    sigma_definition = _optional_contract_string(group, "sigma_definition") or OBSERVED_APERTURE_SIGMA_DEFINITION
+
+    if aperture_shape == "rectangular":
+        if aperture_width_arcsec is None or aperture_height_arcsec is None:
+            raise ValueError(f"{group.name} rectangular aperture metadata requires width and height.")
+        if aperture_radius_arcsec is not None:
+            raise ValueError(f"{group.name} rectangular aperture metadata must not define a radius.")
+        return {
+            "observation_flavor": observation_flavor or "slit",
+            "sigma_definition": sigma_definition,
+            "aperture_shape": aperture_shape,
+            "aperture_width_arcsec": aperture_width_arcsec,
+            "aperture_height_arcsec": aperture_height_arcsec,
+            "aperture_radius_arcsec": None,
+            "seeing_fwhm_arcsec": seeing_fwhm_arcsec,
+        }
+
+    if aperture_shape == "circular":
+        if aperture_radius_arcsec is None:
+            raise ValueError(f"{group.name} circular aperture metadata requires aperture_radius_arcsec.")
+        if aperture_width_arcsec is not None or aperture_height_arcsec is not None:
+            raise ValueError(f"{group.name} circular aperture metadata must not define width or height.")
+        return {
+            "observation_flavor": observation_flavor or "boss",
+            "sigma_definition": sigma_definition,
+            "aperture_shape": aperture_shape,
+            "aperture_width_arcsec": None,
+            "aperture_height_arcsec": None,
+            "aperture_radius_arcsec": aperture_radius_arcsec,
+            "seeing_fwhm_arcsec": seeing_fwhm_arcsec,
+        }
+
+    raise ValueError(f"{group.name} has unsupported aperture_shape={aperture_shape!r}.")
+
+
+def _contract_key(contract: dict[str, str | float | None]) -> tuple[object, ...]:
+    """Return a comparable key for one observation contract dictionary."""
+
+    return (
+        contract["observation_flavor"],
+        contract["sigma_definition"],
+        contract["aperture_shape"],
+        contract["aperture_width_arcsec"],
+        contract["aperture_height_arcsec"],
+        contract["aperture_radius_arcsec"],
+        contract["seeing_fwhm_arcsec"],
+    )
+
+
+def _resolve_observation_contract(
+    observation_handle: h5py.File,
+    lens_ids: tuple[str, ...],
+) -> dict[str, str | float | None] | None:
+    """
+    Resolve a file-level observation contract from per-lens raw metadata.
+
+    PPC validates one sigma table against the whole run.  Mixed aperture
+    contracts inside one canonical dataset would make that validation
+    ambiguous, so the writer rejects inconsistent explicit metadata early.
+    """
+
+    contracts = [
+        _observation_contract_from_group(observation_handle[lens_id])
+        for lens_id in lens_ids
+    ]
+    explicit_contracts = [contract for contract in contracts if contract is not None]
+    if not explicit_contracts:
+        return None
+    if len(explicit_contracts) != len(contracts):
+        raise ValueError("Observation contract metadata must be present for every lens group or none of them.")
+
+    first_contract = explicit_contracts[0]
+    first_key = _contract_key(first_contract)
+    for lens_id, contract in zip(lens_ids, explicit_contracts, strict=True):
+        if _contract_key(contract) != first_key:
+            raise ValueError(f"Observation contract metadata is inconsistent at lens group '{lens_id}'.")
+    return first_contract
 
 
 def _read_sigma_slots(group: h5py.Group) -> tuple[np.ndarray, np.ndarray]:
@@ -401,6 +524,7 @@ def _write_metadata(
     profile_name: str,
     mass_definition_label: str,
     capabilities: tuple[str, ...],
+    observation_contract: dict[str, str | float | None] | None = None,
 ) -> None:
     """Write schema metadata and capability labels."""
 
@@ -410,6 +534,10 @@ def _write_metadata(
     metadata.attrs["h_ref"] = float(h_ref)
     metadata.attrs["profile_name"] = str(profile_name)
     metadata.attrs["mass_definition_label"] = str(mass_definition_label)
+    if observation_contract is not None:
+        for key, value in observation_contract.items():
+            if value is not None:
+                metadata.attrs[key] = value
     _write_string_array(metadata, "capabilities", tuple(dict.fromkeys(capabilities)))
 
 
@@ -470,6 +598,7 @@ def write_canonical_inference_dataset(
             lens_ids = tuple(sorted(observations.keys()))
             if not lens_ids:
                 raise ValueError(f"{observation_path} contains no lens groups.")
+            observation_contract = _resolve_observation_contract(observations, lens_ids)
 
             _write_lens_observations(
                 output,
@@ -509,6 +638,7 @@ def write_canonical_inference_dataset(
                 profile_name=profile_name,
                 mass_definition_label=mass_definition_label,
                 capabilities=capabilities,
+                observation_contract=observation_contract,
             )
 
         temporary_path.replace(output_path)

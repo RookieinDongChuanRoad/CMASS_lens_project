@@ -52,6 +52,13 @@ class CanonicalMetadata:
     cosmology_h0: float | None
     cosmology_omega_m: float | None
     capabilities: frozenset[str]
+    observation_flavor: str | None = None
+    sigma_definition: str | None = None
+    aperture_shape: str | None = None
+    aperture_width_arcsec: float | None = None
+    aperture_height_arcsec: float | None = None
+    aperture_radius_arcsec: float | None = None
+    seeing_fwhm_arcsec: float | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +181,15 @@ def _optional_float_attr(attrs: h5py.AttributeManager, name: str) -> float | Non
     return float(attrs[name])
 
 
+def _optional_string_attr(attrs: h5py.AttributeManager, name: str) -> str | None:
+    """Read an optional canonical metadata string attribute."""
+
+    if name not in attrs:
+        return None
+    value = _decode_hdf5_string(attrs[name]).strip()
+    return value or None
+
+
 def _load_metadata(group: h5py.Group) -> CanonicalMetadata:
     """Load and minimally validate the `/metadata` block."""
 
@@ -195,6 +211,13 @@ def _load_metadata(group: h5py.Group) -> CanonicalMetadata:
         cosmology_h0=_optional_float_attr(group.attrs, "cosmology_h0"),
         cosmology_omega_m=_optional_float_attr(group.attrs, "cosmology_omega_m"),
         capabilities=frozenset(_decode_string_dataset(group["capabilities"])),
+        observation_flavor=_optional_string_attr(group.attrs, "observation_flavor"),
+        sigma_definition=_optional_string_attr(group.attrs, "sigma_definition"),
+        aperture_shape=_optional_string_attr(group.attrs, "aperture_shape"),
+        aperture_width_arcsec=_optional_float_attr(group.attrs, "aperture_width_arcsec"),
+        aperture_height_arcsec=_optional_float_attr(group.attrs, "aperture_height_arcsec"),
+        aperture_radius_arcsec=_optional_float_attr(group.attrs, "aperture_radius_arcsec"),
+        seeing_fwhm_arcsec=_optional_float_attr(group.attrs, "seeing_fwhm_arcsec"),
     )
 
 

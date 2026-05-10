@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 import yaml
 
-from cmass_lens_inference.model import LOG_PROB_BLOB_DTYPE
+from cmass_lens_inference.numba_backend.diagnostics import NUMBA_DIAGNOSTIC_BLOB_DTYPE
 
 
 DEPENDENT_PARAMETER_ORDER = (
@@ -337,7 +337,7 @@ def _seed_backend(chain_path: Path, base_theta: np.ndarray, n_steps: int = 5, n_
 
     backend = emcee.backends.HDFBackend(str(chain_path))
     backend.reset(n_walkers, base_theta.shape[0])
-    blobs = np.zeros(n_walkers, dtype=LOG_PROB_BLOB_DTYPE)
+    blobs = np.zeros(n_walkers, dtype=NUMBA_DIAGNOSTIC_BLOB_DTYPE)
     blobs["parallel_strategy"] = b"off"
     backend.grow(n_steps, blobs)
     random_state = np.random.RandomState(321).get_state()
@@ -866,7 +866,7 @@ def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifac
     """
     The joint diagnostics API should run PPC and trend from one shared parent sample.
 
-    This is the production-facing contract for the JAX acceleration path: the
+    This is the production-facing contract for the Numba acceleration path: the
     caller launches one workflow, receives both families of artifacts, and the
     metadata records that the shared-parent backend used the pipeline trend
     default semantics rather than the older PPC-only 100000-candidate default.
@@ -892,7 +892,7 @@ def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifac
     assert result.profile_name == "sersic"
     assert result.status == "completed"
     assert result.n_posterior_draws == 3
-    assert result.metadata["backend"] == "jax_shared_parent"
+    assert result.metadata["backend"] == "numba_shared_parent"
     assert result.metadata["parent_sample_size"] == 72
     assert (result.result_dir / "ppc_summary.json").exists()
     assert (result.result_dir / "replicated_statistics.npz").exists()
@@ -901,11 +901,28 @@ def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifac
 
     ppc_summary = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
     trend_summary = json.loads((result.result_dir / "fig8_like_summary.json").read_text(encoding="utf-8"))
-    assert ppc_summary["backend"] == "jax_shared_parent"
+    assert ppc_summary["backend"] == "numba_shared_parent"
     assert ppc_summary["parent_sample_size"] == 72
-    assert trend_summary["backend"] == "jax_shared_parent"
+    assert trend_summary["backend"] == "numba_shared_parent"
     assert trend_summary["n_parent_sample"] == 72
     assert trend_summary["mass_definition"]["label"] == "m10"
+    for payload in (ppc_summary, trend_summary):
+        assert payload["model_name"] == "cmass"
+        assert payload["predictive_backend"] == "numba_shared_parent"
+        assert payload["predictive_schema_version"] == "cmass_ppt_diagnostics_v1"
+        assert payload["supported_diagnostics"] == [
+            "posterior_diagnostics",
+            "posterior_predictive",
+            "posterior_trends",
+        ]
+        assert payload["required_external_inputs"] == ["sigma_table"]
+    assert trend_summary["panel_order"] == [
+        "m10",
+        "gamma",
+        "sigma_ap",
+        "gamma_vs_sigma_star",
+        "gamma_vs_logre_kpc",
+    ]
 
     with np.load(result.result_dir / "replicated_statistics.npz") as payload:
         assert "theta_sample_m10" in payload.files
@@ -1002,18 +1019,18 @@ def test_run_posterior_predictive_supports_devauc_sigma_tables(tmp_path: Path) -
     assert np.isfinite(arrays["sigma_sample_sigma"]).all()
 
 
-def test_sigma_unit_table_from_hdf5_exposes_jax_sersic_arrays(tmp_path: Path) -> None:
-    """The sigma-table loader should expose dense arrays for the JAX interpolation kernel."""
+def test_sigma_unit_table_from_hdf5_exposes_numba_sersic_arrays(tmp_path: Path) -> None:
+    """The sigma-table loader should expose dense arrays for the Numba interpolation kernel."""
 
-    from cmass_posterior_predictive.predictive import SigmaUnitTable, _sigma_table_jax_arrays
+    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from cmass_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_table_hdf5(tmp_path / "sersic_sigma_table.h5", profile_name="sersic")
     table = SigmaUnitTable.from_path(table_path)
-    arrays = _sigma_table_jax_arrays(table)
+    arrays = _sigma_table_numba_arrays(table)
 
     assert table.profile_name == "sersic"
     assert table.n_axis is not None
-    assert arrays["has_zd_axis"] == 1
     assert arrays["has_n_axis"] == 1
     assert np.asarray(arrays["values"]).shape == (
         table.gamma_axis.size,
@@ -1027,7 +1044,8 @@ def test_sigma_unit_table_from_hdf5_exposes_jax_sersic_arrays(tmp_path: Path) ->
 def test_sigma_unit_table_from_hdf5_preserves_mass_definition_metadata(tmp_path: Path) -> None:
     """The loader should expose the stored mass-definition metadata to PPC callers."""
 
-    from cmass_posterior_predictive.predictive import SigmaUnitTable, _sigma_table_jax_arrays
+    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from cmass_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_table_hdf5(
         tmp_path / "sersic_sigma_table_m10.h5",
@@ -1045,7 +1063,8 @@ def test_sigma_unit_table_from_bundle_selects_requested_boss_leaf(tmp_path: Path
     """Bundle loaders must pick the requested flavor/mass leaf and expose its metadata."""
 
     from cmass_lens_inference.mass_definition import get_mass_definition
-    from cmass_posterior_predictive.predictive import SigmaUnitTable, _sigma_table_jax_arrays
+    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from cmass_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_bundle_hdf5(tmp_path / "jeans_sers_sigma_bundle.h5", profile_name="sersic")
     table = SigmaUnitTable.from_path(
@@ -1054,14 +1073,13 @@ def test_sigma_unit_table_from_bundle_selects_requested_boss_leaf(tmp_path: Path
         observation_flavor="boss",
     )
 
-    arrays = _sigma_table_jax_arrays(table)
+    arrays = _sigma_table_numba_arrays(table)
 
     assert table.profile_name == "sersic"
     assert table.mass_definition_label == "m10"
     assert table.observation_flavor == "boss"
     assert table.aperture_shape == "circular"
     assert table.aperture_radius_arcsec == 1.0
-    assert arrays["has_zd_axis"] == 1
     assert arrays["has_n_axis"] == 1
     assert np.isfinite(np.asarray(arrays["values"])).all()
 
@@ -1070,7 +1088,8 @@ def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path:
     """Bundle loaders must support the explicit low-dimensional within-Re leaf."""
 
     from cmass_lens_inference.mass_definition import get_mass_definition
-    from cmass_posterior_predictive.predictive import SigmaUnitTable, _sigma_table_jax_arrays
+    from cmass_posterior_predictive.adapters.cmass import _sigma_table_numba_arrays
+    from cmass_posterior_predictive.predictive import SigmaUnitTable
 
     table_path = _write_sigma_bundle_hdf5(
         tmp_path / "jeans_sers_sigma_bundle.h5",
@@ -1083,7 +1102,7 @@ def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path:
         bundle_group="within_re",
     )
 
-    arrays = _sigma_table_jax_arrays(table)
+    arrays = _sigma_table_numba_arrays(table)
 
     assert table.profile_name == "sersic"
     assert table.mass_definition_label == "m10"
@@ -1092,7 +1111,8 @@ def test_sigma_unit_table_from_bundle_selects_requested_within_re_leaf(tmp_path:
     assert table.observation_flavor is None
     assert table.zd_axis is None
     assert table.bundle_leaf_path == "/within_re/m10"
-    assert arrays["has_zd_axis"] == 0
+    assert np.asarray(arrays["zd_axis"]).shape == (1,)
+    assert np.asarray(arrays["values"]).ndim == 4
     assert arrays["has_n_axis"] == 1
     assert np.isfinite(np.asarray(arrays["values"])).all()
 
@@ -1965,7 +1985,7 @@ def test_cli_posterior_predictive_monitor_command_waits_and_runs_both_profiles(t
     assert sersic_result_dir.name == "ppc"
 
 
-def test_jax_population_bin_reducer_uses_expected_bin_statistics() -> None:
+def test_numba_population_bin_reducer_uses_expected_bin_statistics() -> None:
     """
     External-style Fig. 8 trends are defined by bin averages, not pointwise curves.
 
@@ -1976,9 +1996,7 @@ def test_jax_population_bin_reducer_uses_expected_bin_statistics() -> None:
     - empty bins or zero-weight bins: `NaN` for the weighted categories
     """
 
-    import jax.numpy as jnp
-
-    from cmass_posterior_predictive.predictive import _jax_reduce_population_to_bins
+    from cmass_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
 
     log_mstar = np.array([10.20, 10.40, 10.70, 11.20], dtype=float)
     values = np.array([1.0, 3.0, 9.0, 20.0], dtype=float)
@@ -1986,12 +2004,24 @@ def test_jax_population_bin_reducer_uses_expected_bin_statistics() -> None:
     selected_weights = np.array([0.5, 1.5, 0.0, 1.0], dtype=float)
     mass_bin_edges = np.array([10.0, 10.5, 11.0, 11.5, 12.0], dtype=float)
 
-    parent, detectable, selected, parent_counts, detectable_sums, selected_sums = _jax_reduce_population_to_bins(
-        jnp.asarray(log_mstar),
-        jnp.asarray(values),
-        jnp.asarray(mass_bin_edges),
-        jnp.asarray(detectable_weights),
-        jnp.asarray(selected_weights),
+    parent = np.empty(mass_bin_edges.size - 1, dtype=float)
+    detectable = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected = np.empty(mass_bin_edges.size - 1, dtype=float)
+    parent_counts = np.empty(mass_bin_edges.size - 1, dtype=np.int64)
+    detectable_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    _numba_reduce_population_to_bins(
+        log_mstar,
+        values,
+        mass_bin_edges,
+        detectable_weights,
+        selected_weights,
+        parent,
+        detectable,
+        selected,
+        parent_counts,
+        detectable_sums,
+        selected_sums,
     )
     reduced = {
         "parent": np.asarray(parent),
@@ -2099,8 +2129,8 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert payload["n_posterior_draws_used"] == 4
     assert payload["posterior_draw_mode"] == "sampled_subset"
     assert payload["posterior_draw_tail_cap"] == 192000
-    assert payload["backend"] == "jax_shared_parent"
-    assert payload["parallel_strategy"] == "jax_shared_parent"
+    assert payload["backend"] == "numba_shared_parent"
+    assert payload["parallel_strategy"] == "numba_shared_parent"
     assert payload["worker_processes"] == 0
     assert payload["n_parent_sample"] == 96
     assert payload["n_mass_bins"] == 6
@@ -2120,13 +2150,13 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert arrays["detectable_weight_sums_draws"].shape == (4, 6)
     assert arrays["selected_weight_sums_draws"].shape == (4, 6)
     assert np.isfinite(arrays["selected_sigma_ap_draws"]).any()
-    assert result.metadata["backend"] == "jax_shared_parent"
-    assert result.metadata["generator_mode"] == "jax_shared_parent_binned"
+    assert result.metadata["backend"] == "numba_shared_parent"
+    assert result.metadata["generator_mode"] == "numba_shared_parent_binned"
     assert result.metadata["posterior_draw_mode"] == "sampled_subset"
     assert result.metadata["posterior_draw_tail_cap"] == 192000
     assert result.metadata["gamma_mode"] == "dependent"
     assert result.metadata["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
-    assert result.metadata["parallel_strategy"] == "jax_shared_parent"
+    assert result.metadata["parallel_strategy"] == "numba_shared_parent"
     assert result.metadata["worker_processes"] == 0
     assert result.metadata["figure_title"] == "m5 | dependent gamma"
 
@@ -2202,7 +2232,7 @@ def test_run_posterior_trends_preserves_fig8_like_and_writes_gamma_axis_artifact
     assert delta_r_summary["observed_overlay_mode"] == "points"
 
 
-def test_jax_population_bin_reducer_includes_final_bin_right_edge(tmp_path: Path) -> None:
+def test_numba_population_bin_reducer_includes_final_bin_right_edge(tmp_path: Path) -> None:
     """
     The reducer should preserve shapes and keep the last bin closed on the right edge.
 
@@ -2211,26 +2241,32 @@ def test_jax_population_bin_reducer_includes_final_bin_right_edge(tmp_path: Path
     the rightmost observed edge can disappear from the summary.
     """
 
-    import jax.numpy as jnp
-
-    from cmass_posterior_predictive.predictive import _jax_reduce_population_to_bins
+    from cmass_posterior_predictive.adapters.cmass import _numba_reduce_population_to_bins
 
     log_mstar = np.array([10.0, 10.5, 11.0, 11.5], dtype=float)
     values = np.array([1.0, 2.0, 3.0, 4.0], dtype=float)
     mass_bin_edges = np.array([10.0, 10.5, 11.0, 11.5], dtype=float)
     weights = np.ones_like(values)
 
-    parent, detectable, selected, parent_counts, _, _ = _jax_reduce_population_to_bins(
-        jnp.asarray(log_mstar),
-        jnp.asarray(values),
-        jnp.asarray(mass_bin_edges),
-        jnp.asarray(weights),
-        jnp.asarray(weights),
+    parent = np.empty(mass_bin_edges.size - 1, dtype=float)
+    detectable = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected = np.empty(mass_bin_edges.size - 1, dtype=float)
+    parent_counts = np.empty(mass_bin_edges.size - 1, dtype=np.int64)
+    detectable_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    selected_sums = np.empty(mass_bin_edges.size - 1, dtype=float)
+    _numba_reduce_population_to_bins(
+        log_mstar,
+        values,
+        mass_bin_edges,
+        weights,
+        weights,
+        parent,
+        detectable,
+        selected,
+        parent_counts,
+        detectable_sums,
+        selected_sums,
     )
-    parent = np.asarray(parent)
-    detectable = np.asarray(detectable)
-    selected = np.asarray(selected)
-    parent_counts = np.asarray(parent_counts)
 
     assert parent.shape == (3,)
     assert detectable.shape == (3,)
@@ -2425,8 +2461,8 @@ def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: 
     assert payload["n_posterior_draws_used"] == 3 * 24
     assert payload["posterior_draw_mode"] == "tail_capped_full_chain"
     assert payload["posterior_draw_tail_cap"] == 192000
-    assert payload["backend"] == "jax_shared_parent"
-    assert payload["parallel_strategy"] == "jax_shared_parent"
+    assert payload["backend"] == "numba_shared_parent"
+    assert payload["parallel_strategy"] == "numba_shared_parent"
     assert payload["worker_processes"] == 0
     assert arrays["parent_m5_draws"].shape == (3 * 24, 5)
     assert result.metadata["posterior_draw_mode"] == "tail_capped_full_chain"
@@ -2576,7 +2612,7 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
     assert payload["n_posterior_draws"] == 3
     assert payload["n_mass_bins"] == 5
     assert payload["metadata"]["n_parent_sample"] == 72
-    assert payload["metadata"]["backend"] == "jax_shared_parent"
+    assert payload["metadata"]["backend"] == "numba_shared_parent"
     assert payload["metadata"]["worker_processes"] == 0
     assert payload["metadata"]["posterior_draw_mode"] == "sampled_subset"
     result_dir = Path(payload["result_dir"])
@@ -2585,7 +2621,7 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
 
 
 def test_cli_posterior_diagnostics_command_executes_shared_parent_pipeline(tmp_path: Path) -> None:
-    """The CLI should expose the JAX shared-parent PPC + trend workflow."""
+    """The CLI should expose the Numba shared-parent PPC + trend workflow."""
 
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="devauc")
     output_root = tmp_path / "cli_diagnostics_output"
@@ -2626,7 +2662,7 @@ def test_cli_posterior_diagnostics_command_executes_shared_parent_pipeline(tmp_p
     assert payload["profile_name"] == "devauc"
     assert payload["n_posterior_draws"] == 3
     assert payload["parent_sample_size"] == 72
-    assert payload["metadata"]["backend"] == "jax_shared_parent"
+    assert payload["metadata"]["backend"] == "numba_shared_parent"
     result_dir = Path(payload["result_dir"])
     assert (result_dir / "ppc_summary.json").exists()
     assert (result_dir / "fig8_like_summary.json").exists()
@@ -2655,10 +2691,52 @@ def test_cli_surface_exposes_canonical_trend_defaults() -> None:
     assert args.n_parent_sample == 10000
     assert args.worker_processes is None
     assert Path(args.output_dir) == DEFAULT_PPC_OUTPUT_ROOT_DIR
+    diagnostics_args = parser.parse_args(["posterior-diagnostics", "--run-dir", "/tmp/run"])
+    assert diagnostics_args.sigma_table is None
     assert inspect.signature(run_posterior_trends).parameters["n_posterior_draws"].default is None
     assert inspect.signature(run_posterior_trends).parameters["n_parent_sample"].default == 10000
     assert inspect.signature(run_posterior_trends).parameters["worker_processes"].default is None
     assert inspect.signature(run_posterior_diagnostics).parameters["parent_sample_size"].default == 10000
+
+
+def test_cmass_diagnostics_requires_declared_sigma_table_input(tmp_path: Path) -> None:
+    """Missing external inputs should fail through the model-declared contract."""
+
+    from cmass_posterior_predictive.predictive import run_posterior_diagnostics
+
+    run_dir, _ = _build_completed_run(tmp_path, profile_name="sersic")
+
+    with pytest.raises(ValueError, match="cmass.*sigma_table"):
+        run_posterior_diagnostics(
+            run_dir=str(run_dir),
+            sigma_table_path=None,
+            output_root_dir=str(tmp_path / "diagnostics_output"),
+            n_posterior_draws=1,
+            burn_in=1,
+            parent_sample_size=64,
+        )
+
+
+def test_canonical_observation_contract_uses_metadata_before_filename(tmp_path: Path) -> None:
+    """Canonical-only PPC should not infer BOSS/slit flavor from dataset filename."""
+
+    from cmass_posterior_predictive.predictive import _load_observation_contract_from_canonical_dataset_path
+
+    dataset_path = tmp_path / "neutral_canonical_name.hdf5"
+    with h5py.File(dataset_path, "w") as handle:
+        metadata = handle.create_group("metadata")
+        metadata.attrs["observation_flavor"] = "boss"
+        metadata.attrs["sigma_definition"] = "observed_aperture"
+        metadata.attrs["aperture_shape"] = "circular"
+        metadata.attrs["aperture_radius_arcsec"] = 1.0
+        metadata.attrs["seeing_fwhm_arcsec"] = 1.5
+
+    contract = _load_observation_contract_from_canonical_dataset_path(dataset_path)
+
+    assert contract.observation_flavor == "boss"
+    assert contract.aperture_shape == "circular"
+    assert contract.aperture_radius_arcsec == pytest.approx(1.0)
+    assert contract.seeing_fwhm_arcsec == pytest.approx(1.5)
 
 
 def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_path: Path) -> None:

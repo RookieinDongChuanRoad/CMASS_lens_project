@@ -1,0 +1,27 @@
+{
+  "config_path": "/private/tmp/cmass_phase0_bench.HyWxpO/cmass_synthetic.yaml",
+  "log_prob": {
+    "backend": "numba",
+    "burn_in": 1,
+    "first_call_seconds": 0.19891474989708513,
+    "first_log_prob_value": -14.097085749814845,
+    "first_normalization_value": 0.6649367393379931,
+    "gamma_points": 80,
+    "kernel": "cmass",
+    "model": "cmass",
+    "mstar_points": 80,
+    "n_steps": 3,
+    "n_walkers": 24,
+    "normalization_samples": 256,
+    "parallel_strategy": "off",
+    "profile": "sersic",
+    "repeats": 20,
+    "sampler": "emcee",
+    "steady_log_prob_mean_seconds": 0.0003327396116219461,
+    "steady_log_prob_median_seconds": 0.0003288540174253285,
+    "steady_log_prob_min_seconds": 0.0002927500754594803,
+    "steady_log_prob_value": -14.097085749814845,
+    "steady_normalization_value": 0.6649367393379931
+  },
+  "timestamp": "2026-05-08T22:47:27.281474"
+}

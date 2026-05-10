@@ -44,11 +44,24 @@ class SonnenfeldModelContext:
     delta_r_grid: np.ndarray
     mstar_shift_grid: np.ndarray
     base_normals: np.ndarray
+    parent_sample_zd: np.ndarray
+    parent_sample_mstar: np.ndarray
+    parent_sample_log_re: np.ndarray
+    parent_sample_delta_r: np.ndarray
     population_gamma_axis: np.ndarray
     population_zd_axis: np.ndarray
     population_log_re_kpc_axis: np.ndarray
     population_n_axis: np.ndarray
     population_sigma_unit_grid: np.ndarray
+    fp_enabled: int
+    fp_fit_mstar_min: float
+    fp_pivot_mstar: float
+    fp_fiducial_scatter: float
+    fp_scatter_error: float
+    fp_mu_v_prior: float
+    fp_mu_v_error: float
+    fp_beta_v_prior: float
+    fp_beta_v_error: float
     mass_radius_kpc: float
     mass_log_physical_offset: float
     mstar_pivot: float
@@ -67,6 +80,9 @@ class SonnenfeldModelContext:
     parent_zd_max: float
     parent_mstar_min: float
     parent_mstar_max: float
+    source_z_min: float
+    source_z_max: float
+    source_lens_redshift_gap: float
     sigma_proxy_fractional_scatter: float
     normalization_min_value: float
 
