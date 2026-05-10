@@ -49,7 +49,15 @@ def test_unsupported_model_predictive_dispatch_fails_before_cmass_fallback() -> 
         get_predictive_definition("toy_hierarchical")
 
 
-@pytest.mark.parametrize("model_name", ["sonnenfeld2024_slacs", "sonnenfeld2024_slacs_hunit"])
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "sonnenfeld2024_slacs",
+        "sonnenfeld2024_slacs_hunit",
+        "sonnenfeld2024_slacs_sigma_star_gamma",
+        "sonnenfeld2024_slacs_sigma_star_gamma_hunit",
+    ],
+)
 def test_sonnenfeld_predictive_registry_entry_declares_independent_schema(model_name: str) -> None:
     """Sonnenfeld models should expose a non-CMASS predictive contract."""
 

@@ -29,7 +29,12 @@ from cmass_lens_inference.types import ObservationRecord, RuntimeConfig
 from ..interfaces import PPCContextBundle, PredictiveDefinition
 
 
-MODEL_NAMES = ("sonnenfeld2024_slacs", "sonnenfeld2024_slacs_hunit")
+BASE_MODEL_NAMES = ("sonnenfeld2024_slacs", "sonnenfeld2024_slacs_hunit")
+SIGMA_STAR_GAMMA_MODEL_NAMES = (
+    "sonnenfeld2024_slacs_sigma_star_gamma",
+    "sonnenfeld2024_slacs_sigma_star_gamma_hunit",
+)
+MODEL_NAMES = BASE_MODEL_NAMES + SIGMA_STAR_GAMMA_MODEL_NAMES
 BACKEND_NAME = "numba_sonnenfeld_parent"
 ARTIFACT_SCHEMA_VERSION = "sonnenfeld2024_slacs_ppt_diagnostics_v1"
 TREND_CATEGORY_NAMES = ("parent", "detectable", "selected")
@@ -179,19 +184,22 @@ def _run_sonnenfeld_parent_diagnostics(
     delta_r_bin_edges: np.ndarray,
     parent_sample_size: int,
     random_seed: int,
+    model_name: str = BASE_MODEL_NAMES[0],
 ) -> dict[str, Any]:
     """Materialize a minimal Sonnenfeld parent-population diagnostics payload."""
 
     del profile, sigma_table
+    is_sigma_star_gamma_model = model_name in SIGMA_STAR_GAMMA_MODEL_NAMES
     rng = np.random.default_rng(int(random_seed))
     n_draws = int(posterior_draws.shape[0])
     available_parent = int(context.parent_sample_mstar.shape[0])
     n_parent = max(1, min(int(parent_sample_size), available_parent))
     mass_label = mass_definition.label
 
-    latent_keys = ("theta_ein", "gamma", "zd", "zs", mass_label, "re_kpc", "n")
-    theta_latent = {key: np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float) for key in latent_keys}
-    sigma_latent = {key: np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float) for key in latent_keys}
+    theta_latent_keys = ("theta_ein", "gamma", "zd", "zs", mass_label, "re_kpc", "n")
+    sigma_latent_keys = ("sigma",) + theta_latent_keys
+    theta_latent = {key: np.zeros((n_draws, THETA_SAMPLE_SIZE), dtype=float) for key in theta_latent_keys}
+    sigma_latent = {key: np.zeros((n_draws, SIGMA_SAMPLE_SIZE), dtype=float) for key in sigma_latent_keys}
     theta_stats = {name: np.zeros(n_draws, dtype=float) for name in SUMMARY_STAT_NAMES}
     sigma_stats = {name: np.zeros(n_draws, dtype=float) for name in SUMMARY_STAT_NAMES}
 
@@ -224,6 +232,12 @@ def _run_sonnenfeld_parent_diagnostics(
     gamma_delta_selected = np.zeros_like(gamma_delta_counts)
 
     for draw_index, theta in enumerate(np.asarray(posterior_draws, dtype=float)):
+        expected_theta_size = 11 if is_sigma_star_gamma_model else 12
+        if theta.shape[0] != expected_theta_size:
+            raise ValueError(
+                f"Sonnenfeld predictive diagnostics for '{model_name}' expected "
+                f"{expected_theta_size} parameters, received {theta.shape[0]}."
+            )
         parent_indices = rng.choice(available_parent, size=n_parent, replace=available_parent < n_parent)
         normals = np.asarray(context.base_normals[parent_indices], dtype=float)
         zd = np.asarray(context.parent_sample_zd[parent_indices], dtype=float)
@@ -236,18 +250,36 @@ def _run_sonnenfeld_parent_diagnostics(
 
         mstar_shift = mstar - float(context.mstar_pivot)
         sigma5 = max(float(theta[3]), 1.0e-8)
-        sigma_gamma = max(float(theta[7]), 1.0e-8)
-        sigma_zs = max(float(theta[9]), 1.0e-8)
         log_mass = float(theta[0]) + float(theta[1]) * mstar_shift + float(theta[2]) * delta_r + sigma5 * normals[:, 3]
+        if is_sigma_star_gamma_model:
+            # The sigma-star peer model changes only the gamma population
+            # relation.  The inference posterior defines the predictor as
+            # log10(Sigma_*) - 9, where Sigma_* = M_* / (2 pi R_e^2), using the
+            # same active unit convention already packed into the context.
+            sigma_gamma = max(float(theta[6]), 1.0e-8)
+            sigma_zs = max(float(theta[8]), 1.0e-8)
+            sigma_star_shift9p0 = mstar - LOG10_2PI - 2.0 * log_re - 9.0
+            gamma_mean = float(theta[4]) + float(theta[5]) * sigma_star_shift9p0
+            mu_zs = float(theta[7])
+            theta0 = float(theta[9])
+            loga = float(theta[10])
+        else:
+            # Original Sonnenfeld keeps the paper-native two-predictor gamma
+            # relation, gamma ~ M_* shift + size residual.  Keep this branch
+            # byte-for-byte close to the existing semantic contract so adding
+            # the peer model does not alter old diagnostics.
+            sigma_gamma = max(float(theta[7]), 1.0e-8)
+            sigma_zs = max(float(theta[9]), 1.0e-8)
+            gamma_mean = float(theta[4]) + float(theta[5]) * mstar_shift + float(theta[6]) * delta_r
+            mu_zs = float(theta[8])
+            theta0 = float(theta[10])
+            loga = float(theta[11])
         gamma = np.clip(
-            float(theta[4]) + float(theta[5]) * mstar_shift + float(theta[6]) * delta_r + sigma_gamma * normals[:, 4],
+            gamma_mean + sigma_gamma * normals[:, 4],
             float(context.gamma_trunc_low),
             float(context.gamma_trunc_high),
         )
-        zs = np.maximum(
-            float(theta[8]) + sigma_zs * normals[:, 5],
-            zd + float(context.source_lens_redshift_gap) + 1.0e-3,
-        )
+        zs = np.maximum(mu_zs + sigma_zs * normals[:, 5], zd + float(context.source_lens_redshift_gap) + 1.0e-3)
 
         theta_e = np.zeros(n_parent, dtype=float)
         sigma_model = np.zeros(n_parent, dtype=float)
@@ -290,8 +322,8 @@ def _run_sonnenfeld_parent_diagnostics(
                 theta_e[sample_index],
                 gamma[sample_index],
                 theta_est,
-                float(theta[10]),
-                float(theta[11]),
+                theta0,
+                loga,
                 context.cs_theta_e_axis,
                 context.cs_gamma_axis,
                 context.cs_cross_section_grid,
@@ -311,6 +343,7 @@ def _run_sonnenfeld_parent_diagnostics(
         for key, values in source_arrays.items():
             theta_latent[key][draw_index] = values[theta_indices]
             sigma_latent[key][draw_index] = values[sigma_indices]
+        sigma_latent["sigma"][draw_index] = sigma_model[sigma_indices]
         theta_summary = _summary_statistics(theta_e[theta_indices])
         sigma_summary = _summary_statistics(sigma_model[sigma_indices])
         for stat_index, stat_name in enumerate(SUMMARY_STAT_NAMES):
@@ -382,6 +415,20 @@ def get_predictive_definition(model_name: str) -> PredictiveDefinition:
 
     if model_name not in MODEL_NAMES:
         raise ValueError(f"Unsupported Sonnenfeld predictive model '{model_name}'.")
+
+    def run_model_diagnostics(**kwargs) -> dict[str, Any]:
+        """
+        Bind the concrete model name into the shared Sonnenfeld diagnostics.
+
+        The generic PPT runner intentionally passes only scientific arrays and
+        context objects to the model hook.  Capturing ``model_name`` here keeps
+        the 12D paper-gamma and 11D sigma-star-gamma theta semantics inside the
+        model-specific adapter instead of leaking another branch into the
+        generic workflow.
+        """
+
+        return _run_sonnenfeld_parent_diagnostics(model_name=model_name, **kwargs)
+
     return PredictiveDefinition(
         model_name=model_name,
         backend=BACKEND_NAME,
@@ -389,10 +436,10 @@ def get_predictive_definition(model_name: str) -> PredictiveDefinition:
         required_external_inputs=(),
         artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
         build_context=build_context,
-        run_diagnostics=_run_sonnenfeld_parent_diagnostics,
+        run_diagnostics=run_model_diagnostics,
         trend_category_names=TREND_CATEGORY_NAMES,
         build_trend_panel_order=_build_sonnenfeld_trend_panel_order,
     )
 
 
-__all__ = ["get_predictive_definition"]
+__all__ = ["MODEL_NAMES", "get_predictive_definition"]

@@ -38,6 +38,19 @@ SONNENFELD_PUBLIC_PARAMETERS = (
     "theta0",
     "loga",
 )
+SONNENFELD_SIGMA_STAR_PUBLIC_PARAMETERS = (
+    "mu5_0",
+    "beta5",
+    "xi5",
+    "sigma5",
+    "mu_gamma_0",
+    "beta_sigma_star_gamma",
+    "sigma_gamma",
+    "mu_zs",
+    "sigma_zs",
+    "theta0",
+    "loga",
+)
 SONNENFELD_PAPER_MU5_0 = 11.332
 
 
@@ -183,6 +196,56 @@ def test_sonnenfeld_repository_configs_load_with_distinct_unit_contracts() -> No
     assert hunit_config.data.inference_dataset_path.name == (
         "inference_dataset_sonnenfeld2024_slacs_m5_hunits_v1.hdf5"
     )
+
+    paper_initial_center = paper_config.sampling.initial_center.to_public_dict()
+    hunit_initial_center = hunit_config.sampling.initial_center.to_public_dict()
+    assert paper_initial_center["mu5_0"] == pytest.approx(SONNENFELD_PAPER_MU5_0)
+    assert hunit_initial_center["mu5_0"] == pytest.approx(
+        SONNENFELD_PAPER_MU5_0 + np.log10(hunit_config.h_ref)
+    )
+
+
+def test_sonnenfeld_sigma_star_gamma_configs_load_with_distinct_unit_contracts() -> None:
+    """
+    The sigma-star-gamma peer model should mirror Sonnenfeld's unit split.
+
+    These checked-in YAML files are part of the model contract: the paper-native
+    and h-unit variants use distinct registry names and datasets while sharing
+    the same 11D sigma-star gamma parameter surface.
+    """
+
+    paper_config = load_runtime_config(CONFIG_DIR / "sonnenfeld2024_slacs_sigma_star_gamma.yaml")
+    hunit_config = load_runtime_config(CONFIG_DIR / "sonnenfeld2024_slacs_sigma_star_gamma_hunit.yaml")
+
+    assert paper_config.profile.name == "devauc"
+    assert paper_config.model.name == "sonnenfeld2024_slacs_sigma_star_gamma"
+    assert paper_config.unit_convention == LEGACY_FIXED_KPC
+    assert paper_config.mass_definition == get_mass_definition(5, unit_convention=LEGACY_FIXED_KPC)
+    assert paper_config.mass_definition.label == "m5"
+    assert paper_config.parameter_schema.public_parameter_names == SONNENFELD_SIGMA_STAR_PUBLIC_PARAMETERS
+    assert paper_config.parameter_schema.n_dim == 11
+    assert paper_config.fp_prior.enabled is True
+    assert paper_config.data.inference_dataset_path is not None
+    assert paper_config.data.inference_dataset_path.name == (
+        "inference_dataset_sonnenfeld2024_slacs_m5_fixed_v1.hdf5"
+    )
+
+    assert hunit_config.profile.name == "devauc"
+    assert hunit_config.model.name == "sonnenfeld2024_slacs_sigma_star_gamma_hunit"
+    assert hunit_config.unit_convention == H_UNITS_V1
+    assert hunit_config.mass_definition == get_mass_definition(5, unit_convention=H_UNITS_V1)
+    assert hunit_config.mass_definition.label == "m5_hinvkpc"
+    assert hunit_config.parameter_schema.public_parameter_names == SONNENFELD_SIGMA_STAR_PUBLIC_PARAMETERS
+    assert hunit_config.parameter_schema.n_dim == 11
+    assert hunit_config.fp_prior.enabled is True
+    assert hunit_config.data.inference_dataset_path is not None
+    assert hunit_config.data.inference_dataset_path.name == (
+        "inference_dataset_sonnenfeld2024_slacs_m5_hunits_v1.hdf5"
+    )
+
+    assert "beta_gamma" not in paper_config.parameter_schema.public_parameter_names
+    assert "xi_gamma" not in paper_config.parameter_schema.public_parameter_names
+    assert "beta_sigma_star_gamma" in paper_config.parameter_schema.public_parameter_names
 
     paper_initial_center = paper_config.sampling.initial_center.to_public_dict()
     hunit_initial_center = hunit_config.sampling.initial_center.to_public_dict()

@@ -112,6 +112,30 @@ def test_sonnenfeld_assembly_uses_component_parameter_and_capability_sources() -
     )
 
 
+def test_sonnenfeld_sigma_star_gamma_assembly_uses_component_sources() -> None:
+    """The new Sonnenfeld peer model should also be component-assembled."""
+
+    sigma_star_model = importlib.import_module(
+        "cmass_lens_inference.models.sonnenfeld2024_slacs_sigma_star_gamma"
+    )
+    model_spec = sigma_star_model.get_model_spec()
+
+    assert model_spec.parameters == aggregate_parameters(sigma_star_model.COMPONENTS)
+    assert model_spec.parameters == sigma_star_model.PARAMETER_SPECS
+    assert model_spec.required_capabilities == sigma_star_model.REQUIRED_CAPABILITIES
+    assert model_spec.required_capabilities == aggregate_required_capabilities(
+        sigma_star_model.COMPONENTS
+    )
+    assert model_spec.metadata["gamma_distribution"] == "sigma_star_dependent"
+    assert "beta_sigma_star_gamma" in [
+        parameter.public_name for parameter in model_spec.parameters
+    ]
+    assert all(
+        not component.name.startswith("sonnenfeld2024_slacs_sigma_star_gamma.")
+        for component in sigma_star_model.COMPONENTS
+    )
+
+
 def test_selected_component_kernel_refs_resolve_to_shared_numba_kernels() -> None:
     """Selected component declarations should point at real shared kernel functions."""
 

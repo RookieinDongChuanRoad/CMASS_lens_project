@@ -28,7 +28,7 @@ def get_predictive_definition(model_name: str) -> PredictiveDefinition:
 
     if model_name == "cmass":
         return cmass.get_predictive_definition()
-    if model_name in {"sonnenfeld2024_slacs", "sonnenfeld2024_slacs_hunit"}:
+    if model_name in sonnenfeld.MODEL_NAMES:
         return sonnenfeld.get_predictive_definition(model_name)
     raise UnsupportedPredictiveModelError(
         "Model "

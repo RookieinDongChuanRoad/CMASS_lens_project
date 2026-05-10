@@ -135,9 +135,11 @@ analytic approximation.
 ## Build Canonical Inference Dataset
 
 The canonical dataset writer combines a prepared observation HDF5 file, a
-legacy CMASS cross-section HDF5 file, and optional sigma-bundle input into one
-`inference_dataset.hdf5` product.  The writer is part of data preparation only;
-Bayesian inference does not read this product in the current migration step.
+cross-section HDF5 file, and optional velocity-dispersion inputs into one
+`inference_dataset.hdf5` product. Production Bayesian inference now reads this
+canonical dataset directly through `data.inference_dataset_path`; raw
+observation, cross-section, and sigma-table paths belong in data preparation or
+legacy compatibility tests.
 
 Example:
 

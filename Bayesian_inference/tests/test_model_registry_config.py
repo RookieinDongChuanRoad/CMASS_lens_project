@@ -27,6 +27,34 @@ from cmass_lens_inference.model_registry import get_model_definition
 from cmass_lens_inference.numba_backend.compiled_model_factory import build_model_definition
 
 
+SONNENFELD_SIGMA_STAR_PUBLIC_PARAMETERS = (
+    "mu5_0",
+    "beta5",
+    "xi5",
+    "sigma5",
+    "mu_gamma_0",
+    "beta_sigma_star_gamma",
+    "sigma_gamma",
+    "mu_zs",
+    "sigma_zs",
+    "theta0",
+    "loga",
+)
+SONNENFELD_SIGMA_STAR_BOX_PRIOR = {
+    "mu5_0": [10.5, 12.2],
+    "beta5": [-3.0, 3.0],
+    "xi5": [-3.0, 3.0],
+    "sigma5": [1.0e-2, 0.3],
+    "mu_gamma_0": [1.2, 2.8],
+    "beta_sigma_star_gamma": [-3.0, 3.0],
+    "sigma_gamma": [1.0e-2, 0.8],
+    "mu_zs": [0.0, 2.0],
+    "sigma_zs": [1.0e-3, 1.0],
+    "theta0": [0.0, 3.0],
+    "loga": [-1.0, 3.0],
+}
+
+
 def _minimal_cmass_config(tmp_path: Path) -> dict:
     """Build a config payload that can be parsed without opening HDF5 files."""
 
@@ -236,6 +264,59 @@ def test_model_registry_exposes_cmass_and_sonnenfeld() -> None:
     assert toy_model.name == "toy_hierarchical"
     assert toy_model.backend_kernel == "toy_hierarchical"
     assert callable(toy_model.evaluate_log_prob)
+
+
+def test_model_registry_exposes_sonnenfeld_sigma_star_gamma_variants() -> None:
+    """
+    The sigma-star-gamma model should be a concrete peer of existing models.
+
+    The test deliberately checks both unit-convention entrypoints because the
+    implementation package must mirror the current Sonnenfeld pattern: one
+    package supports paper-native and h-unit semantics, while the registry
+    exposes two unambiguous model names.
+    """
+
+    paper_model = get_model_definition("sonnenfeld2024_slacs_sigma_star_gamma")
+    hunit_model = get_model_definition("sonnenfeld2024_slacs_sigma_star_gamma_hunit")
+
+    paper_schema = paper_model.build_parameter_schema(
+        mass_definition=get_mass_definition(5, unit_convention=LEGACY_FIXED_KPC),
+        public_box_prior=SONNENFELD_SIGMA_STAR_BOX_PRIOR,
+    )
+    hunit_schema = hunit_model.build_parameter_schema(
+        mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
+        public_box_prior=SONNENFELD_SIGMA_STAR_BOX_PRIOR,
+    )
+    original_schema = get_model_definition("sonnenfeld2024_slacs").build_parameter_schema(
+        mass_definition=get_mass_definition(5, unit_convention=LEGACY_FIXED_KPC),
+        public_box_prior=None,
+    )
+    original_hunit_schema = get_model_definition("sonnenfeld2024_slacs_hunit").build_parameter_schema(
+        mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
+        public_box_prior=None,
+    )
+
+    assert paper_model.name == "sonnenfeld2024_slacs_sigma_star_gamma"
+    assert paper_model.resolve_mass_definition(LEGACY_FIXED_KPC).label == "m5"
+    assert hunit_model.name == "sonnenfeld2024_slacs_sigma_star_gamma_hunit"
+    assert hunit_model.resolve_mass_definition(H_UNITS_V1).label == "m5_hinvkpc"
+    assert hunit_model.required_capabilities == paper_model.required_capabilities
+
+    assert paper_schema.public_parameter_names == SONNENFELD_SIGMA_STAR_PUBLIC_PARAMETERS
+    assert hunit_schema.public_parameter_names == SONNENFELD_SIGMA_STAR_PUBLIC_PARAMETERS
+    assert paper_schema.n_dim == 11
+    assert hunit_schema.n_dim == 11
+    assert "beta_sigma_star_gamma" in paper_schema.public_parameter_names
+    assert "beta_gamma" not in paper_schema.public_parameter_names
+    assert "xi_gamma" not in paper_schema.public_parameter_names
+    assert paper_schema.model_metadata["gamma_distribution"] == "sigma_star_dependent"
+    assert hunit_schema.model_metadata["gamma_distribution"] == "sigma_star_dependent"
+
+    assert original_schema.n_dim == 12
+    assert original_hunit_schema.n_dim == 12
+    assert "beta_sigma_star_gamma" not in original_schema.public_parameter_names
+    assert "beta_gamma" in original_schema.public_parameter_names
+    assert "xi_gamma" in original_schema.public_parameter_names
 
 
 def test_cmass_model_file_exposes_high_level_model_spec() -> None:

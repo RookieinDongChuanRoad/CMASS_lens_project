@@ -16,11 +16,16 @@ from .models import (
     cmass_runtime,
     sonnenfeld2024_slacs,
     sonnenfeld2024_slacs_runtime,
+    sonnenfeld2024_slacs_sigma_star_gamma,
+    sonnenfeld2024_slacs_sigma_star_gamma_runtime,
     toy_hierarchical,
     toy_hierarchical_runtime,
 )
 from .models.cmass import posterior as cmass_posterior
 from .models.sonnenfeld2024_slacs import posterior as sonnenfeld2024_slacs_posterior
+from .models.sonnenfeld2024_slacs_sigma_star_gamma import (
+    posterior as sonnenfeld2024_slacs_sigma_star_gamma_posterior,
+)
 from .models.toy_hierarchical import posterior as toy_hierarchical_posterior
 
 
@@ -52,6 +57,18 @@ def get_model_definition(model_name: str) -> ModelDefinition:
             sonnenfeld2024_slacs_runtime.get_runtime_adapter(),
             sonnenfeld2024_slacs_posterior.log_prob,
         )
+    if model_name == "sonnenfeld2024_slacs_sigma_star_gamma":
+        return build_model_definition(
+            sonnenfeld2024_slacs_sigma_star_gamma.get_model_spec(),
+            sonnenfeld2024_slacs_sigma_star_gamma_runtime.get_runtime_adapter(),
+            sonnenfeld2024_slacs_sigma_star_gamma_posterior.log_prob,
+        )
+    if model_name == "sonnenfeld2024_slacs_sigma_star_gamma_hunit":
+        return build_model_definition(
+            sonnenfeld2024_slacs_sigma_star_gamma.get_hunit_model_spec(),
+            sonnenfeld2024_slacs_sigma_star_gamma_runtime.get_runtime_adapter(),
+            sonnenfeld2024_slacs_sigma_star_gamma_posterior.log_prob,
+        )
     if model_name == "toy_hierarchical":
         return build_model_definition(
             toy_hierarchical.get_model_spec(),
@@ -61,7 +78,8 @@ def get_model_definition(model_name: str) -> ModelDefinition:
     raise ValueError(
         "Unsupported model preset "
         f"'{model_name}'. Expected one of: cmass, sonnenfeld2024_slacs, "
-        "sonnenfeld2024_slacs_hunit, toy_hierarchical."
+        "sonnenfeld2024_slacs_hunit, sonnenfeld2024_slacs_sigma_star_gamma, "
+        "sonnenfeld2024_slacs_sigma_star_gamma_hunit, toy_hierarchical."
     )
 
 
