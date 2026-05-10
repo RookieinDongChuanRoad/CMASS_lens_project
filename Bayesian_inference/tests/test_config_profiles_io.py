@@ -23,6 +23,24 @@ from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, g
 from cmass_lens_inference.profiles import build_profile_spec
 
 
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
+SONNENFELD_PUBLIC_PARAMETERS = (
+    "mu5_0",
+    "beta5",
+    "xi5",
+    "sigma5",
+    "mu_gamma_0",
+    "beta_gamma",
+    "xi_gamma",
+    "sigma_gamma",
+    "mu_zs",
+    "sigma_zs",
+    "theta0",
+    "loga",
+)
+SONNENFELD_PAPER_MU5_0 = 11.332
+
+
 def _default_box_prior_payload(
     *,
     mass_radius_kpc: int,
@@ -125,6 +143,52 @@ def test_load_runtime_config_builds_h_unit_mass_definition(synthetic_config_path
         "beta5h",
         "xi5h",
         "sigma5h",
+    )
+
+
+def test_sonnenfeld_repository_configs_load_with_distinct_unit_contracts() -> None:
+    """
+    The checked-in Sonnenfeld configs must keep paper-native and h-unit runs separate.
+
+    This is a regression test for a subtle scientific-contract failure: a single
+    YAML file previously mixed the paper-native model name with h-unit data and
+    old h-suffixed parameter names.  Loading the real config files here forces
+    each file to declare one coherent model, unit convention, mass definition,
+    parameter surface, FP-prior choice, and dataset naming contract.
+    """
+
+    paper_config = load_runtime_config(CONFIG_DIR / "sonnenfeld2024_slacs.yaml")
+    hunit_config = load_runtime_config(CONFIG_DIR / "sonnenfeld2024_slacs_hunit.yaml")
+
+    assert paper_config.profile.name == "devauc"
+    assert paper_config.model.name == "sonnenfeld2024_slacs"
+    assert paper_config.unit_convention == LEGACY_FIXED_KPC
+    assert paper_config.mass_definition == get_mass_definition(5, unit_convention=LEGACY_FIXED_KPC)
+    assert paper_config.mass_definition.label == "m5"
+    assert paper_config.parameter_schema.public_parameter_names == SONNENFELD_PUBLIC_PARAMETERS
+    assert paper_config.fp_prior.enabled is True
+    assert paper_config.data.inference_dataset_path is not None
+    assert paper_config.data.inference_dataset_path.name == (
+        "inference_dataset_sonnenfeld2024_slacs_m5_fixed_v1.hdf5"
+    )
+
+    assert hunit_config.profile.name == "devauc"
+    assert hunit_config.model.name == "sonnenfeld2024_slacs_hunit"
+    assert hunit_config.unit_convention == H_UNITS_V1
+    assert hunit_config.mass_definition == get_mass_definition(5, unit_convention=H_UNITS_V1)
+    assert hunit_config.mass_definition.label == "m5_hinvkpc"
+    assert hunit_config.parameter_schema.public_parameter_names == SONNENFELD_PUBLIC_PARAMETERS
+    assert hunit_config.fp_prior.enabled is True
+    assert hunit_config.data.inference_dataset_path is not None
+    assert hunit_config.data.inference_dataset_path.name == (
+        "inference_dataset_sonnenfeld2024_slacs_m5_hunits_v1.hdf5"
+    )
+
+    paper_initial_center = paper_config.sampling.initial_center.to_public_dict()
+    hunit_initial_center = hunit_config.sampling.initial_center.to_public_dict()
+    assert paper_initial_center["mu5_0"] == pytest.approx(SONNENFELD_PAPER_MU5_0)
+    assert hunit_initial_center["mu5_0"] == pytest.approx(
+        SONNENFELD_PAPER_MU5_0 + np.log10(hunit_config.h_ref)
     )
 
 

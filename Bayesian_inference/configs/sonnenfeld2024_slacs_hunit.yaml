@@ -1,19 +1,19 @@
 profile:
   name: devauc
 
-unit_convention: legacy_fixed_kpc
+unit_convention: h_units_v1
 
 model:
-  name: sonnenfeld2024_slacs
+  name: sonnenfeld2024_slacs_hunit
 
 data:
-  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_sonnenfeld2024_slacs_m5_fixed_v1.hdf5
+  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_sonnenfeld2024_slacs_m5_hunits_v1.hdf5
 
 fp_prior:
   enabled: true
 
 box_prior:
-  mu5_0: [10.5, 12.2]
+  mu5_0: [10.0, 12.0]
   beta5: [-3.0, 3.0]
   xi5: [-3.0, 3.0]
   sigma5: [1.0e-2, 0.3]
@@ -33,7 +33,7 @@ sampling:
   random_seed: 7
   initial_jitter_scale: 1.0e-3
   initial_center:
-    mu5_0: 11.332
+    mu5_0: 11.177098040014257
     beta5: 0.59
     xi5: -0.11
     sigma5: 0.064
@@ -67,5 +67,5 @@ runtime:
 
 output:
   root_dir: /Users/liurongfu/Work/CMASS_lens_project/outputs
-  run_label: sonnenfeld2024-slacs
+  run_label: sonnenfeld2024-slacs-hunit
   overwrite_latest: true
