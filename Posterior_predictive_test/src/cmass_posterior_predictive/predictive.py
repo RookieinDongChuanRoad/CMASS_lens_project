@@ -2718,13 +2718,17 @@ def _summarize_trend_draws(draws: np.ndarray) -> dict[str, np.ndarray]:
 
 def _infer_mass_definition_from_trend_npz_keys(dataset_names: set[str]) -> MassDefinition:
     """
-    Infer whether an existing trend run is an `m5` or `m10` product.
+    Infer the active mass definition from an existing trend NPZ product.
 
     The redraw workflow intentionally trusts the already-materialized `.npz`
     artifact instead of directory names. This keeps the annotator aligned with
     the actual plotted quantity even if a run is renamed or copied elsewhere.
     """
 
+    if any(name.endswith("_m10_hinvkpc_draws") for name in dataset_names):
+        return get_mass_definition(10, unit_convention=H_UNITS_V1)
+    if any(name.endswith("_m5_hinvkpc_draws") for name in dataset_names):
+        return get_mass_definition(5, unit_convention=H_UNITS_V1)
     if any(name.endswith("_m10_draws") for name in dataset_names):
         return get_mass_definition(10)
     return get_mass_definition(5)
@@ -2913,18 +2917,33 @@ def _build_fixed_fig8_display_ylim_by_panel(mass_definition: MassDefinition) -> 
       safe for `m10` naming without hardcoding a bare `"m10"` everywhere
     """
 
+    if mass_definition.unit_convention == H_UNITS_V1:
+        # The h-units m5 run is not a pure relabeling of the old m10 panel:
+        # the active y quantity is log10[M_2D(<5 h^-1 kpc)/(h^-1 Msun)].
+        # Keeping the legacy m10 lower bound at 11.2 clips the lower posterior
+        # bands in the current h-units runs, so the curated h-units view uses a
+        # slightly lower mass window while preserving the same compact visual
+        # style. The gamma limits are also lowered because the h-units m5 runs
+        # place visible low-gamma bands below the old 1.45 cutoff.
+        mass_ylim = (10.9, 12.05)
+        gamma_ylim = (1.15, 2.35)
+    else:
+        mass_ylim = (11.2, 12.3)
+        gamma_ylim = (1.45, 2.35)
+
     return {
-        mass_definition.label: (11.2, 12.3),
-        "gamma": (1.45, 2.35),
+        mass_definition.label: mass_ylim,
+        "gamma": gamma_ylim,
         "sigma_ap": (140.0, 370.0),
-        "gamma_vs_sigma_star": (1.45, 2.35),
-        "gamma_vs_logre_kpc": (1.45, 2.35),
+        "gamma_vs_sigma_star": gamma_ylim,
+        "gamma_vs_logre_kpc": gamma_ylim,
     }
 
 
 def _build_fixed_fig8_display_xlim_by_panel(
     mass_definition: MassDefinition,
     profile_name: str,
+    h_ref: float = 0.7,
 ) -> dict[str, tuple[float, float]]:
     """
     Return the fixed per-panel x-axis ranges used for the curated historical redraws.
@@ -2937,6 +2956,7 @@ def _build_fixed_fig8_display_xlim_by_panel(
     """
 
     normalized_profile_name = profile_name.strip().lower()
+    stellar_mass_xlim = (11.0, 11.8)
     if normalized_profile_name == "devauc":
         sigma_star_xlim = (8.9, 9.6)
         logre_xlim = (0.45, 0.95)
@@ -2946,10 +2966,27 @@ def _build_fixed_fig8_display_xlim_by_panel(
     else:
         raise ValueError(f"Unsupported profile '{profile_name}' for fixed Fig. 8 x-axis limits.")
 
+    if mass_definition.unit_convention == H_UNITS_V1:
+        # The 2026-04-21 curated figure limits were expressed in legacy physical
+        # units. Under h-units the first three panels use
+        # log10[M_*/(h^-2 Msun)], so the same physical stellar-mass window is
+        # shifted by 2 log10(h_ref). The logRe diagnostic uses
+        # log10[Re/(h^-1 kpc)], so it shifts by log10(h_ref). The
+        # logSigma_star diagnostic is invariant because the two shifts cancel.
+        log10_h_ref = math.log10(float(h_ref))
+        stellar_mass_xlim = (
+            stellar_mass_xlim[0] + 2.0 * log10_h_ref,
+            stellar_mass_xlim[1] + 2.0 * log10_h_ref,
+        )
+        logre_xlim = (
+            logre_xlim[0] + log10_h_ref,
+            logre_xlim[1] + log10_h_ref,
+        )
+
     return {
-        mass_definition.label: (11.0, 11.8),
-        "gamma": (11.0, 11.8),
-        "sigma_ap": (11.0, 11.8),
+        mass_definition.label: stellar_mass_xlim,
+        "gamma": stellar_mass_xlim,
+        "sigma_ap": stellar_mass_xlim,
         "gamma_vs_sigma_star": sigma_star_xlim,
         "gamma_vs_logre_kpc": logre_xlim,
     }
@@ -2957,6 +2994,7 @@ def _build_fixed_fig8_display_xlim_by_panel(
 
 def _update_existing_fig8_summary_metadata(
     fig8_summary_path: Path,
+    mass_definition: MassDefinition,
     figure_title: str,
     display_xlim_by_panel: dict[str, tuple[float, float]],
     display_ylim_by_panel: dict[str, tuple[float, float]],
@@ -2985,8 +3023,19 @@ def _update_existing_fig8_summary_metadata(
 
     summary_payload["figure_title"] = figure_title
     summary_payload["layout"] = "5x1"
-    summary_payload["panel_order"] = ["m10", "gamma", "sigma_ap", "gamma_vs_sigma_star", "gamma_vs_logre_kpc"]
-    summary_payload["display_xlim"] = [11.0, 11.8]
+    summary_payload["panel_order"] = [
+        mass_definition.label,
+        "gamma",
+        "sigma_ap",
+        "gamma_vs_sigma_star",
+        "gamma_vs_logre_kpc",
+    ]
+    mass_display_xlim = display_xlim_by_panel.get(mass_definition.label)
+    summary_payload["display_xlim"] = (
+        None
+        if mass_display_xlim is None
+        else [float(mass_display_xlim[0]), float(mass_display_xlim[1])]
+    )
     summary_payload["display_xlim_by_panel"] = {
         quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
         for quantity_name, axis_limits in display_xlim_by_panel.items()
@@ -3045,11 +3094,13 @@ def _load_observed_trend_points(
     """
     Load the observed Fig. 8 scatter points from the raw HDF5 file.
 
-    The user-prepared attrs already store the per-lens flat-prior summaries for
-    `m5/m10` and `gamma`, so this helper only needs to map them into plotting
-    arrays. The sigma panel is different: it should show every raw
-    velocity-dispersion measurement, including both entries for `num_sigma=2`
-    lenses, so that panel expands one lens into one or two points.
+    The user-prepared attrs store per-lens flat-prior summaries using the
+    active public mass quantity. Legacy files therefore provide `m5/m10`
+    attrs, while h-units files must provide `m5_hinvkpc/m10_hinvkpc` attrs
+    computed from native h-units grids. The sigma panel is different: it should
+    show every raw velocity-dispersion measurement, including both entries for
+    `num_sigma=2` lenses, so that panel expands one lens into one or two
+    points.
     """
 
     profile_spec = build_profile_spec(profile_name)
@@ -3959,6 +4010,12 @@ def run_posterior_trends(
         mass_definition=mass_definition,
         gamma_mode=runtime_config.gamma_model.mode,
     )
+    fig8_display_xlim_by_panel = _build_fixed_fig8_display_xlim_by_panel(
+        mass_definition=mass_definition,
+        profile_name=runtime_config.profile.name,
+        h_ref=float(runtime_config.h_ref),
+    )
+    fig8_display_ylim_by_panel = _build_fixed_fig8_display_ylim_by_panel(mass_definition)
     gamma_vs_sigma_star_title = f"{figure_title} | gamma vs log $\\Sigma_*$"
     gamma_vs_logre_title = f"{figure_title} | gamma vs log $r_e$"
     gamma_vs_delta_r_title = f"{figure_title} | gamma vs $\\Delta_R$"
@@ -4003,6 +4060,18 @@ def run_posterior_trends(
         "parallelism": parallelism.to_dict(),
         "layout": "5x1",
         "panel_order": [mass_definition.label, "gamma", "sigma_ap", "gamma_vs_sigma_star", "gamma_vs_logre_kpc"],
+        "display_xlim": [
+            float(fig8_display_xlim_by_panel[mass_definition.label][0]),
+            float(fig8_display_xlim_by_panel[mass_definition.label][1]),
+        ],
+        "display_xlim_by_panel": {
+            quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+            for quantity_name, axis_limits in fig8_display_xlim_by_panel.items()
+        },
+        "display_ylim_by_panel": {
+            quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+            for quantity_name, axis_limits in fig8_display_ylim_by_panel.items()
+        },
         "figure_title": figure_title,
         "quantities": {name: {"label": name} for name in trend_quantity_names},
         "categories": {
@@ -4062,6 +4131,8 @@ def run_posterior_trends(
         ),
         extra_gamma_panels=composite_extra_panels,
         figure_title=figure_title,
+        display_xlim_by_panel=fig8_display_xlim_by_panel,
+        display_ylim_by_panel=fig8_display_ylim_by_panel,
     )
 
     observed_gamma_logre_overlay = composite_extra_panels[1]["observed_overlay"]
@@ -4458,6 +4529,7 @@ def annotate_existing_fig8_like_figures_with_observations(
             annotated_display_xlim_by_panel = _build_fixed_fig8_display_xlim_by_panel(
                 mass_definition=mass_definition,
                 profile_name=profile_name,
+                h_ref=float(getattr(runtime_config, "h_ref", 0.7)),
             )
             annotated_display_ylim_by_panel = _build_fixed_fig8_display_ylim_by_panel(mass_definition)
             backup_path = _backup_existing_figure(figure_path=figure_path, backup_prefix=backup_prefix)
@@ -4474,6 +4546,7 @@ def annotate_existing_fig8_like_figures_with_observations(
             )
             _update_existing_fig8_summary_metadata(
                 fig8_summary_path=fig8_summary_path,
+                mass_definition=mass_definition,
                 figure_title=figure_title,
                 display_xlim_by_panel=annotated_display_xlim_by_panel,
                 display_ylim_by_panel=annotated_display_ylim_by_panel,

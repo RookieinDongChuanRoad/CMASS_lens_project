@@ -15,6 +15,7 @@ from pathlib import Path
 from .compiled_context import build_compiled_context
 from .config import load_runtime_config
 from .io import WITHIN_RE_SIGMA_DEFINITION
+from .mass_definition import mass_definition_metadata
 from .outputs import (
     append_run_log,
     create_run_layout,
@@ -78,10 +79,9 @@ def _run_with_layout(
     config_summary = {
         "profile": runtime_context.config.profile.name,
         "gamma_mode": runtime_context.config.gamma_model.mode,
-        "mass_definition": {
-            "label": runtime_context.config.mass_definition.label,
-            "enclosed_radius_kpc": float(runtime_context.config.mass_definition.radius_kpc),
-        },
+        "unit_convention": runtime_context.config.unit_convention,
+        "h_ref": float(runtime_context.config.h_ref),
+        "mass_definition": mass_definition_metadata(runtime_context.config.mass_definition),
         "sampling": {
             "n_walkers": runtime_context.config.sampling.n_walkers,
             "n_steps": runtime_context.config.sampling.n_steps,

@@ -207,6 +207,171 @@ def _write_observation_file(path: Path, profile_name: str, observation_flavor: s
     return path
 
 
+def test_load_observed_trend_points_reads_native_h_units_flat_prior_attrs(tmp_path: Path) -> None:
+    """
+    H-units Fig. 8 overlays should read native h-units flat-prior summary attrs.
+
+    The rebuilt h-units raw observation files store the active mass grids under
+    `mass_definitions/m5_hinvkpc`; their observed flat-prior summaries should
+    be recomputed from those h-units grids and serialized as
+    `m5_hinvkpc_mid/lower/upper`. The plotting code must not fall back to
+    legacy `m5_*` attrs or analytically migrate them at render time.
+    """
+
+    from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
+    from cmass_posterior_predictive.predictive import _load_observed_trend_points
+
+    hunit_mass_mid = 10.97
+    observation_path = tmp_path / "h_units_observed_overlay.hdf5"
+
+    with h5py.File(observation_path, "w") as handle:
+        handle.attrs["unit_convention"] = H_UNITS_V1
+        handle.attrs["h_ref"] = 0.7
+        group = handle.create_group("lens-0000")
+        group.attrs["num_sigma"] = 1
+        group.attrs["logmchab_deV_h2"] = 10.95
+        group.attrs["logmchab_h2"] = 10.90
+        group.attrs["m5_mid"] = 99.0
+        group.attrs["m5_lower"] = 99.0
+        group.attrs["m5_upper"] = 99.0
+        group.attrs["m5_hinvkpc_mid"] = hunit_mass_mid
+        group.attrs["m5_hinvkpc_lower"] = 0.10
+        group.attrs["m5_hinvkpc_upper"] = 0.20
+        group.attrs["gamma_mid"] = 1.8
+        group.attrs["gamma_lower"] = 0.05
+        group.attrs["gamma_upper"] = 0.08
+        group.attrs["sigma"] = np.asarray([251.0], dtype=float)
+        group.attrs["sigma_err"] = np.asarray([12.0], dtype=float)
+        hunit_leaf = group.create_group("mass_definitions").create_group("m5_hinvkpc")
+        hunit_leaf.attrs["h_ref"] = 0.7
+
+    observed_points = _load_observed_trend_points(
+        observation_path=observation_path,
+        profile_name="devauc",
+        mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
+    )
+
+    mass_series = observed_points["m5_hinvkpc"]
+
+    assert "m5" not in observed_points
+    assert mass_series.x.tolist() == [10.95]
+    assert mass_series.y.tolist() == pytest.approx([hunit_mass_mid])
+    assert mass_series.yerr_lower.tolist() == pytest.approx([0.10])
+    assert mass_series.yerr_upper.tolist() == pytest.approx([0.20])
+
+
+def test_load_trend_summary_from_npz_infers_h_units_mass_definition(tmp_path: Path) -> None:
+    """
+    Fig. 8 annotation redraws should reuse h-units curve arrays by active key.
+
+    The annotation command reconstructs summaries from `fig8_like_curves.npz`.
+    H-units products store mass draws under `*_m5_hinvkpc_draws`; treating that
+    archive as legacy `m5` would either fail to load or relabel the figure.
+    """
+
+    from cmass_posterior_predictive.predictive import _load_trend_summary_from_npz
+
+    npz_path = tmp_path / "fig8_like_curves.npz"
+    mass_bin_centers = np.asarray([10.7, 11.0, 11.3], dtype=float)
+    draw_grid = np.asarray(
+        [
+            [1.0, 2.0, 3.0],
+            [1.2, 2.2, 3.2],
+        ],
+        dtype=float,
+    )
+    np.savez(
+        npz_path,
+        mass_bin_centers=mass_bin_centers,
+        parent_m5_hinvkpc_draws=draw_grid,
+        detectable_m5_hinvkpc_draws=draw_grid,
+        selected_m5_hinvkpc_draws=draw_grid,
+        parent_gamma_draws=draw_grid,
+        detectable_gamma_draws=draw_grid,
+        selected_gamma_draws=draw_grid,
+        parent_sigma_ap_draws=draw_grid,
+        detectable_sigma_ap_draws=draw_grid,
+        selected_sigma_ap_draws=draw_grid,
+    )
+
+    loaded_mass_grid, mass_definition, summary_payload = _load_trend_summary_from_npz(npz_path)
+
+    assert loaded_mass_grid.tolist() == mass_bin_centers.tolist()
+    assert mass_definition.unit_convention == "h_units_v1"
+    assert mass_definition.label == "m5_hinvkpc"
+    assert set(summary_payload.keys()) == {"m5_hinvkpc", "gamma", "sigma_ap"}
+
+
+def test_update_fig8_summary_metadata_preserves_h_units_panel_order(tmp_path: Path) -> None:
+    """Annotation metadata updates should keep the active h-units mass panel key."""
+
+    from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
+    from cmass_posterior_predictive.predictive import _update_existing_fig8_summary_metadata
+
+    summary_path = tmp_path / "fig8_like_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "figure_title": "old",
+                "panel_order": ["m5_hinvkpc", "gamma", "sigma_ap"],
+                "mass_definition": {"label": "m5_hinvkpc", "unit_convention": H_UNITS_V1},
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    _update_existing_fig8_summary_metadata(
+        fig8_summary_path=summary_path,
+        mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
+        figure_title="m5_hinvkpc | Sigma_* dependent gamma",
+        display_xlim_by_panel={"m5_hinvkpc": (11.0, 11.8)},
+        display_ylim_by_panel={"m5_hinvkpc": (11.2, 12.3)},
+    )
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["panel_order"][0] == "m5_hinvkpc"
+    assert payload["display_xlim_by_panel"]["m5_hinvkpc"] == [11.0, 11.8]
+
+
+def test_fixed_fig8_display_xlim_shifts_legacy_ranges_for_h_units() -> None:
+    """H-units Fig. 8 redraws should preserve the 2026-04-21 physical windows."""
+
+    from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
+    from cmass_posterior_predictive.predictive import _build_fixed_fig8_display_xlim_by_panel
+
+    limits = _build_fixed_fig8_display_xlim_by_panel(
+        mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
+        profile_name="devauc",
+        h_ref=0.7,
+    )
+
+    log10_h_ref = np.log10(0.7)
+    assert limits["m5_hinvkpc"] == pytest.approx((11.0 + 2.0 * log10_h_ref, 11.8 + 2.0 * log10_h_ref))
+    assert limits["gamma"] == pytest.approx((11.0 + 2.0 * log10_h_ref, 11.8 + 2.0 * log10_h_ref))
+    assert limits["sigma_ap"] == pytest.approx((11.0 + 2.0 * log10_h_ref, 11.8 + 2.0 * log10_h_ref))
+    assert limits["gamma_vs_logre_kpc"] == pytest.approx((0.45 + log10_h_ref, 0.95 + log10_h_ref))
+    assert limits["gamma_vs_sigma_star"] == pytest.approx((8.9, 9.6))
+
+
+def test_fixed_fig8_display_ylim_uses_h_units_mass_and_gamma_windows() -> None:
+    """H-units Fig. 8 redraws should not clip the lower m5h or gamma bands."""
+
+    from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
+    from cmass_posterior_predictive.predictive import _build_fixed_fig8_display_ylim_by_panel
+
+    limits = _build_fixed_fig8_display_ylim_by_panel(
+        mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
+    )
+
+    assert limits["m5_hinvkpc"] == pytest.approx((10.9, 12.05))
+    assert limits["gamma"] == pytest.approx((1.15, 2.35))
+    assert limits["gamma_vs_sigma_star"] == pytest.approx((1.15, 2.35))
+    assert limits["gamma_vs_logre_kpc"] == pytest.approx((1.15, 2.35))
+    assert limits["sigma_ap"] == pytest.approx((140.0, 370.0))
+
+
 def _write_cross_section_file(path: Path) -> Path:
     """Create a tiny but schema-compatible cross-section file."""
 
@@ -2156,6 +2321,10 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert payload["n_parent_sample"] == 96
     assert payload["n_mass_bins"] == 6
     assert payload["figure_title"] == "m5 | dependent gamma"
+    assert payload["display_xlim"] == [11.0, 11.8]
+    assert payload["display_xlim_by_panel"]["m5"] == [11.0, 11.8]
+    assert payload["display_ylim_by_panel"]["m5"] == [11.2, 12.3]
+    assert payload["display_ylim_by_panel"]["gamma"] == [1.45, 2.35]
     assert len(payload["mass_bin_edges"]) == 7
     assert len(payload["mass_bin_centers"]) == 6
     assert set(payload["quantities"].keys()) == {"m5", "gamma", "sigma_ap"}

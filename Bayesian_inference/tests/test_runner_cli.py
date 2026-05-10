@@ -434,12 +434,26 @@ def test_run_inference_serializes_m10_mass_definition_metadata(
 
     assert run_result.metadata["mass_definition"]["label"] == "m10"
     assert run_result.metadata["mass_definition"]["enclosed_radius_kpc"] == 10.0
+    assert run_result.metadata["mass_definition"]["unit_convention"] == "legacy_fixed_kpc"
+    assert run_result.metadata["mass_definition"]["mass_unit"] == "Msun"
+    assert run_result.metadata["mass_definition"]["mass_aperture_unit"] == "kpc"
+    assert run_result.metadata["unit_convention"] == "legacy_fixed_kpc"
+    assert run_result.metadata["h_ref"] == pytest.approx(0.7)
     assert "mu10_0" in run_result.metadata["sampling"]["initial_center"]
     assert "mu5_0" not in run_result.metadata["sampling"]["initial_center"]
 
     metadata = json.loads((run_result.run_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["unit_convention"] == "legacy_fixed_kpc"
+    assert metadata["h_ref"] == pytest.approx(0.7)
+    assert metadata["mass_definition"]["label"] == "m10"
+    assert metadata["mass_definition"]["unit_convention"] == "legacy_fixed_kpc"
+    assert metadata["config_summary"]["unit_convention"] == "legacy_fixed_kpc"
+    assert metadata["config_summary"]["h_ref"] == pytest.approx(0.7)
     assert metadata["config_summary"]["mass_definition"]["label"] == "m10"
     assert metadata["config_summary"]["mass_definition"]["enclosed_radius_kpc"] == 10.0
+    assert metadata["config_summary"]["mass_definition"]["unit_convention"] == "legacy_fixed_kpc"
+    assert metadata["config_summary"]["mass_definition"]["mass_unit"] == "Msun"
+    assert metadata["config_summary"]["mass_definition"]["mass_aperture_unit"] == "kpc"
     assert "mu10_0" in metadata["config_summary"]["sampling"]["initial_center"]
     assert "mu5_0" not in metadata["config_summary"]["sampling"]["initial_center"]
 

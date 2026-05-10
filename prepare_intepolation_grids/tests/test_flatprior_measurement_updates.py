@@ -170,15 +170,21 @@ def _interpolate_quantile_from_cdf(axis: np.ndarray, cdf: np.ndarray, target: fl
     return lower_axis + interpolation_weight * (upper_axis - lower_axis)
 
 
-def _expected_measurement_attrs(group_handle: h5py.Group) -> dict[str, float]:
+def _expected_measurement_attrs(
+    group_handle: h5py.Group,
+    m5_label: str = "m5",
+    m10_label: str = "m10",
+    m5_attr_prefix: str = "m5",
+    m10_attr_prefix: str = "m10",
+) -> dict[str, float]:
     """Compute the expected root attrs for one eligible fixture group."""
 
     gamma_grid = np.asarray(group_handle["gamma_grid"], dtype=float)
     sigma_values = np.asarray(group_handle.attrs["sigma"], dtype=float)
     sigma_errors = np.asarray(group_handle.attrs["sigma_err"], dtype=float)
 
-    m5_group = group_handle["mass_definitions"]["m5"]
-    m10_group = group_handle["mass_definitions"]["m10"]
+    m5_group = group_handle["mass_definitions"][m5_label]
+    m10_group = group_handle["mass_definitions"][m10_label]
     m5_grid = np.asarray(m5_group["mass_grid"], dtype=float)
     m10_grid = np.asarray(m10_group["mass_grid"], dtype=float)
     derivative_grid = np.asarray(m5_group["dmass_dthetaein_grid"], dtype=float)
@@ -214,12 +220,12 @@ def _expected_measurement_attrs(group_handle: h5py.Group) -> dict[str, float]:
         "gamma_lower": gamma_q50 - gamma_q16,
         "gamma_mid": gamma_q50,
         "gamma_upper": gamma_q84 - gamma_q50,
-        "m5_lower": abs(m5_q50 - m5_low_value),
-        "m5_mid": m5_q50,
-        "m5_upper": abs(m5_high_value - m5_q50),
-        "m10_lower": abs(m10_q50 - m10_low_value),
-        "m10_mid": m10_q50,
-        "m10_upper": abs(m10_high_value - m10_q50),
+        f"{m5_attr_prefix}_lower": abs(m5_q50 - m5_low_value),
+        f"{m5_attr_prefix}_mid": m5_q50,
+        f"{m5_attr_prefix}_upper": abs(m5_high_value - m5_q50),
+        f"{m10_attr_prefix}_lower": abs(m10_q50 - m10_low_value),
+        f"{m10_attr_prefix}_mid": m10_q50,
+        f"{m10_attr_prefix}_upper": abs(m10_high_value - m10_q50),
     }
 
 
@@ -248,6 +254,72 @@ def test_plan_flatprior_updates_uses_nested_mass_definitions_and_returns_expecte
     # negative sign from the projection order.
     assert planned_groups["reversed-mass"].new_attrs["m5_lower"] > 0.0
     assert planned_groups["reversed-mass"].new_attrs["m5_upper"] > 0.0
+
+
+def test_plan_flatprior_updates_uses_h_unit_mass_definitions_and_writes_h_unit_attrs(
+    tmp_path: Path,
+) -> None:
+    """
+    H-units observation files must recompute observed summaries from h-units grids.
+
+    The h-units rebuild writes mass and sigma-unit inputs under
+    `mass_definitions/m5_hinvkpc` and `mass_definitions/m10_hinvkpc`. The
+    flat-prior updater must therefore use those native leaves directly and
+    serialize observed mass summaries with h-units public attr names, instead
+    of reading or analytically migrating legacy `m5` / `m10` attrs.
+    """
+
+    hdf5_path = tmp_path / "h_units_input.hdf5"
+    gamma_grid = np.asarray([1.2, 1.6, 2.0, 2.4, 2.8], dtype=float)
+    derivative_grid = np.asarray([0.7, 0.8, 0.9, 1.0, 1.1], dtype=float)
+    m5h_grid = np.asarray([10.7, 10.9, 11.1, 11.3, 11.5], dtype=float)
+    m10h_grid = np.asarray([11.0, 11.2, 11.4, 11.6, 11.8], dtype=float)
+    sigma_model = np.asarray([190.0, 225.0, 255.0, 235.0, 205.0], dtype=float)
+
+    with h5py.File(hdf5_path, "w") as handle:
+        handle.attrs["unit_convention"] = "h_units_v1"
+        handle.attrs["h_ref"] = 0.7
+        group = handle.create_group("hunit-lens")
+        group.attrs["unit_convention"] = "h_units_v1"
+        group.attrs["h_ref"] = 0.7
+        group.attrs["num_sigma"] = np.int64(1)
+        group.attrs["sigma"] = np.asarray([250.0], dtype=float)
+        group.attrs["sigma_err"] = np.asarray([20.0], dtype=float)
+        group.create_dataset("gamma_grid", data=gamma_grid)
+        mass_definitions = group.create_group("mass_definitions")
+        _write_mass_definition_group(
+            mass_definitions,
+            label="m5_hinvkpc",
+            mass_grid=m5h_grid,
+            derivative_grid=derivative_grid,
+            s2_grid=_sigma_unit_grid_from_model(m5h_grid, sigma_model),
+        )
+        _write_mass_definition_group(
+            mass_definitions,
+            label="m10_hinvkpc",
+            mass_grid=m10h_grid,
+        )
+
+    plans = plan_flatprior_measurement_updates_for_files(hdf5_paths=[hdf5_path])
+
+    assert len(plans[0].group_updates) == 1
+    new_attrs = plans[0].group_updates[0].new_attrs
+
+    with h5py.File(hdf5_path, "r") as handle:
+        expected_attrs = _expected_measurement_attrs(
+            handle["hunit-lens"],
+            m5_label="m5_hinvkpc",
+            m10_label="m10_hinvkpc",
+            m5_attr_prefix="m5_hinvkpc",
+            m10_attr_prefix="m10_hinvkpc",
+        )
+
+    assert "m5_mid" not in new_attrs
+    assert "m10_mid" not in new_attrs
+    assert "m5_hinvkpc_mid" in new_attrs
+    assert "m10_hinvkpc_mid" in new_attrs
+    for attr_name, expected_value in expected_attrs.items():
+        assert new_attrs[attr_name] == pytest.approx(expected_value)
 
 
 def test_update_flatprior_measurements_preview_mode_leaves_source_file_unchanged(tmp_path: Path) -> None:

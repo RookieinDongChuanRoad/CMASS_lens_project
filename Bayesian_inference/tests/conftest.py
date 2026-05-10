@@ -26,6 +26,8 @@ SOURCE_ROOT = PROJECT_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
+from cmass_lens_inference.mass_definition import H_UNITS_V1
+
 
 def _default_box_prior_config(
     *,
@@ -143,6 +145,8 @@ def _write_synthetic_sigma_bundle(
     observation_flavor: str = "boss",
     seeing_fwhm_arcsec: float = 1.5,
     include_within_re: bool = False,
+    unit_convention: str | None = None,
+    h_ref: float | None = None,
 ) -> Path:
     """
     Write a tiny bundle-style sigma table for flavor-aware loader tests.
@@ -160,6 +164,10 @@ def _write_synthetic_sigma_bundle(
         handle.create_dataset("profile_name", data=np.bytes_(profile_name))
         handle.attrs["schema_version"] = "sigma_unit_bundle_hdf5_v2"
         handle.attrs["quantity_name"] = "S_unit"
+        if unit_convention is not None:
+            handle.attrs["unit_convention"] = unit_convention
+        if h_ref is not None:
+            handle.attrs["h_ref"] = float(h_ref)
 
         slit_group = handle.create_group("slit")
         boss_group = handle.create_group("boss")
@@ -172,6 +180,10 @@ def _write_synthetic_sigma_bundle(
         leaf.attrs["mass_radius_kpc"] = float(mass_radius_kpc)
         leaf.attrs["units"] = f"km2 s-2 per 10**{mass_definition_label}"
         leaf.attrs["observation_flavor"] = observation_flavor
+        if unit_convention is not None:
+            leaf.attrs["unit_convention"] = unit_convention
+        if h_ref is not None:
+            leaf.attrs["h_ref"] = float(h_ref)
         if observation_flavor == "boss":
             values = np.linspace(
                 0.5,
@@ -210,6 +222,10 @@ def _write_synthetic_sigma_bundle(
             within_re_leaf.attrs["aperture_shape"] = "circular"
             within_re_leaf.attrs["aperture_radius_mode"] = "effective_radius"
             within_re_leaf.attrs["seeing_mode"] = "none"
+            if unit_convention is not None:
+                within_re_leaf.attrs["unit_convention"] = unit_convention
+            if h_ref is not None:
+                within_re_leaf.attrs["h_ref"] = float(h_ref)
             if profile_name == "sersic":
                 n_axis = np.linspace(2.5, 10.5, 4)
                 within_re_leaf.create_dataset("n_axis", data=n_axis)
@@ -405,6 +421,48 @@ def synthetic_namespaced_observation_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def synthetic_h_units_observation_file(tmp_path: Path) -> Path:
+    """
+    Create a minimal one-lens h-units observation file for FP-prior tests.
+
+    Why this fixture exists:
+    - the FP-prior kernels should see the same h-units stellar-mass coordinate
+      as the rest of the likelihood path
+    - the compiled context must therefore start from a native h-units HDF5
+      contract instead of a legacy file plus analytic migration
+    - the test keeps `num_sigma=0` so failures isolate the FP-prior coordinate
+      logic rather than the observed-dispersion likelihood branch
+    """
+
+    path = tmp_path / "synthetic_h_units_observations.hdf5"
+    gamma_grid = np.linspace(1.3, 2.7, 17)
+
+    with h5py.File(path, "w") as handle:
+        handle.attrs["unit_convention"] = H_UNITS_V1
+        handle.attrs["h_ref"] = 0.7
+        group = handle.create_group("lens-h")
+        group.attrs["unit_convention"] = H_UNITS_V1
+        group.attrs["h_ref"] = 0.7
+        group.attrs["zd"] = 0.55
+        group.attrs["zs"] = 1.75
+        group.attrs["logmchab_h2"] = 10.99
+        group.attrs["logmchab_err"] = 0.05
+        group.attrs["nser"] = 4.2
+        group.attrs["log10_re_hinv_kpc"] = 0.64
+        group.attrs["rein_arcsec"] = 1.3
+        group.attrs["num_sigma"] = 0
+        group.create_dataset("gamma_grid", data=gamma_grid)
+
+        mass_group = group.create_group("mass_definitions").create_group("m5_hinvkpc")
+        mass_group.attrs["unit_convention"] = H_UNITS_V1
+        mass_group.attrs["h_ref"] = 0.7
+        mass_group.create_dataset("mass_grid", data=np.linspace(11.7, 10.9, 17))
+        mass_group.create_dataset("dmass_dthetaein_grid", data=np.linspace(-2.0, -1.0, 17))
+
+    return path
+
+
+@pytest.fixture
 def synthetic_cross_section_file(tmp_path: Path) -> Path:
     """
     Create a cross-section HDF5 file using the alias field names observed in
@@ -552,6 +610,23 @@ def synthetic_devauc_within_re_sigma_bundle_file(tmp_path: Path) -> Path:
         observation_flavor="slit",
         seeing_fwhm_arcsec=0.9,
         include_within_re=True,
+    )
+
+
+@pytest.fixture
+def synthetic_h_units_within_re_sigma_bundle_file(tmp_path: Path) -> Path:
+    """Create a tiny h-units within-Re bundle leaf for FP-prior regression tests."""
+
+    return _write_synthetic_sigma_bundle(
+        tmp_path / "synthetic_h_units_within_re_sigma_bundle.h5",
+        profile_name="sersic",
+        mass_definition_label="m5_hinvkpc",
+        mass_radius_kpc=5.0,
+        observation_flavor="slit",
+        seeing_fwhm_arcsec=0.9,
+        include_within_re=True,
+        unit_convention=H_UNITS_V1,
+        h_ref=0.7,
     )
 
 
@@ -958,6 +1033,97 @@ def synthetic_devauc_fp_prior_config_path(
         "output": {
             "root_dir": str(tmp_path / "outputs"),
             "run_label": "synthetic-devauc-fp",
+            "overwrite_latest": True,
+        },
+    }
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_h_units_fp_prior_config_path(
+    tmp_path: Path,
+    synthetic_h_units_observation_file: Path,
+    synthetic_cross_section_file: Path,
+    synthetic_h_units_within_re_sigma_bundle_file: Path,
+) -> Path:
+    """
+    Create an `h_units_v1 + sersic + m5_hinvkpc` config with FP prior enabled.
+
+    The config intentionally keeps the public FP-prior inputs at their legacy
+    scientific values. Production code is responsible for translating those
+    values into the active h-units coordinate only inside the compiled context.
+    """
+
+    path = tmp_path / "synthetic_sersic_h_units_fp_prior.yaml"
+    config = {
+        "unit_convention": H_UNITS_V1,
+        "profile": {"name": "sersic"},
+        "mass_definition": {"aperture_hinv_kpc": 5},
+        "gamma_model": {"mode": "dependent"},
+        "fp_prior": {"enabled": True},
+        "data": {
+            "observation_path": str(synthetic_h_units_observation_file),
+            "cross_section_path": str(synthetic_cross_section_file),
+            "sigma_table_path": str(synthetic_h_units_within_re_sigma_bundle_file),
+        },
+        "box_prior": {
+            "mu5h_0": [9.0, 12.0],
+            "beta5h": [-3.0, 3.0],
+            "xi5h": [-3.0, 3.0],
+            "sigma5h": [1.0e-2, 0.2],
+            "mu_gamma_0": [1.5, 2.5],
+            "beta_gamma": [-3.0, 3.0],
+            "xi_gamma": [-3.0, 3.0],
+            "sigma_gamma": [0.0, 0.5],
+            "mu_zs": [1.0, 3.0],
+            "sigma_zs": [0.0, 2.0],
+            "theta0": [0.0, 3.0],
+            "loga": [-1.0, 3.0],
+        },
+        "sampling": {
+            "n_walkers": 24,
+            "n_steps": 3,
+            "warmup": 1,
+            "random_seed": 7,
+            "initial_center": {
+                "mu5h_0": 11.17,
+                "beta5h": 0.59,
+                "xi5h": -0.11,
+                "sigma5h": 0.06,
+                "mu_gamma_0": 1.99,
+                "beta_gamma": 0.1,
+                "xi_gamma": -0.67,
+                "sigma_gamma": 0.149,
+                "mu_zs": 1.8,
+                "sigma_zs": 0.215,
+                "theta0": 0.93,
+                "loga": 1.0,
+            },
+            "initial_jitter_scale": 1.0e-3,
+        },
+        "integration": {
+            "gamma_points": 200,
+            "mstar_points": 200,
+            "normalization_samples": 128,
+        },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
+        "runtime": {
+            "checkpoint_every": 1,
+            "parallel_strategy": "auto",
+            "progress": False,
+            "progress_summary_every": 1,
+            "show_stage_timing": True,
+            "disable_hdf5_file_locking": False,
+            "num_threads": 0,
+            "reserve_cores": 2,
+        },
+        "output": {
+            "root_dir": str(tmp_path / "outputs"),
+            "run_label": "synthetic-hunits-fp-prior",
             "overwrite_latest": True,
         },
     }

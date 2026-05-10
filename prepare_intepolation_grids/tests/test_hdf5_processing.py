@@ -159,6 +159,7 @@ def test_process_hdf5_file_can_write_h_unit_mass_definitions_and_metadata(tmp_pa
         group = handle["no_sigma"]
         assert group.attrs["unit_convention"] == H_UNITS_V1
         np.testing.assert_allclose(group.attrs["logmchab_h2"], 11.4 + 2.0 * np.log10(0.7))
+        np.testing.assert_allclose(group.attrs["r_ein_hinv_kpc"], group.attrs["r_ein_kpc"] * 0.7)
         assert "log10_re_hinv_kpc" in group.attrs
         assert "log10_reff_deV_hinv_kpc" in group.attrs
         assert set(group["mass_definitions"].keys()) == {"m5_hinvkpc", "m10_hinvkpc"}

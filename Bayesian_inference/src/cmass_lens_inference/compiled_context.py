@@ -179,10 +179,19 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         stellar_mass_pivot = 11.4 + 2.0 * log10_h_ref
         mass_function_loc = profile.mass_function_loc + 2.0 * log10_h_ref
         mu_r0 = profile.mu_r0 + log10_h_ref
+        # The FP prior is specified in the historical physical/legacy stellar-
+        # mass coordinate, but the kernels evaluate it against the active
+        # latent `mstar` axis. Under h-units that axis is
+        # `log10[M_*/(h^-2 Msun)]`, so the fit threshold and pivot must be
+        # translated by the same deterministic `2 log10(h_ref)` offset.
+        fp_fit_mstar_min = runtime_config.fp_prior.fit_mstar_min + 2.0 * log10_h_ref
+        fp_pivot_mstar = runtime_config.fp_prior.pivot_mstar + 2.0 * log10_h_ref
     else:
         stellar_mass_pivot = 11.4
         mass_function_loc = profile.mass_function_loc
         mu_r0 = profile.mu_r0
+        fp_fit_mstar_min = runtime_config.fp_prior.fit_mstar_min
+        fp_pivot_mstar = runtime_config.fp_prior.pivot_mstar
 
     mstar_shift11p4 = np.zeros((n_lens, n_mstar), dtype=np.float64)
     sigma_star_shift9p0_grid = np.zeros((n_lens, n_mstar), dtype=np.float64)
@@ -295,8 +304,8 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CompiledModel
         normalization_min_value=1.0e-10,
         gamma_mode_code=runtime_config.parameter_schema.gamma_mode_code,
         fp_enabled=1 if runtime_config.fp_prior.enabled else 0,
-        fp_fit_mstar_min=runtime_config.fp_prior.fit_mstar_min,
-        fp_pivot_mstar=runtime_config.fp_prior.pivot_mstar,
+        fp_fit_mstar_min=fp_fit_mstar_min,
+        fp_pivot_mstar=fp_pivot_mstar,
         fp_fiducial_scatter=runtime_config.fp_prior.fiducial_scatter,
         fp_scatter_error=runtime_config.fp_prior.scatter_error,
         fp_mu_v_prior=runtime_config.fp_prior.mu_v_prior,

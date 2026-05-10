@@ -77,6 +77,7 @@ def _log_likelihood_from_context(theta: np.ndarray, compiled_model) -> float:
             gamma_grid_int=context.gamma_grid_int,
             mass_radius_kpc=context.mass_radius_kpc,
             gamma_mode_code=context.gamma_mode_code,
+            mass_log_physical_offset=context.mass_log_physical_offset,
         )
     )
 
@@ -117,6 +118,13 @@ def _population_summary_kwargs(theta: np.ndarray, compiled_model) -> dict[str, o
         "gamma_trunc_high": context.gamma_trunc_high,
         "mass_radius_kpc": context.mass_radius_kpc,
         "gamma_mode_code": context.gamma_mode_code,
+        # The FP population-summary kernels sample the same latent mass and
+        # lensing coordinates as the normalization kernel. Tests must therefore
+        # pass through the compiled context's effective pivots and physical-mass
+        # offset instead of relying on the legacy default arguments, otherwise
+        # the serial reference silently drifts away from h-units production.
+        "stellar_mass_pivot": context.stellar_mass_pivot,
+        "mass_log_physical_offset": context.mass_log_physical_offset,
         "fp_fit_mstar_min": context.fp_fit_mstar_min,
         "fp_pivot_mstar": context.fp_pivot_mstar,
         "fp_gamma_axis": context.fp_gamma_axis,
@@ -211,6 +219,8 @@ def _legacy_log_prob_without_fp_prior(theta: np.ndarray, compiled_model) -> floa
         gamma_trunc_high=context.gamma_trunc_high,
         mass_radius_kpc=context.mass_radius_kpc,
         gamma_mode_code=context.gamma_mode_code,
+        stellar_mass_pivot=context.stellar_mass_pivot,
+        mass_log_physical_offset=context.mass_log_physical_offset,
     )
     likelihood_value = _log_likelihood_from_context(theta, compiled_model)
     return float(likelihood_value - context.zd.shape[0] * np.log(z_norm))
@@ -283,6 +293,35 @@ def test_compiled_model_exposes_fp_prior_sigma_table_context(
     assert context.fp_enabled == 1
     assert context.fp_fit_mstar_min == pytest.approx(11.0)
     assert context.fp_pivot_mstar == pytest.approx(11.3)
+    assert context.fp_gamma_axis.shape == (5,)
+    assert context.fp_zd_axis.shape == (1,)
+    assert context.fp_log_re_kpc_axis.shape == (3,)
+    assert context.fp_n_axis.shape == (4,)
+    assert context.fp_sigma_unit_grid.shape == (5, 1, 3, 4)
+    assert context.fp_has_n_axis == 1
+
+
+def test_compiled_model_shifts_fp_prior_mass_coordinates_for_h_units(
+    synthetic_h_units_fp_prior_config_path,
+) -> None:
+    """
+    h-units runs must shift FP-prior mass coordinates into the active axis.
+
+    The YAML config intentionally keeps the scientific FP-prior inputs in the
+    legacy/physical stellar-mass convention. This regression test locks the
+    runtime contract: only the compiled numerical context may translate those
+    coordinates into `log10[M_*/(h^-2 Msun)]`.
+    """
+
+    runtime_config = load_runtime_config(synthetic_h_units_fp_prior_config_path)
+    compiled_model = build_compiled_model(runtime_config)
+    context = compiled_model.context
+    h_offset = 2.0 * np.log10(0.7)
+
+    assert context.fp_enabled == 1
+    assert context.stellar_mass_pivot == pytest.approx(11.4 + h_offset)
+    assert context.fp_fit_mstar_min == pytest.approx(11.0 + h_offset)
+    assert context.fp_pivot_mstar == pytest.approx(11.3 + h_offset)
     assert context.fp_gamma_axis.shape == (5,)
     assert context.fp_zd_axis.shape == (1,)
     assert context.fp_log_re_kpc_axis.shape == (3,)
@@ -401,6 +440,29 @@ def test_fp_prior_log_prob_matches_serial_reference_in_dependent_gamma_mode(
     """FP-enabled dependent mode should keep the same posterior after parallelization."""
 
     runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
+    compiled_model = build_compiled_model(runtime_config)
+    theta = runtime_config.sampling.initial_center.to_array()
+
+    log_prob_value, blob = log_prob(theta, compiled_model)
+    legacy_value = _legacy_log_prob_with_serial_fp_prior(theta, compiled_model)
+
+    assert np.isfinite(log_prob_value)
+    assert log_prob_value == pytest.approx(legacy_value)
+    assert np.isnan(float(blob["fpfit_xi"]))
+
+
+def test_fp_prior_log_prob_matches_serial_reference_in_h_units_mode(
+    synthetic_h_units_fp_prior_config_path,
+) -> None:
+    """
+    h-units FP prior must stay numerically identical to the serial reference.
+
+    This proves the new coordinate translation changes only where the FP prior
+    is evaluated on the active stellar-mass axis, not the underlying
+    scientific meaning of the prior itself.
+    """
+
+    runtime_config = load_runtime_config(synthetic_h_units_fp_prior_config_path)
     compiled_model = build_compiled_model(runtime_config)
     theta = runtime_config.sampling.initial_center.to_array()
 

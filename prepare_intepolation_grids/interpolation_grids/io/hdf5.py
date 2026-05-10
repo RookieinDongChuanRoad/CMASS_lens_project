@@ -271,6 +271,14 @@ def _write_h_unit_observable_attrs(group_handle: h5py.Group, *, h_ref: float) ->
     interpreted.
     """
 
+    if "r_ein_kpc" in group_handle.attrs:
+        # `r_ein_kpc` is intentionally kept as a physical-kpc legacy observable
+        # because older diagnostics and plotting scripts read that exact field.
+        # The explicit h-dependent companion removes the ambiguity introduced by
+        # root-level `size_unit=h^-1 kpc`: the stored coefficient is the value of
+        # the same physical Einstein radius in `h^-1 kpc` units.
+        group_handle.attrs["r_ein_hinv_kpc"] = float(group_handle.attrs["r_ein_kpc"]) * float(h_ref)
+
     if "logmchab" in group_handle.attrs:
         group_handle.attrs["logmchab_h2"] = float(
             logMstar_h2_from_legacy(float(group_handle.attrs["logmchab"]), h_ref=h_ref)

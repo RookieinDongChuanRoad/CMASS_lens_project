@@ -33,10 +33,13 @@ import numpy as np
 
 from interpolation_grids.config import (
     GAMMA_DATASET_NAME,
+    H_UNITS_V1,
+    LEGACY_FIXED_KPC,
     MASS_DEFINITIONS_GROUP_NAME,
     MASS_DERIVATIVE_DATASET_NAME,
     MASS_GRID_DATASET_NAME,
     S2_DATASET_NAME,
+    mass_definition_label_for_convention,
 )
 
 
@@ -51,6 +54,32 @@ TARGET_ATTR_NAMES = (
     "m10_mid",
     "m10_upper",
 )
+SUPPORTED_UNIT_CONVENTIONS = frozenset({LEGACY_FIXED_KPC, H_UNITS_V1})
+
+
+def target_attr_names_for_convention(unit_convention: str) -> tuple[str, ...]:
+    """
+    Return the measurement attrs written for one unit convention.
+
+    Legacy files keep the historical public attrs (`m5_*`, `m10_*`). H-units
+    files must expose active public attrs (`m5_hinvkpc_*`, `m10_hinvkpc_*`) so
+    downstream PPC code can read observed overlays without silently migrating
+    legacy fixed-kpc summaries.
+    """
+
+    m5_prefix = mass_definition_label_for_convention(5.0, unit_convention)
+    m10_prefix = mass_definition_label_for_convention(10.0, unit_convention)
+    return (
+        "gamma_lower",
+        "gamma_mid",
+        "gamma_upper",
+        f"{m5_prefix}_lower",
+        f"{m5_prefix}_mid",
+        f"{m5_prefix}_upper",
+        f"{m10_prefix}_lower",
+        f"{m10_prefix}_mid",
+        f"{m10_prefix}_upper",
+    )
 
 
 class FlatPriorMeasurementUpdateValidationError(ValueError):
@@ -191,10 +220,59 @@ def _validate_sigma_arrays(
     return sigma_values, sigma_errors
 
 
+def _decode_hdf5_string(raw_value) -> str:
+    """Normalize scalar HDF5 string attrs returned as bytes or native strings."""
+
+    if isinstance(raw_value, bytes):
+        return raw_value.decode("utf-8")
+    if isinstance(raw_value, np.ndarray) and raw_value.shape == ():
+        return _decode_hdf5_string(raw_value.item())
+    return str(raw_value)
+
+
+def _resolve_group_unit_convention(group_handle: h5py.Group, group_name: str) -> str:
+    """
+    Resolve the active unit convention for one observation group.
+
+    The h-units rebuild writes convention metadata both at file and group
+    level. The updater accepts either location, but if both are present they
+    must agree. This matters because the selected convention controls both the
+    mass-definition leaves used for the calculation and the root attrs written
+    for PPC overlays.
+    """
+
+    candidates: list[tuple[str, str]] = []
+    if "unit_convention" in group_handle.file.attrs:
+        candidates.append(("file attrs", _decode_hdf5_string(group_handle.file.attrs["unit_convention"])))
+    if "unit_convention" in group_handle.attrs:
+        candidates.append((f"group attrs {group_name}", _decode_hdf5_string(group_handle.attrs["unit_convention"])))
+    if not candidates:
+        return LEGACY_FIXED_KPC
+
+    normalized_candidates = [(source, value.strip()) for source, value in candidates]
+    reference_source, reference_value = normalized_candidates[0]
+    if reference_value not in SUPPORTED_UNIT_CONVENTIONS:
+        raise FlatPriorMeasurementUpdateValidationError(
+            f"{group_name} has unsupported unit_convention={reference_value!r} in {reference_source}"
+        )
+    for source, value in normalized_candidates[1:]:
+        if value not in SUPPORTED_UNIT_CONVENTIONS:
+            raise FlatPriorMeasurementUpdateValidationError(
+                f"{group_name} has unsupported unit_convention={value!r} in {source}"
+            )
+        if value != reference_value:
+            raise FlatPriorMeasurementUpdateValidationError(
+                f"{group_name} has inconsistent unit_convention metadata: "
+                f"{reference_source}={reference_value!r}, {source}={value!r}"
+            )
+    return reference_value
+
+
 def _extract_nested_mass_inputs(
     group_handle: h5py.Group,
     gamma_grid: np.ndarray,
     group_name: str,
+    unit_convention: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load the nested mass-definition datasets required by the updater."""
 
@@ -204,44 +282,50 @@ def _extract_nested_mass_inputs(
         )
 
     mass_definitions_handle = group_handle[MASS_DEFINITIONS_GROUP_NAME]
-    if "m5" not in mass_definitions_handle:
-        raise FlatPriorMeasurementUpdateValidationError(f"{group_name} is missing mass_definitions/'m5'")
-    if "m10" not in mass_definitions_handle:
-        raise FlatPriorMeasurementUpdateValidationError(f"{group_name} is missing mass_definitions/'m10'")
+    m5_label = mass_definition_label_for_convention(5.0, unit_convention)
+    m10_label = mass_definition_label_for_convention(10.0, unit_convention)
+    if m5_label not in mass_definitions_handle:
+        raise FlatPriorMeasurementUpdateValidationError(
+            f"{group_name} is missing mass_definitions/{m5_label!r}"
+        )
+    if m10_label not in mass_definitions_handle:
+        raise FlatPriorMeasurementUpdateValidationError(
+            f"{group_name} is missing mass_definitions/{m10_label!r}"
+        )
 
-    m5_handle = mass_definitions_handle["m5"]
-    m10_handle = mass_definitions_handle["m10"]
+    m5_handle = mass_definitions_handle[m5_label]
+    m10_handle = mass_definitions_handle[m10_label]
 
     m5_grid = _validate_grid_shape(
         _read_required_dataset(m5_handle, MASS_GRID_DATASET_NAME, group_name),
         gamma_grid=gamma_grid,
-        label="mass_definitions/m5/mass_grid",
+        label=f"mass_definitions/{m5_label}/mass_grid",
         group_name=group_name,
     )
     m10_grid = _validate_grid_shape(
         _read_required_dataset(m10_handle, MASS_GRID_DATASET_NAME, group_name),
         gamma_grid=gamma_grid,
-        label="mass_definitions/m10/mass_grid",
+        label=f"mass_definitions/{m10_label}/mass_grid",
         group_name=group_name,
     )
     derivative_grid = _validate_positive_grid(
         _validate_grid_shape(
             _read_required_dataset(m5_handle, MASS_DERIVATIVE_DATASET_NAME, group_name),
             gamma_grid=gamma_grid,
-            label="mass_definitions/m5/dmass_dthetaein_grid",
+            label=f"mass_definitions/{m5_label}/dmass_dthetaein_grid",
             group_name=group_name,
         ),
-        label="mass_definitions/m5/dmass_dthetaein_grid",
+        label=f"mass_definitions/{m5_label}/dmass_dthetaein_grid",
         group_name=group_name,
     )
     s2_grid = _validate_positive_grid(
         _validate_grid_shape(
             _read_required_dataset(m5_handle, S2_DATASET_NAME, group_name),
             gamma_grid=gamma_grid,
-            label="mass_definitions/m5/s2_grid",
+            label=f"mass_definitions/{m5_label}/s2_grid",
             group_name=group_name,
         ),
-        label="mass_definitions/m5/s2_grid",
+        label=f"mass_definitions/{m5_label}/s2_grid",
         group_name=group_name,
     )
     return m5_grid, m10_grid, derivative_grid, s2_grid
@@ -349,6 +433,10 @@ def _build_group_update_plan(
         raise FlatPriorMeasurementUpdateValidationError(
             f"{group_name} has unsupported num_sigma={num_sigma}"
         )
+    unit_convention = _resolve_group_unit_convention(group_handle=group_handle, group_name=group_name)
+    m5_attr_prefix = mass_definition_label_for_convention(5.0, unit_convention)
+    m10_attr_prefix = mass_definition_label_for_convention(10.0, unit_convention)
+    target_attr_names = target_attr_names_for_convention(unit_convention)
 
     gamma_grid = _validate_gamma_grid(
         _read_required_dataset(group_handle, GAMMA_DATASET_NAME, group_name),
@@ -364,6 +452,7 @@ def _build_group_update_plan(
         group_handle=group_handle,
         gamma_grid=gamma_grid,
         group_name=group_name,
+        unit_convention=unit_convention,
     )
 
     posterior_grid = np.exp(
@@ -410,16 +499,16 @@ def _build_group_update_plan(
         "gamma_lower": float(gamma_q50 - gamma_q16),
         "gamma_mid": float(gamma_q50),
         "gamma_upper": float(gamma_q84 - gamma_q50),
-        "m5_lower": float(m5_lower),
-        "m5_mid": float(m5_mid),
-        "m5_upper": float(m5_upper),
-        "m10_lower": float(m10_lower),
-        "m10_mid": float(m10_mid),
-        "m10_upper": float(m10_upper),
+        f"{m5_attr_prefix}_lower": float(m5_lower),
+        f"{m5_attr_prefix}_mid": float(m5_mid),
+        f"{m5_attr_prefix}_upper": float(m5_upper),
+        f"{m10_attr_prefix}_lower": float(m10_lower),
+        f"{m10_attr_prefix}_mid": float(m10_mid),
+        f"{m10_attr_prefix}_upper": float(m10_upper),
     }
     old_attrs = {
         attr_name: (float(group_handle.attrs[attr_name]) if attr_name in group_handle.attrs else None)
-        for attr_name in TARGET_ATTR_NAMES
+        for attr_name in target_attr_names
     }
 
     return GroupFlatPriorMeasurementUpdatePlan(
@@ -543,7 +632,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Preview or apply flat-prior m5/m10/gamma measurement attrs into "
+            "Preview or apply flat-prior mass/gamma measurement attrs into "
             "one or more project HDF5 files."
         ),
     )
@@ -571,17 +660,27 @@ def build_parser() -> argparse.ArgumentParser:
 def _format_group_preview(group_update: GroupFlatPriorMeasurementUpdatePlan) -> str:
     """Format one human-readable preview line for dry-run and write output."""
 
+    mass_keys = tuple(
+        attr_name.removesuffix("_mid")
+        for attr_name in group_update.new_attrs
+        if attr_name.endswith("_mid") and attr_name != "gamma_mid"
+    )
+    if len(mass_keys) != 2:
+        raise FlatPriorMeasurementUpdateValidationError(
+            f"{group_update.group_name} has unexpected mass summary attrs: {sorted(group_update.new_attrs)}"
+        )
+
     return (
         f"  {group_update.group_name}: "
         f"gamma={group_update.new_attrs['gamma_mid']:.6f}"
         f" -{group_update.new_attrs['gamma_lower']:.6f}"
         f" +{group_update.new_attrs['gamma_upper']:.6f} "
-        f"m5={group_update.new_attrs['m5_mid']:.6f}"
-        f" -{group_update.new_attrs['m5_lower']:.6f}"
-        f" +{group_update.new_attrs['m5_upper']:.6f} "
-        f"m10={group_update.new_attrs['m10_mid']:.6f}"
-        f" -{group_update.new_attrs['m10_lower']:.6f}"
-        f" +{group_update.new_attrs['m10_upper']:.6f}"
+        f"{mass_keys[0]}={group_update.new_attrs[f'{mass_keys[0]}_mid']:.6f}"
+        f" -{group_update.new_attrs[f'{mass_keys[0]}_lower']:.6f}"
+        f" +{group_update.new_attrs[f'{mass_keys[0]}_upper']:.6f} "
+        f"{mass_keys[1]}={group_update.new_attrs[f'{mass_keys[1]}_mid']:.6f}"
+        f" -{group_update.new_attrs[f'{mass_keys[1]}_lower']:.6f}"
+        f" +{group_update.new_attrs[f'{mass_keys[1]}_upper']:.6f}"
     )
 
 
