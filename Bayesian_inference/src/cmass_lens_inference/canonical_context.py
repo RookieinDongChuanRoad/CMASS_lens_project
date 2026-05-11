@@ -154,17 +154,49 @@ def normalize_sigma_grid(
     n_axis = np.asarray(sigma_grid.n_axis, dtype=np.float64)
     values = np.asarray(sigma_grid.sigma_unit_grid, dtype=np.float64)
 
+    gamma_size = gamma_axis.size
+    zd_size = zd_axis.size
+    log_re_size = log_re_axis.size
+    n_size = n_axis.size
+
     if values.ndim == 2:
+        if values.shape != (gamma_size, log_re_size):
+            raise ValueError(
+                "2D canonical sigma grids must have shape "
+                f"(gamma, logRe)={(gamma_size, log_re_size)}; got {values.shape}."
+            )
         values = values[:, None, :, None]
         has_n_axis = 0
     elif values.ndim == 3:
-        if values.shape[1] == log_re_axis.size:
+        z_dependent_shape = (gamma_size, zd_size, log_re_size)
+        n_dependent_shape = (gamma_size, log_re_size, n_size)
+        matches_z_dependent = values.shape == z_dependent_shape
+        matches_n_dependent = values.shape == n_dependent_shape
+
+        # A 3D table can mean either `(gamma, zd, logRe)` or `(gamma, logRe, n)`.
+        # The old implementation looked only at one dimension length, which
+        # fails when `zd_axis` and `log_re_axis` have the same number of grid
+        # points.  Match the complete canonical shape instead so a real redshift
+        # axis is preserved before the Numba interpolator consumes the array.
+        if matches_z_dependent and not (matches_n_dependent and n_size > 1):
+            values = values[..., None]
+            has_n_axis = 0
+        elif matches_n_dependent:
             values = values[:, None, :, :]
             has_n_axis = 1
         else:
-            values = values[..., None]
-            has_n_axis = 0
+            raise ValueError(
+                "3D canonical sigma grids must have shape "
+                f"(gamma, zd, logRe)={z_dependent_shape} or "
+                f"(gamma, logRe, n)={n_dependent_shape}; got {values.shape}."
+            )
     elif values.ndim == 4:
+        expected_shape = (gamma_size, zd_size, log_re_size, n_size)
+        if values.shape != expected_shape:
+            raise ValueError(
+                "4D canonical sigma grids must have shape "
+                f"(gamma, zd, logRe, n)={expected_shape}; got {values.shape}."
+            )
         has_n_axis = 1
     else:
         raise ValueError(f"Unsupported canonical sigma grid ndim={values.ndim}.")

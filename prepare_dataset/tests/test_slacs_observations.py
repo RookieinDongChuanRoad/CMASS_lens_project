@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 import pytest
 
-from prepare_dataset.config import LEGACY_FIXED_KPC
+from prepare_dataset.config import H_UNITS_V1, LEGACY_FIXED_KPC
 from prepare_dataset.io import slacs_observations
 
 
@@ -101,3 +101,46 @@ def test_write_slacs_observation_hdf5_creates_m5_mass_and_s2_grids(
         assert mass_group["mass_grid"].shape == (2,)
         assert mass_group["dmass_dthetaein_grid"].shape == (2,)
         np.testing.assert_allclose(mass_group["s2_grid"][()], np.asarray([1.0e-5, 2.0e-5]))
+
+
+def test_write_slacs_population_sigma_unit_hdf5_uses_slacs_z_axis_and_unit_convention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SLACS population table should use the low-redshift SLACS grid for h-units too."""
+
+    captured_kwargs: dict[str, object] = {}
+    sentinel_table = object()
+
+    def fake_build_sigma_unit_table(**kwargs: object) -> object:
+        captured_kwargs.update(kwargs)
+        return sentinel_table
+
+    def fake_write_sigma_unit_table_hdf5(table: object, output_path: Path | str) -> Path:
+        assert table is sentinel_table
+        return Path(output_path)
+
+    monkeypatch.setattr(slacs_observations, "build_sigma_unit_table", fake_build_sigma_unit_table)
+    monkeypatch.setattr(slacs_observations, "write_sigma_unit_table_hdf5", fake_write_sigma_unit_table_hdf5)
+
+    output_path = slacs_observations.write_slacs_population_sigma_unit_hdf5(
+        output_path=tmp_path / "slacs_population_sigma_unit_m5_hunits_v1.h5",
+        unit_convention=H_UNITS_V1,
+        h_ref=0.7,
+        workers=3,
+    )
+
+    assert output_path == tmp_path / "slacs_population_sigma_unit_m5_hunits_v1.h5"
+    assert captured_kwargs["profile_name"] == "devauc"
+    assert captured_kwargs["mass_radius_kpc"] == 5.0
+    assert captured_kwargs["unit_convention"] == H_UNITS_V1
+    assert captured_kwargs["h_ref"] == pytest.approx(0.7)
+    assert captured_kwargs["workers"] == 3
+    np.testing.assert_allclose(
+        captured_kwargs["zd_axis"],
+        slacs_observations.SLACS_POPULATION_SIGMA_ZD_AXIS,
+    )
+    np.testing.assert_allclose(
+        captured_kwargs["zd_axis"],
+        np.linspace(0.05, 0.40, 21, dtype=float),
+    )

@@ -160,3 +160,26 @@ def test_normalize_sigma_grid_injects_missing_axes() -> None:
     assert n_axis.tolist() == [4.0]
     assert values.shape == (2, 1, 3, 1)
     assert has_n_axis == 0
+
+
+def test_normalize_sigma_grid_preserves_real_redshift_axis_for_3d_table() -> None:
+    """A 3D population table with a real redshift axis must not be read as n-dependent."""
+
+    raw_values = np.arange(18, dtype=np.float64).reshape(2, 3, 3)
+    sigma_grid = CanonicalSigmaGrid(
+        gamma_axis=np.asarray([1.2, 2.0]),
+        zd_axis=np.asarray([0.05, 0.225, 0.4]),
+        log_re_axis=np.asarray([0.45, 0.825, 1.2]),
+        sigma_unit_grid=raw_values,
+        n_axis=np.asarray([4.0]),
+    )
+
+    _gamma_axis, _zd_axis, _log_re_axis, n_axis, values, has_n_axis = normalize_sigma_grid(
+        sigma_grid,
+        profile_fixed_n=4.0,
+    )
+
+    assert n_axis.tolist() == [4.0]
+    assert values.shape == (2, 3, 3, 1)
+    np.testing.assert_array_equal(values[..., 0], raw_values)
+    assert has_n_axis == 0

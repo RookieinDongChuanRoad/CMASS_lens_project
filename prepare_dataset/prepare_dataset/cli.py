@@ -455,6 +455,8 @@ def main() -> int:
             parser.error("--build-slacs-population-sigma-hdf5 requires --output.")
         output_path = write_slacs_population_sigma_unit_hdf5(
             output_path=args.output,
+            unit_convention=args.unit_convention,
+            h_ref=args.h_ref,
             workers=args.workers,
             overwrite=args.overwrite_in_place,
         )

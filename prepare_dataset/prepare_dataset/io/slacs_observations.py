@@ -47,6 +47,7 @@ SLACS_OBSERVATION_APERTURE_POLICY = AperturePolicy.circular(
 SLACS_RAW_FILENAME = "SLACS_table.cat"
 SLACS_OBSERVATION_FILENAME = "observations_SLACS_deV_with_mass_grids_fixed_m5.hdf5"
 SLACS_POPULATION_SIGMA_FILENAME = "slacs_population_sigma_unit_m5.h5"
+SLACS_POPULATION_SIGMA_ZD_AXIS = np.linspace(0.05, 0.40, 21, dtype=float)
 
 
 @dataclass(frozen=True)
@@ -321,6 +322,9 @@ def write_slacs_observation_hdf5(
 def write_slacs_population_sigma_unit_hdf5(
     *,
     output_path: Path | str,
+    zd_axis: np.ndarray | None = None,
+    unit_convention: str = LEGACY_FIXED_KPC,
+    h_ref: float = 0.7,
     workers: int | None = None,
     overwrite: bool = False,
 ) -> Path:
@@ -329,13 +333,18 @@ def write_slacs_population_sigma_unit_hdf5(
     resolved_output_path = Path(output_path).expanduser().resolve()
     if resolved_output_path.exists() and not overwrite:
         raise FileExistsError(f"{resolved_output_path} already exists. Pass overwrite=True to replace it.")
+    resolved_zd_axis = np.asarray(SLACS_POPULATION_SIGMA_ZD_AXIS if zd_axis is None else zd_axis, dtype=float)
+    if resolved_zd_axis.ndim != 1 or resolved_zd_axis.size == 0:
+        raise ValueError("zd_axis must be a non-empty one-dimensional array.")
     table = build_sigma_unit_table(
         profile_name=SLACS_PROFILE_NAME,
         mass_radius_kpc=SLACS_MASS_RADIUS_KPC,
+        zd_axis=resolved_zd_axis,
         workers=workers,
         observation_flavor="slit",
         aperture_policy=SLACS_OBSERVATION_APERTURE_POLICY,
-        unit_convention=LEGACY_FIXED_KPC,
+        unit_convention=unit_convention,
+        h_ref=h_ref,
     )
     return write_sigma_unit_table_hdf5(table, resolved_output_path)
 
@@ -348,6 +357,7 @@ __all__ = [
     "SLACS_OBSERVATION_APERTURE_POLICY",
     "SLACS_OBSERVATION_FILENAME",
     "SLACS_POPULATION_SIGMA_FILENAME",
+    "SLACS_POPULATION_SIGMA_ZD_AXIS",
     "SLACS_PROFILE_NAME",
     "SLACS_RAW_FILENAME",
     "SlacsLensRow",

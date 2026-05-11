@@ -253,6 +253,63 @@
 - 目标 h-units Sonnenfeld/SLACS canonical dataset 已准备完成。
 - 当前两个 hunit YAML 配置沿自身 `data.inference_dataset_path` 可找到该文件，并通过真实 runtime smoke test。
 
+### 2026-05-11 hunit population sigma redshift fix
+
+状态：完成。
+
+问题：
+
+- `data/external/inference_dataset_sonnenfeld2024_slacs_m5_hunits_v1.hdf5` 的
+  `velocity_dispersion_grids/population_sigma_unit/zd_axis` 仍是通用 CMASS 默认
+  `0.43..0.82`。
+- SLACS lens `z_d` 范围是 `0.063..0.358`，应使用
+  `np.linspace(0.05, 0.40, 21)`。
+- fixed-kpc Sonnenfeld canonical 文件已经是正确的 `0.05..0.40`。
+
+代码修正：
+
+- `prepare_dataset.io.slacs_observations.write_slacs_population_sigma_unit_hdf5`
+  现在显式使用 SLACS population z-grid：
+  `SLACS_POPULATION_SIGMA_ZD_AXIS = np.linspace(0.05, 0.40, 21)`。
+- 同一 builder 现在接收 `unit_convention` / `h_ref`，CLI 的
+  `--build-slacs-population-sigma-hdf5` 会透传 `--unit-convention` 和 `--h-ref`。
+- 新增测试锁定 hunit SLACS population sigma 也使用该低红移轴。
+
+重建产物：
+
+- hunit population sigma:
+  `data/external/slacs_population_sigma_unit_m5_hunits_z005_z040_v1.h5`。
+- hunit canonical:
+  `data/external/inference_dataset_sonnenfeld2024_slacs_m5_hunits_v1.hdf5`。
+
+关键验证：
+
+- `metadata.unit_convention=h_units_v1`
+- `metadata.mass_definition_label=m5_hinvkpc`
+- `lensing_cross_section.source=mufibre3_cs_grid`
+- `population_sigma_unit.unit_convention=h_units_v1`
+- `population_sigma_unit.mass_definition_label=m5_hinvkpc`
+- `population_sigma_unit/zd_axis`: first `0.05`, last `0.40`, size `21`
+- `np.allclose(zd_axis, np.linspace(0.05, 0.40, 21)) == True`
+- `lenses/z_d.min_max = 0.063, 0.358`
+- `population_sigma_unit/s_unit_grid.shape=(17, 21, 21)`
+- `velocity_dispersion_grids/per_lens_s2/s2_grid.shape=(59, 17)`
+- SHA256:
+  `8b8d5f38816299b66e39439997760ddb95fb94977486aebed6853ce35cc0ab40`
+
+Runtime smoke test, with reduced integration
+`gamma_points=40, mstar_points=40, normalization_samples=512`:
+
+- `sonnenfeld2024_slacs_hunit`: 12D, finite
+  `log_prob=919.634279451146`, `fp_prior_log_term=-7.059714821407125`
+- `sonnenfeld2024_slacs_sigma_star_gamma_hunit`: 11D, finite
+  `log_prob=906.8843208776404`, `fp_prior_log_term=-6.404396498305863`
+
+Verification commands used `cmass_lens`:
+
+- `conda run -n cmass_lens pytest prepare_dataset/tests/test_slacs_observations.py prepare_dataset/tests/test_sigma_unit_tables.py -q`
+- Result: `16 passed in 15.72s`
+
 ### 2026-05-10 Production fit: `sonnenfeld2024_slacs_sigma_star_gamma_hunit`
 
 状态：完成。
