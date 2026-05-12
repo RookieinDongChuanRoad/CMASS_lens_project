@@ -82,3 +82,72 @@ def test_cmass_lens_only_rejects_fp_prior(
 
     with pytest.raises(ValueError, match="cmass_lens_only.*fp_prior"):
         build_numba_model(runtime_config)
+
+
+def test_cmass_lens_only_numba_log_prob_is_finite(
+    synthetic_lens_only_config_path: Path,
+) -> None:
+    """A valid lens-only initial point should produce a finite posterior."""
+
+    runtime_config = load_runtime_config(synthetic_lens_only_config_path)
+    theta = runtime_config.sampling.initial_center.to_array()
+    numba_model = build_numba_model(runtime_config)
+
+    value, blob = numba_log_prob(theta, numba_model)
+
+    assert np.isfinite(value)
+    assert blob["kernel"].decode("utf-8").rstrip("\x00") == "cmass_lens_only"
+    assert float(blob["normalization_value"]) == pytest.approx(1.0)
+    assert float(blob["fp_prior_log_term"]) == pytest.approx(0.0)
+
+
+def test_cmass_lens_only_log_prob_is_independent_of_cross_section_grid(
+    synthetic_lens_only_config_path: Path,
+    tmp_path: Path,
+) -> None:
+    """Changing cross-section values should not change lens-only likelihood."""
+
+    payload = yaml.safe_load(synthetic_lens_only_config_path.read_text(encoding="utf-8"))
+    original_dataset_path = Path(payload["data"]["inference_dataset_path"]).resolve()
+    altered_dataset_path = tmp_path / "altered_cross_section.hdf5"
+
+    with h5py.File(original_dataset_path, "r") as source, h5py.File(
+        altered_dataset_path,
+        "w",
+    ) as target:
+        for key in source.keys():
+            source.copy(key, target)
+        for key, value in source.attrs.items():
+            target.attrs[key] = value
+        grid = target["lensing_cross_section"]["cross_section_grid"]
+        grid[...] = grid[...] * 1.0e9 + 123.0
+
+    altered_payload = dict(payload)
+    altered_payload["data"] = {"inference_dataset_path": str(altered_dataset_path)}
+    altered_config_path = tmp_path / "altered_cross_section_config.yaml"
+    altered_config_path.write_text(yaml.safe_dump(altered_payload, sort_keys=False), encoding="utf-8")
+
+    original_config = load_runtime_config(synthetic_lens_only_config_path)
+    altered_config = load_runtime_config(altered_config_path)
+    theta = original_config.sampling.initial_center.to_array()
+
+    original_value, _ = numba_log_prob(theta, build_numba_model(original_config))
+    altered_value, _ = numba_log_prob(theta, build_numba_model(altered_config))
+
+    assert np.isfinite(original_value)
+    assert altered_value == pytest.approx(original_value, rel=0.0, abs=1.0e-10)
+
+
+def test_cmass_lens_only_rejects_selection_parameters_in_box_prior(
+    synthetic_lens_only_config_path: Path,
+) -> None:
+    """Lens-only configs should not accept removed source/discovery parameters."""
+
+    payload = yaml.safe_load(synthetic_lens_only_config_path.read_text(encoding="utf-8"))
+    payload["box_prior"]["theta0"] = [0.0, 3.0]
+    payload["sampling"]["initial_center"]["theta0"] = 0.93
+    config_path = synthetic_lens_only_config_path.parent / "lens_only_with_theta0.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="theta0"):
+        load_runtime_config(config_path)
