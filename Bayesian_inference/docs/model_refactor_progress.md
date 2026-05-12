@@ -406,3 +406,14 @@ The component refactor benchmark is effectively unchanged from the prior
 recorded median `0.00052370794583112 s` and therefore shows no material
 steady-state regression.  Direct script execution no longer emits the OpenMP
 deprecation warning after the benchmark-script environment fix.
+
+## CMASS Lens-Only Model
+
+`cmass_lens_only` is implemented as a separate concrete registry model rather
+than a configuration switch inside `cmass`. This preserves the scientific
+meaning of the default CMASS model as selection-corrected while providing a
+Sonnenfeld-style lens-only comparison path.
+
+The model removes source-redshift, discovery-probability, cross-section,
+selection-normalization, and FP-prior terms. Its target population is the
+observed CMASS lens sample.
