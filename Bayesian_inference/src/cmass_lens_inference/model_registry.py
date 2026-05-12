@@ -14,6 +14,8 @@ from .model_interfaces import ModelDefinition
 from .models import (
     cmass,
     cmass_runtime,
+    cmass_lens_only,
+    cmass_lens_only_runtime,
     sonnenfeld2024_slacs,
     sonnenfeld2024_slacs_runtime,
     sonnenfeld2024_slacs_sigma_star_gamma,
@@ -22,6 +24,7 @@ from .models import (
     toy_hierarchical_runtime,
 )
 from .models.cmass import posterior as cmass_posterior
+from .models.cmass_lens_only import posterior as cmass_lens_only_posterior
 from .models.sonnenfeld2024_slacs import posterior as sonnenfeld2024_slacs_posterior
 from .models.sonnenfeld2024_slacs_sigma_star_gamma import (
     posterior as sonnenfeld2024_slacs_sigma_star_gamma_posterior,
@@ -44,6 +47,12 @@ def get_model_definition(model_name: str) -> ModelDefinition:
             cmass.get_model_spec(),
             cmass_runtime.get_runtime_adapter(),
             cmass_posterior.log_prob,
+        )
+    if model_name == "cmass_lens_only":
+        return build_model_definition(
+            cmass_lens_only.get_model_spec(),
+            cmass_lens_only_runtime.get_runtime_adapter(),
+            cmass_lens_only_posterior.log_prob,
         )
     if model_name == "sonnenfeld2024_slacs":
         return build_model_definition(
@@ -77,7 +86,7 @@ def get_model_definition(model_name: str) -> ModelDefinition:
         )
     raise ValueError(
         "Unsupported model preset "
-        f"'{model_name}'. Expected one of: cmass, sonnenfeld2024_slacs, "
+        f"'{model_name}'. Expected one of: cmass, cmass_lens_only, sonnenfeld2024_slacs, "
         "sonnenfeld2024_slacs_hunit, sonnenfeld2024_slacs_sigma_star_gamma, "
         "sonnenfeld2024_slacs_sigma_star_gamma_hunit, toy_hierarchical."
     )
