@@ -1,0 +1,62 @@
+profile:
+  name: sersic
+
+unit_convention: h_units_v1
+
+model:
+  name: cmass_lens_only
+
+data:
+  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_sersic_slit_m5_hunits_v1.hdf5
+
+box_prior:
+  mu_mstar_lens: [10.0, 12.5]
+  sigma_mstar_lens: [1.0e-3, 1.0]
+  mu5h_0: [9.0, 12.0]
+  beta5h: [-3.0, 3.0]
+  xi5h: [-3.0, 3.0]
+  sigma5h: [1.0e-2, 0.2]
+  mu_gamma_0: [1.5, 2.5]
+  beta_sigma_star_gamma: [-3.0, 3.0]
+  sigma_gamma: [1.0e-3, 0.5]
+
+sampling:
+  n_walkers: 24
+  n_steps: 10000
+  burn_in: 2000
+  random_seed: 7
+  initial_jitter_scale: 1.0e-3
+  initial_center:
+    mu_mstar_lens: 11.1
+    sigma_mstar_lens: 0.15
+    mu5h_0: 11.32
+    beta5h: 0.59
+    xi5h: -0.11
+    sigma5h: 0.06
+    mu_gamma_0: 1.99
+    beta_sigma_star_gamma: 0.10
+    sigma_gamma: 0.149
+
+integration:
+  gamma_points: 200
+  mstar_points: 200
+  normalization_samples: 100000
+
+cosmology:
+  h0: 70.0
+  omega_m: 0.3
+
+runtime:
+  checkpoint_every: 100
+  parallel_strategy: auto
+  progress: true
+  progress_summary_every: 25
+  show_stage_timing: true
+  disable_hdf5_file_locking: false
+  num_threads: 0
+  reserve_cores: 2
+
+output:
+  root_dir: /Users/liurongfu/Work/CMASS_lens_project/outputs
+  run_label: cmass-lens-only
+  overwrite_latest: true
