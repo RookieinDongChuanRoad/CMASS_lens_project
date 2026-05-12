@@ -1,5 +1,5 @@
 profile:
-  name: sersic
+  name: devauc
 
 unit_convention: h_units_v1
 
@@ -7,7 +7,7 @@ model:
   name: cmass_lens_only
 
 data:
-  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_sersic_slit_m5_hunits_v1.hdf5
+  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_devauc_slit_m5_hunits_v1.hdf5
 
 box_prior:
   mu_mstar_lens: [10.0, 12.5]
