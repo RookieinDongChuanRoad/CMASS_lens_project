@@ -104,6 +104,28 @@ def _default_box_prior_config(
     }
 
 
+def _lens_only_box_prior_config() -> dict[str, list[float]]:
+    """
+    Return the public-name prior mapping for the CMASS lens-only model.
+
+    The lens-only model keeps the current CMASS h-unit mass and
+    sigma-star-dependent gamma laws, but replaces source/selection parameters
+    with a Gaussian distribution for the observed lens stellar-mass sample.
+    """
+
+    return {
+        "mu_mstar_lens": [10.0, 12.5],
+        "sigma_mstar_lens": [1.0e-3, 1.0],
+        "mu5h_0": [9.0, 12.0],
+        "beta5h": [-3.0, 3.0],
+        "xi5h": [-3.0, 3.0],
+        "sigma5h": [1.0e-2, 0.2],
+        "mu_gamma_0": [1.5, 2.5],
+        "beta_sigma_star_gamma": [-3.0, 3.0],
+        "sigma_gamma": [1.0e-3, 0.5],
+    }
+
+
 def _cmass_model_config(*, mass_definition: str = "m5_hinvkpc", gamma_distribution: str = "sigma_star_dependent") -> dict:
     """
     Return the new registry-backed CMASS model section for fixtures.
@@ -115,6 +137,17 @@ def _cmass_model_config(*, mass_definition: str = "m5_hinvkpc", gamma_distributi
 
     del mass_definition, gamma_distribution
     return {"name": "cmass"}
+
+
+def _cmass_lens_only_model_config() -> dict:
+    """
+    Return the registry-backed lens-only model section for fixtures.
+
+    Keeping this helper separate from `_cmass_model_config` prevents tests from
+    accidentally treating lens-only behavior as a component switch on `cmass`.
+    """
+
+    return {"name": "cmass_lens_only"}
 
 
 def _write_canonical_dataset_from_legacy_inputs(
@@ -768,6 +801,82 @@ def synthetic_config_path(
         "output": {
             "root_dir": str(tmp_path / "outputs"),
             "run_label": "synthetic",
+            "overwrite_latest": True,
+        },
+    }
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def synthetic_lens_only_config_path(
+    tmp_path: Path,
+    synthetic_hunit_observation_file: Path,
+    synthetic_cross_section_file: Path,
+) -> Path:
+    """
+    Create a compact config for the `cmass_lens_only` model.
+
+    The fixture still writes a canonical dataset with a cross-section block
+    because the current canonical reader requires that block. The lens-only
+    posterior must prove through tests that it ignores those values.
+    """
+
+    path = tmp_path / "synthetic_cmass_lens_only.yaml"
+    canonical_dataset_path = _write_canonical_dataset_from_legacy_inputs(
+        output_path=tmp_path / "synthetic_cmass_lens_only_canonical.hdf5",
+        observation_path=synthetic_hunit_observation_file,
+        cross_section_path=synthetic_cross_section_file,
+        profile_name="sersic",
+    )
+    config = {
+        "profile": {"name": "sersic"},
+        "unit_convention": "h_units_v1",
+        "model": _cmass_lens_only_model_config(),
+        "data": {
+            "inference_dataset_path": str(canonical_dataset_path),
+        },
+        "box_prior": _lens_only_box_prior_config(),
+        "sampling": {
+            "random_seed": 7,
+            "n_walkers": 24,
+            "n_steps": 3,
+            "burn_in": 1,
+            "initial_center": {
+                "mu_mstar_lens": 11.0,
+                "sigma_mstar_lens": 0.15,
+                "mu5h_0": 11.17,
+                "beta5h": 0.59,
+                "xi5h": -0.11,
+                "sigma5h": 0.06,
+                "mu_gamma_0": 1.99,
+                "beta_sigma_star_gamma": 0.24,
+                "sigma_gamma": 0.149,
+            },
+            "initial_jitter_scale": 1.0e-3,
+        },
+        "integration": {
+            "gamma_points": 200,
+            "mstar_points": 200,
+            "normalization_samples": 128,
+        },
+        "cosmology": {
+            "h0": 70.0,
+            "omega_m": 0.3,
+        },
+        "runtime": {
+            "checkpoint_every": 1,
+            "parallel_strategy": "auto",
+            "progress": False,
+            "progress_summary_every": 1,
+            "show_stage_timing": True,
+            "disable_hdf5_file_locking": False,
+            "num_threads": 0,
+            "reserve_cores": 2,
+        },
+        "output": {
+            "root_dir": str(tmp_path / "outputs"),
+            "run_label": "synthetic-cmass-lens-only",
             "overwrite_latest": True,
         },
     }
