@@ -33,6 +33,8 @@ POSTERIOR_CORNER_LEVELS = [0.68, 0.95]
 POSTERIOR_CORNER_TITLE_FORMAT = ".2f"
 
 _SHARED_PARAMETER_LABELS: dict[str, str] = {
+    "mu_mstar_lens": r"$\mu_{\log M_{\ast,\mathrm{lens}}}$",
+    "sigma_mstar_lens": r"$\sigma_{\log M_{\ast,\mathrm{lens}}}$",
     "mu_gamma_0": r"$\mu_{\gamma,0}$",
     "beta_gamma": r"$\beta_{\gamma}$",
     "xi_gamma": r"$\xi_{\gamma}$",
@@ -93,24 +95,52 @@ def _load_flattened_emcee_chain(chain_path: Path, burn_in: int) -> np.ndarray:
     return chain[burn_in:].reshape(-1, chain.shape[-1])
 
 
+def _mass_parameter_label_lookup(runtime_config) -> dict[str, str]:
+    """
+    Return public labels for the active aperture-mass population parameters.
+
+    CMASS-family models expose mass-parameter names through the configured
+    mass definition (`mu5h_0`, `mu10_0`, ...), while newer model variants such
+    as `cmass_lens_only` are free to place those parameters anywhere in the
+    sampled vector.  Building this lookup by public name keeps the labels tied
+    to the schema rather than to a historical positional convention.
+    """
+
+    mass_definition = runtime_config.mass_definition
+    radius_label = int(mass_definition.radius_kpc)
+    mass_labels = (
+        rf"$\mu_{{{radius_label},0}}$",
+        rf"$\beta_{{{radius_label}}}$",
+        rf"$\xi_{{{radius_label}}}$",
+        rf"$\sigma_{{{radius_label}}}$",
+    )
+    return dict(zip(mass_definition.public_parameter_names, mass_labels, strict=True))
+
+
 def _public_parameter_order_and_labels(runtime_config) -> tuple[list[str], list[str]]:
     """
     Return the user-visible parameter order and mathtext labels for one run.
 
-    The sampler keeps the historical internal vector order (`mu5_0`, `beta5`,
-    ...), but externally we must expose the run's selected public names such as
-    `mu10_0` when the mass definition is `10 kpc`.
+    The sampler stores samples in the active model's schema order.  Older CMASS
+    models start with the four aperture-mass parameters, but `cmass_lens_only`
+    starts with two observed-lens stellar-mass distribution parameters.  This
+    resolver therefore labels parameters by public name rather than by vector
+    position, while still deriving the mass labels from the exact run's mass
+    definition.
     """
 
-    mass_definition = runtime_config.mass_definition
     public_parameter_order = list(runtime_config.parameter_schema.public_parameter_names)
-    public_parameter_labels = [
-        rf"$\mu_{{{int(mass_definition.radius_kpc)},0}}$",
-        rf"$\beta_{{{int(mass_definition.radius_kpc)}}}$",
-        rf"$\xi_{{{int(mass_definition.radius_kpc)}}}$",
-        rf"$\sigma_{{{int(mass_definition.radius_kpc)}}}$",
-        *[_SHARED_PARAMETER_LABELS[name] for name in public_parameter_order[4:]],
-    ]
+    label_lookup = {
+        **_SHARED_PARAMETER_LABELS,
+        **_mass_parameter_label_lookup(runtime_config),
+    }
+    missing_labels = [name for name in public_parameter_order if name not in label_lookup]
+    if missing_labels:
+        raise KeyError(
+            "Posterior corner labels are not defined for public parameter(s): "
+            + ", ".join(missing_labels)
+        )
+    public_parameter_labels = [label_lookup[name] for name in public_parameter_order]
     return public_parameter_order, public_parameter_labels
 
 

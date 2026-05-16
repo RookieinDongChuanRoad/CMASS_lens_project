@@ -83,6 +83,12 @@ def _parameter_center() -> np.ndarray:
     return np.array([11.17, 0.59, -0.11, 0.06, 1.99, 0.24, 0.149, 1.8, 0.215, 0.93, 1.0], dtype=float)
 
 
+def _lens_only_parameter_center() -> np.ndarray:
+    """Return one deterministic posterior center matching `cmass_lens_only`."""
+
+    return np.array([11.0, 0.15, 11.17, 0.59, -0.11, 0.06, 1.99, 0.24, 0.149], dtype=float)
+
+
 def _write_corner_config(
     path: Path,
     profile_name: str,
@@ -194,6 +200,35 @@ def _build_corner_run(
     return run_dir
 
 
+def _build_lens_only_corner_run(
+    tmp_path: Path,
+    synthetic_lens_only_config_path: Path,
+    warmup: int = 1,
+    sample_count: int = 5,
+) -> Path:
+    """
+    Create a completed `cmass_lens_only` run directory for corner-plot tests.
+
+    This fixture deliberately reuses the production-style lens-only YAML from
+    `conftest.py`. The regression we need to catch lives in the post-processing
+    boundary: the chain is valid, but the corner renderer must not assume that
+    every model starts with the four aperture-mass population parameters.
+    """
+
+    run_dir = tmp_path / "runs" / "devauc" / "20260512_202812_devauc_cmass-lens-only"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload = yaml.safe_load(synthetic_lens_only_config_path.read_text(encoding="utf-8"))
+    payload["profile"] = {"name": "devauc"}
+    payload["sampling"]["burn_in"] = warmup
+    (run_dir / "config_snapshot.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    _seed_corner_backend(
+        run_dir / "chain.h5",
+        parameter_center=_lens_only_parameter_center(),
+        sample_count=sample_count,
+    )
+    return run_dir
+
+
 def test_run_posterior_corner_generates_expected_artifacts_for_cmass(tmp_path: Path) -> None:
     """A completed default CMASS run should produce figure and JSON artifacts in-place."""
 
@@ -287,6 +322,60 @@ def test_run_posterior_corner_uses_schema_driven_parameter_order_for_cmass(
         "loga",
     ]
     assert len(result.metadata["parameter_labels"]) == 11
+
+
+def test_run_posterior_corner_labels_cmass_lens_only_schema_by_name(
+    tmp_path: Path,
+    synthetic_lens_only_config_path: Path,
+    monkeypatch,
+) -> None:
+    """Lens-only corner labels should follow the active model schema by name."""
+
+    from matplotlib.figure import Figure
+
+    from cmass_lens_inference.posterior_corner import run_posterior_corner
+
+    captured: dict[str, object] = {}
+
+    def _fake_corner(samples, **kwargs):
+        captured["samples_shape"] = np.asarray(samples).shape
+        captured["kwargs"] = kwargs
+        return plt.figure(figsize=(4, 4))
+
+    monkeypatch.setattr(corner, "corner", _fake_corner)
+    monkeypatch.setattr(Figure, "savefig", lambda self, path, *args, **kwargs: None)
+    monkeypatch.setattr(plt, "close", lambda figure: None)
+
+    run_dir = _build_lens_only_corner_run(tmp_path, synthetic_lens_only_config_path)
+    result = run_posterior_corner(run_dir=str(run_dir), burn_in="auto")
+
+    expected_order = [
+        "mu_mstar_lens",
+        "sigma_mstar_lens",
+        "mu5h_0",
+        "beta5h",
+        "xi5h",
+        "sigma5h",
+        "mu_gamma_0",
+        "beta_sigma_star_gamma",
+        "sigma_gamma",
+    ]
+    expected_labels = [
+        r"$\mu_{\log M_{\ast,\mathrm{lens}}}$",
+        r"$\sigma_{\log M_{\ast,\mathrm{lens}}}$",
+        r"$\mu_{5,0}$",
+        r"$\beta_{5}$",
+        r"$\xi_{5}$",
+        r"$\sigma_{5}$",
+        r"$\mu_{\gamma,0}$",
+        r"$\beta_{\Sigma_\ast,\gamma}$",
+        r"$\sigma_{\gamma}$",
+    ]
+
+    assert result.metadata["parameter_order"] == expected_order
+    assert result.metadata["parameter_labels"] == expected_labels
+    assert captured["samples_shape"] == (96, len(expected_order))
+    assert captured["kwargs"]["labels"] == expected_labels
 
 
 def test_cli_posterior_corner_latest_command_generates_both_profiles(tmp_path: Path) -> None:
