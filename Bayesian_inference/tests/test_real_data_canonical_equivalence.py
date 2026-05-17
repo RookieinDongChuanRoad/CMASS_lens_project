@@ -36,6 +36,7 @@ DEVauc_CANONICAL_SLIT = DATA_ROOT / "external" / "inference_dataset_devauc_slit_
 DEVauc_CANONICAL_BOSS = DATA_ROOT / "external" / "inference_dataset_devauc_boss_m5_hunits_v1.hdf5"
 DEVauc_RAW_SLIT = DATA_ROOT / "raw" / "observations_deV_with_mass_grids_hunits_v1.hdf5"
 LEGACY_CROSS_SECTION = DATA_ROOT / "external" / "cs_grid_power.h5"
+LEGACY_DEVAUC_SIGMA_BUNDLE = DATA_ROOT / "external" / "hunits_v1" / "jeans_deV_sigma_bundle.h5"
 
 
 def _skip_if_missing(paths: tuple[Path, ...]) -> None:
@@ -126,7 +127,13 @@ def _write_runtime_config(tmp_path: Path, payload: dict, file_name: str) -> Path
     return config_path
 
 
-def _legacy_oracle_compiled_model(runtime_config, *, observation_path: Path, cross_section_path: Path) -> CompiledModel:
+def _legacy_oracle_compiled_model(
+    runtime_config,
+    *,
+    observation_path: Path,
+    cross_section_path: Path,
+    sigma_table_path: Path | None = None,
+) -> CompiledModel:
     """
     Build a compiled model from the legacy raw readers for oracle comparisons.
 
@@ -141,6 +148,7 @@ def _legacy_oracle_compiled_model(runtime_config, *, observation_path: Path, cro
         data=DataConfig(
             observation_path=observation_path.resolve(),
             cross_section_path=cross_section_path.resolve(),
+            sigma_table_path=sigma_table_path.resolve() if sigma_table_path is not None else None,
         ),
     )
     context, profile, cross_section_grid, cosmology, _random_basis, _observations = build_legacy_context(
@@ -192,6 +200,60 @@ def test_real_devauc_canonical_log_prob_matches_legacy_raw_oracle(tmp_path: Path
         rel=1.0e-10,
         abs=1.0e-10,
     )
+
+
+def test_real_devauc_canonical_fp_prior_matches_legacy_raw_oracle(tmp_path: Path) -> None:
+    """
+    FP-enabled canonical preprocessing should preserve the legacy h-unit oracle.
+
+    This test specifically protects the FP mass cut and pivot conversion.  The
+    FP prior constants are declared in the historical physical mass coordinate,
+    while the h-unit CMASS kernels consume ``log10[M_*/(h^-2 Msun)]`` latent
+    masses.  Both canonical and legacy contexts must shift the cut/pivot into
+    that active coordinate before fitting FP diagnostics; otherwise the same
+    theta vector produces a different ``fpfit_mu`` and a very different prior
+    penalty.
+    """
+
+    _skip_if_missing((DEVauc_CANONICAL_SLIT, DEVauc_RAW_SLIT, LEGACY_CROSS_SECTION, LEGACY_DEVAUC_SIGMA_BUNDLE))
+    config_path = _write_runtime_config(
+        tmp_path,
+        _devauc_runtime_config_payload(
+            dataset_path=DEVauc_CANONICAL_SLIT,
+            output_root=tmp_path / "outputs",
+            fp_prior_enabled=True,
+        ),
+        "real_devauc_canonical_fp.yaml",
+    )
+    runtime_config = load_runtime_config(config_path)
+    theta = runtime_config.sampling.initial_center.to_array()
+
+    canonical_value, canonical_blob = numba_log_prob(theta, build_numba_model(runtime_config))
+    legacy_value, legacy_blob = numba_log_prob(
+        theta,
+        _legacy_oracle_compiled_model(
+            runtime_config,
+            observation_path=DEVauc_RAW_SLIT,
+            cross_section_path=LEGACY_CROSS_SECTION,
+            sigma_table_path=LEGACY_DEVAUC_SIGMA_BUNDLE,
+        ),
+    )
+
+    assert canonical_value == pytest.approx(legacy_value, rel=1.0e-10, abs=1.0e-10)
+    for field_name in (
+        "normalization_value",
+        "fp_prior_log_term",
+        "fpfit_mu",
+        "fpfit_beta",
+        "fpfit_scatter",
+    ):
+        assert float(canonical_blob[field_name]) == pytest.approx(
+            float(legacy_blob[field_name]),
+            rel=1.0e-10,
+            abs=1.0e-10,
+        )
+    assert np.isnan(float(canonical_blob["fpfit_xi"]))
+    assert np.isnan(float(legacy_blob["fpfit_xi"]))
 
 
 @pytest.mark.parametrize("dataset_path", [DEVauc_CANONICAL_SLIT, DEVauc_CANONICAL_BOSS])

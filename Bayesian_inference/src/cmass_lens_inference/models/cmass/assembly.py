@@ -33,6 +33,7 @@ from ...components.population.stellar_mass_function.skewnormal import (
 from ...components.selection.discovery_probability import discovery_probability_component
 from ...mass_definition import H_UNITS_V1
 from ...model_interfaces import ModelSpec, ParameterSpec
+from .constants import CMASS_FP_PRIOR_DEFAULTS_20260429
 
 
 GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE = 2
@@ -179,6 +180,7 @@ def get_model_spec() -> ModelSpec:
         ),
         static_codes={"gamma_mode": GAMMA_MODE_SIGMA_STAR_DEPENDENT_CODE},
         backend_kernel=MODEL_NAME,
+        fp_prior_defaults=CMASS_FP_PRIOR_DEFAULTS_20260429.to_config_defaults(),
     )
 
 

@@ -52,6 +52,7 @@ class ModelSpec:
     optional_capabilities: tuple[str, ...]
     static_codes: Mapping[str, int]
     backend_kernel: str
+    fp_prior_defaults: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -179,3 +180,4 @@ class ModelDefinition:
     build_compiled_model: Callable[[RuntimeConfig], CompiledModel]
     evaluate_log_prob: Callable[[Any, CompiledModel, float], tuple[float, Any]]
     backend_kernel: str
+    fp_prior_defaults: Mapping[str, float] = field(default_factory=dict)

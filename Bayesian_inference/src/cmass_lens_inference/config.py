@@ -10,6 +10,7 @@ the model registry.
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 
 import yaml
 
@@ -34,6 +35,16 @@ DEFAULT_OUTPUT_ROOT = Path("/Users/liurongfu/Work/CMASS_lens_project/outputs")
 REMOVED_TOP_LEVEL_MODEL_SECTIONS = ("mass_definition", "gamma_model")
 REMOVED_SAMPLING_FIELDS = ("num_chains", "num_samples", "num_warmup", "chain_method", "thinning", "warmup")
 REMOVED_RAW_DATA_FIELDS = ("observation_path", "cross_section_path", "sigma_table_path")
+GENERIC_FP_PRIOR_DEFAULTS = {
+    "fit_mstar_min": FPPriorConfig.fit_mstar_min,
+    "pivot_mstar": FPPriorConfig.pivot_mstar,
+    "fiducial_scatter": FPPriorConfig.fiducial_scatter,
+    "scatter_error": FPPriorConfig.scatter_error,
+    "mu_v_prior": FPPriorConfig.mu_v_prior,
+    "mu_v_error": FPPriorConfig.mu_v_error,
+    "beta_v_prior": FPPriorConfig.beta_v_prior,
+    "beta_v_error": FPPriorConfig.beta_v_error,
+}
 
 
 def _require_section(data: dict, section_name: str) -> dict:
@@ -67,30 +78,48 @@ def _reject_removed_model_sections(raw_data: dict) -> None:
         )
 
 
-def _load_fp_prior_section(raw_data: dict) -> FPPriorConfig:
+def _active_fp_prior_defaults(model_defaults: Mapping[str, float] | None) -> dict[str, float]:
     """
-    Load the optional FP-prior section with the 1D sigma-logM* defaults.
+    Resolve the numeric FP-prior defaults for the selected concrete model.
+
+    The generic dataclass still provides a fallback for legacy tests and models
+    that do not declare a prior contract.  Concrete science models can override
+    any subset through ``ModelSpec.fp_prior_defaults`` so the parser no longer
+    treats one global default as the CMASS scientific contract.
+    """
+
+    defaults = dict(GENERIC_FP_PRIOR_DEFAULTS)
+    if model_defaults:
+        defaults.update({key: float(value) for key, value in model_defaults.items()})
+    return defaults
+
+
+def _load_fp_prior_section(raw_data: dict, *, model_defaults: Mapping[str, float] | None) -> FPPriorConfig:
+    """
+    Load the optional FP-prior section with model-owned numeric defaults.
 
     The section is intentionally optional so existing model configs can opt in
-    only when the required sigma-unit table is available.
+    only when the required sigma-unit table is available.  Numeric values in
+    YAML remain explicit run-level overrides over the active model defaults.
     """
 
+    defaults = _active_fp_prior_defaults(model_defaults)
     fp_prior_raw = raw_data.get("fp_prior")
     if fp_prior_raw is None:
-        return FPPriorConfig(enabled=False)
+        return FPPriorConfig(enabled=False, **defaults)
     if not isinstance(fp_prior_raw, dict):
         raise TypeError("Config section 'fp_prior' must be a mapping.")
 
     return FPPriorConfig(
         enabled=bool(fp_prior_raw.get("enabled", False)),
-        fit_mstar_min=float(fp_prior_raw.get("fit_mstar_min", 11.0)),
-        pivot_mstar=float(fp_prior_raw.get("pivot_mstar", 11.3)),
-        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", FPPriorConfig.fiducial_scatter)),
-        scatter_error=float(fp_prior_raw.get("scatter_error", FPPriorConfig.scatter_error)),
-        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", FPPriorConfig.mu_v_prior)),
-        mu_v_error=float(fp_prior_raw.get("mu_v_error", FPPriorConfig.mu_v_error)),
-        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", FPPriorConfig.beta_v_prior)),
-        beta_v_error=float(fp_prior_raw.get("beta_v_error", FPPriorConfig.beta_v_error)),
+        fit_mstar_min=float(fp_prior_raw.get("fit_mstar_min", defaults["fit_mstar_min"])),
+        pivot_mstar=float(fp_prior_raw.get("pivot_mstar", defaults["pivot_mstar"])),
+        fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", defaults["fiducial_scatter"])),
+        scatter_error=float(fp_prior_raw.get("scatter_error", defaults["scatter_error"])),
+        mu_v_prior=float(fp_prior_raw.get("mu_v_prior", defaults["mu_v_prior"])),
+        mu_v_error=float(fp_prior_raw.get("mu_v_error", defaults["mu_v_error"])),
+        beta_v_prior=float(fp_prior_raw.get("beta_v_prior", defaults["beta_v_prior"])),
+        beta_v_error=float(fp_prior_raw.get("beta_v_error", defaults["beta_v_error"])),
     )
 
 
@@ -215,7 +244,10 @@ def load_runtime_config(config_path: str | Path) -> RuntimeConfig:
     h_ref = validate_h_ref(float(cosmology_raw["h0"]) / 100.0)
     mass_definition = model_definition.resolve_mass_definition(unit_convention)
     box_prior_raw = _load_box_prior_section(raw_data)
-    fp_prior = _load_fp_prior_section(raw_data)
+    fp_prior = _load_fp_prior_section(
+        raw_data,
+        model_defaults=model_definition.fp_prior_defaults,
+    )
 
     data_config = _load_data_config(data_raw)
 

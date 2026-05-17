@@ -20,6 +20,11 @@ import yaml
 from cmass_lens_inference.config import load_runtime_config
 from cmass_lens_inference.io import load_cross_section_grid, load_observations, load_sigma_unit_table
 from cmass_lens_inference.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC, get_mass_definition
+from cmass_lens_inference.models.cmass.constants import (
+    CMASS_FP_PRIOR_DEFAULTS_20260429,
+    DEVAUC_PROFILE_CONSTANTS,
+    SERSIC_PROFILE_CONSTANTS,
+)
 from cmass_lens_inference.profiles import build_profile_spec
 
 
@@ -277,21 +282,55 @@ def test_load_runtime_config_rejects_raw_sigma_table_path(
 def test_load_runtime_config_builds_fp_prior_config_when_enabled(
     synthetic_fp_prior_config_path: Path,
 ) -> None:
-    """The loader should preserve the optional FP-prior configuration surface."""
+    """CMASS should use model-owned 2026-04-29 FP defaults when enabled."""
 
     runtime_config = load_runtime_config(synthetic_fp_prior_config_path)
+    expected_defaults = CMASS_FP_PRIOR_DEFAULTS_20260429
 
     assert runtime_config.fp_prior.enabled is True
     assert runtime_config.data.inference_dataset_path is not None
     assert runtime_config.data.sigma_table_path is None
-    assert runtime_config.fp_prior.fit_mstar_min == pytest.approx(11.0)
-    assert runtime_config.fp_prior.pivot_mstar == pytest.approx(11.3)
-    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.047)
-    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.008)
-    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.341871, abs=1.0e-6)
-    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.03)
-    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.25774, abs=1.0e-6)
-    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.03)
+    assert runtime_config.fp_prior.fit_mstar_min == pytest.approx(expected_defaults.fit_mstar_min)
+    assert runtime_config.fp_prior.pivot_mstar == pytest.approx(expected_defaults.pivot_mstar)
+    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(expected_defaults.fiducial_scatter)
+    assert runtime_config.fp_prior.scatter_error == pytest.approx(expected_defaults.scatter_error)
+    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(expected_defaults.mu_v_prior, abs=1.0e-6)
+    assert runtime_config.fp_prior.mu_v_error == pytest.approx(expected_defaults.mu_v_error)
+    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(expected_defaults.beta_v_prior, abs=1.0e-6)
+    assert runtime_config.fp_prior.beta_v_error == pytest.approx(expected_defaults.beta_v_error)
+
+
+def test_load_runtime_config_fp_prior_overrides_model_defaults(
+    synthetic_fp_prior_config_path: Path,
+) -> None:
+    """Explicit YAML FP-prior values should override model-owned defaults."""
+
+    payload = yaml.safe_load(synthetic_fp_prior_config_path.read_text(encoding="utf-8"))
+    payload["fp_prior"] = {
+        "enabled": True,
+        "fit_mstar_min": 10.9,
+        "pivot_mstar": 11.2,
+        "fiducial_scatter": 0.051,
+        "scatter_error": 0.004,
+        "mu_v_prior": 2.22,
+        "mu_v_error": 0.02,
+        "beta_v_prior": 0.19,
+        "beta_v_error": 0.015,
+    }
+    config_path = synthetic_fp_prior_config_path.parent / "fp_prior_override.yaml"
+    config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    runtime_config = load_runtime_config(config_path)
+
+    assert runtime_config.fp_prior.enabled is True
+    assert runtime_config.fp_prior.fit_mstar_min == pytest.approx(10.9)
+    assert runtime_config.fp_prior.pivot_mstar == pytest.approx(11.2)
+    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(0.051)
+    assert runtime_config.fp_prior.scatter_error == pytest.approx(0.004)
+    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(2.22)
+    assert runtime_config.fp_prior.mu_v_error == pytest.approx(0.02)
+    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(0.19)
+    assert runtime_config.fp_prior.beta_v_error == pytest.approx(0.015)
 
 
 def test_load_runtime_config_rejects_model_components(synthetic_config_path: Path) -> None:
@@ -401,11 +440,20 @@ def test_build_profile_spec_exposes_profile_specific_rules() -> None:
     assert devauc.uses_observed_n_in_likelihood is False
     assert devauc.observation_field_aliases["stellar_mass"] == ("logmchab_deV", "logmchab")
     assert devauc.observation_field_aliases["effective_radius_arcsec"] == ("reff_deV", "re_arcsec")
+    assert devauc.mass_function_loc == pytest.approx(DEVAUC_PROFILE_CONSTANTS.mass_function_loc)
+    assert devauc.mu_r0 == pytest.approx(DEVAUC_PROFILE_CONSTANTS.mu_r0)
+    assert devauc.beta_r == pytest.approx(DEVAUC_PROFILE_CONSTANTS.beta_r)
+    assert devauc.sigma_r == pytest.approx(DEVAUC_PROFILE_CONSTANTS.sigma_r)
 
     assert sersic.fixed_n is None
     assert sersic.uses_observed_n_in_likelihood is True
     assert sersic.observation_field_aliases["stellar_mass"] == ("logmchab",)
     assert sersic.observation_field_aliases["effective_radius_arcsec"] == ("re_arcsec",)
+    assert sersic.mass_function_loc == pytest.approx(SERSIC_PROFILE_CONSTANTS.mass_function_loc)
+    assert sersic.mu_r0 == pytest.approx(SERSIC_PROFILE_CONSTANTS.mu_r0)
+    assert sersic.beta_r == pytest.approx(SERSIC_PROFILE_CONSTANTS.beta_r)
+    assert sersic.sigma_r == pytest.approx(SERSIC_PROFILE_CONSTANTS.sigma_r)
+    assert sersic.nu_r == pytest.approx(SERSIC_PROFILE_CONSTANTS.nu_r)
 
 
 def test_load_observations_uses_devauc_aliases(

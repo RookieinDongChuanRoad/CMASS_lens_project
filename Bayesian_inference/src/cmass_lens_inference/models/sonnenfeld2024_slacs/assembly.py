@@ -31,6 +31,14 @@ from ...components.selection.velocity_proxy import velocity_proxy_selection_comp
 from ...mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC
 from ...model_interfaces import ModelSpec, ParameterSpec
 from .paper_constants import (
+    FP_BETA_V_ERROR,
+    FP_BETA_V_PRIOR,
+    FP_FIDUCIAL_SCATTER,
+    FP_FIT_MSTAR_MIN_PHYSICAL,
+    FP_MU_V_ERROR,
+    FP_MU_V_PRIOR,
+    FP_PIVOT_MSTAR_PHYSICAL,
+    FP_SCATTER_ERROR,
     MBAR_PHYSICAL,
     MSTAR_PIVOT_PHYSICAL,
 )
@@ -40,6 +48,16 @@ MODEL_NAME = "sonnenfeld2024_slacs"
 HUNIT_MODEL_NAME = "sonnenfeld2024_slacs_hunit"
 MODEL_COMPONENT_KEY = "table1_velocity_proxy"
 MASS_APERTURE_KPC = 5
+FP_PRIOR_DEFAULTS = {
+    "fit_mstar_min": FP_FIT_MSTAR_MIN_PHYSICAL,
+    "pivot_mstar": FP_PIVOT_MSTAR_PHYSICAL,
+    "fiducial_scatter": FP_FIDUCIAL_SCATTER,
+    "scatter_error": FP_SCATTER_ERROR,
+    "mu_v_prior": FP_MU_V_PRIOR,
+    "mu_v_error": FP_MU_V_ERROR,
+    "beta_v_prior": FP_BETA_V_PRIOR,
+    "beta_v_error": FP_BETA_V_ERROR,
+}
 INTERNAL_MASS_PARAMETER_NAMES: tuple[str, ...] = (
     "mu5_0",
     "beta5",
@@ -241,6 +259,7 @@ def _build_model_spec(
         optional_capabilities=(),
         static_codes={},
         backend_kernel="sonnenfeld2024_slacs",
+        fp_prior_defaults=FP_PRIOR_DEFAULTS,
     )
 
 

@@ -22,6 +22,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import emcee
 import h5py
@@ -866,6 +867,57 @@ def _build_completed_run(
     return run_dir, sigma_table_path
 
 
+def _disable_cmass_thread_limit_for_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Keep ordinary diagnostics tests from mutating process-global Numba threads.
+
+    The CMASS adapter must call ``apply_thread_limits`` in production, but most
+    PPC tests only assert artifact content and metadata.  Running the real
+    limiter in those tests would change Numba's global thread state for the rest
+    of the pytest process, making later tests order-sensitive.  Dedicated
+    thread-handoff tests should not use this helper; they need to observe the
+    adapter call directly.
+    """
+
+    from lensing_posterior_predictive.adapters import cmass as cmass_adapter
+
+    def ignore_thread_limit(kernel_threads_per_process: int) -> None:
+        """Accept the resolved width without touching Numba global state."""
+
+        del kernel_threads_per_process
+
+    monkeypatch.setattr(cmass_adapter, "apply_thread_limits", ignore_thread_limit)
+
+
+def _assert_kernel_only_parallelism_metadata(
+    metadata: dict[str, Any],
+    *,
+    requested_worker_processes: int | None,
+) -> dict[str, Any]:
+    """
+    Assert the current diagnostics execution contract without hiding legacy fields.
+
+    The historical trend wrappers still expose a top-level ``worker_processes``
+    value for backward compatibility.  That value is no longer meaningful by
+    itself: ``0`` means the resolved diagnostics strategy uses no Python process
+    pool, while the actual compute width is recorded as kernel threads inside
+    the nested ``parallelism`` payload.  Keeping this check centralized makes the
+    tests enforce both contracts at once:
+    - the caller's requested process width is preserved;
+    - the resolved strategy is explicitly kernel-only;
+    - the legacy field mirrors the resolved process-pool width instead of being
+      read as a dropped user request.
+    """
+
+    parallelism = metadata["parallelism"]
+    assert parallelism["strategy"] == "kernel_only"
+    assert parallelism["requested_worker_processes"] == requested_worker_processes
+    assert parallelism["worker_processes"] == 0
+    assert parallelism["kernel_threads_per_process"] >= 1
+    assert metadata["worker_processes"] == parallelism["worker_processes"]
+    return parallelism
+
+
 def _replace_chain_with_numpyro_samples_npz(
     run_dir: Path,
     *,
@@ -1027,7 +1079,10 @@ def test_run_posterior_predictive_reads_numpyro_samples_npz_without_chain_h5(tmp
     assert arrays["theta_stat_median"].shape[0] == samples_by_chain.shape[0] * samples_by_chain.shape[1]
 
 
-def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifacts(tmp_path: Path) -> None:
+def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """
     The joint diagnostics API should run PPC and trend from one shared parent sample.
 
@@ -1039,6 +1094,7 @@ def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifac
 
     from lensing_posterior_predictive.predictive import run_posterior_diagnostics
 
+    _disable_cmass_thread_limit_for_test(monkeypatch)
     run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic", mass_radius_kpc=10)
 
     result = run_posterior_diagnostics(
@@ -1095,6 +1151,163 @@ def test_run_posterior_diagnostics_generates_shared_parent_ppc_and_trend_artifac
         assert "theta_sample_m5" not in payload.files
         assert "sigma_sample_m5" not in payload.files
         assert payload["theta_sample_theta_ein"].shape == (3, 23)
+
+
+def test_run_posterior_diagnostics_records_requested_compute_width(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Diagnostics metadata should preserve the caller's requested compute width.
+
+    The synthetic runtime config leaves ``num_threads`` on automatic resolution
+    and reserves two cores.  Pinning ``os.cpu_count()`` to four makes the
+    resolved compute budget deterministic: two available kernel threads.  The
+    generic PPC layer must record that the public ``worker_processes=2`` request
+    was received, even though Task 2 still resolves the diagnostics strategy to
+    kernel-only execution with no Python process pool.
+    """
+
+    from lensing_posterior_predictive import predictive as predictive_module
+
+    _disable_cmass_thread_limit_for_test(monkeypatch)
+    monkeypatch.setattr(predictive_module.os, "cpu_count", lambda: 4)
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
+
+    result = predictive_module.run_posterior_diagnostics(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "diagnostics_output"),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=29,
+        parent_sample_size=72,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=2,
+    )
+
+    ppc_summary = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
+
+    assert ppc_summary["parallelism"]["strategy"] == "kernel_only"
+    assert ppc_summary["parallelism"]["requested_worker_processes"] == 2
+    assert ppc_summary["parallelism"]["worker_processes"] == 0
+    assert ppc_summary["parallelism"]["kernel_threads_per_process"] == 2
+    assert manifest["parallelism"] == ppc_summary["parallelism"]
+    assert result.metadata["parallelism"] == ppc_summary["parallelism"]
+
+
+def test_cmass_diagnostics_uses_numba_kernel_threads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    CMASS diagnostics must apply the resolved execution width to Numba kernels.
+
+    ``run_posterior_diagnostics`` resolves public ``worker_processes`` into a
+    kernel-only execution policy.  Metadata alone is not enough: the CMASS
+    adapter owns the hot shared-parent Numba route, so it must consume
+    ``execution.kernel_threads_per_process`` before any random-number or chunk
+    work starts.  The monkeypatch records that adapter-level handoff directly
+    without depending on the global Numba thread state left by other tests.
+    """
+
+    from lensing_posterior_predictive import predictive as predictive_module
+    from lensing_posterior_predictive.adapters import cmass as cmass_adapter
+
+    applied_thread_limits: list[int] = []
+
+    def record_thread_limit(kernel_threads_per_process: int) -> None:
+        """Capture the exact thread width requested by the CMASS adapter."""
+
+        applied_thread_limits.append(int(kernel_threads_per_process))
+
+    monkeypatch.setattr(predictive_module.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(cmass_adapter, "apply_thread_limits", record_thread_limit)
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
+
+    result = predictive_module.run_posterior_diagnostics(
+        run_dir=str(run_dir),
+        sigma_table_path=str(sigma_table_path),
+        output_root_dir=str(tmp_path / "diagnostics_output"),
+        n_posterior_draws=3,
+        burn_in=1,
+        random_seed=29,
+        parent_sample_size=72,
+        n_mass_bins=5,
+        mass_bin_min=10.9,
+        mass_bin_max=11.9,
+        worker_processes=2,
+    )
+
+    ppc_summary = json.loads((result.result_dir / "ppc_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((result.result_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    parallelism = ppc_summary["parallelism"]
+
+    assert result.metadata["backend"] == "numba_shared_parent"
+    assert ppc_summary["backend"] == "numba_shared_parent"
+    assert parallelism["strategy"] == "kernel_only"
+    assert parallelism["requested_worker_processes"] == 2
+    assert parallelism["worker_processes"] == 0
+    assert parallelism["kernel_threads_per_process"] == 2
+    assert applied_thread_limits == [parallelism["kernel_threads_per_process"]]
+    assert manifest["parallelism"] == parallelism
+    assert result.metadata["parallelism"] == parallelism
+
+
+def test_resolve_diagnostics_execution_rejects_non_positive_worker_processes(tmp_path: Path) -> None:
+    """
+    Explicit diagnostics process width must be a positive user request.
+
+    ``None`` means automatic width selection, but ``0`` is an explicit CLI/API
+    value.  Treating it as ``1`` would hide a bad caller contract and make
+    artifact metadata claim a sanitized request that the user did not make.
+    """
+
+    from lensing_posterior_predictive.predictive import (
+        _load_ppc_runtime_config,
+        _resolve_diagnostics_execution,
+    )
+
+    run_dir, _ = _build_completed_run(tmp_path, profile_name="sersic")
+    runtime_config = _load_ppc_runtime_config(run_dir / "config_snapshot.yaml")
+
+    with pytest.raises(ValueError, match="worker_processes must be positive when provided"):
+        _resolve_diagnostics_execution(
+            runtime_config=runtime_config,
+            requested_worker_processes=0,
+            n_draws=1,
+        )
+
+
+def test_run_posterior_diagnostics_rejects_zero_posterior_draws(tmp_path: Path) -> None:
+    """
+    Shared-parent diagnostics need at least one posterior draw before adapters run.
+
+    A zero-draw request can otherwise flow into the model adapter and fail later
+    with low-level array errors.  The generic workflow owns this validation
+    because it selects posterior draws before dispatching model-specific code.
+    """
+
+    from lensing_posterior_predictive.predictive import run_posterior_diagnostics
+
+    run_dir, sigma_table_path = _build_completed_run(tmp_path, profile_name="sersic")
+
+    with pytest.raises(ValueError, match="Shared-parent diagnostics require at least one posterior draw."):
+        run_posterior_diagnostics(
+            run_dir=str(run_dir),
+            sigma_table_path=str(sigma_table_path),
+            output_root_dir=str(tmp_path / "diagnostics_output"),
+            n_posterior_draws=0,
+            burn_in=1,
+            random_seed=29,
+            parent_sample_size=72,
+            n_mass_bins=5,
+            mass_bin_min=10.9,
+            mass_bin_max=11.9,
+        )
 
 
 def test_run_posterior_predictive_records_independent_gamma_mode_and_parameter_order(tmp_path: Path) -> None:
@@ -2296,7 +2509,10 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert payload["posterior_draw_tail_cap"] == 192000
     assert payload["backend"] == "numba_shared_parent"
     assert payload["parallel_strategy"] == "numba_shared_parent"
-    assert payload["worker_processes"] == 0
+    payload_parallelism = _assert_kernel_only_parallelism_metadata(
+        payload,
+        requested_worker_processes=1,
+    )
     assert payload["n_parent_sample"] == 96
     assert payload["n_mass_bins"] == 6
     assert payload["figure_title"] == "m5 | dependent gamma"
@@ -2326,7 +2542,11 @@ def test_run_posterior_trends_generates_expected_artifacts_for_sersic(tmp_path: 
     assert result.metadata["gamma_mode"] == "dependent"
     assert result.metadata["parameter_order"] == list(DEPENDENT_PARAMETER_ORDER)
     assert result.metadata["parallel_strategy"] == "numba_shared_parent"
-    assert result.metadata["worker_processes"] == 0
+    assert result.metadata["parallelism"] == payload_parallelism
+    _assert_kernel_only_parallelism_metadata(
+        result.metadata,
+        requested_worker_processes=1,
+    )
     assert result.metadata["figure_title"] == "m5 | dependent gamma"
 
 
@@ -2632,8 +2852,16 @@ def test_run_posterior_trends_defaults_to_tail_capped_full_chain_mode(tmp_path: 
     assert payload["posterior_draw_tail_cap"] == 192000
     assert payload["backend"] == "numba_shared_parent"
     assert payload["parallel_strategy"] == "numba_shared_parent"
-    assert payload["worker_processes"] == 0
+    payload_parallelism = _assert_kernel_only_parallelism_metadata(
+        payload,
+        requested_worker_processes=1,
+    )
     assert arrays["parent_m5_draws"].shape == (3 * 24, 5)
+    assert result.metadata["parallelism"] == payload_parallelism
+    _assert_kernel_only_parallelism_metadata(
+        result.metadata,
+        requested_worker_processes=1,
+    )
     assert result.metadata["posterior_draw_mode"] == "tail_capped_full_chain"
     assert result.metadata["requested_n_posterior_draws"] is None
 
@@ -2782,7 +3010,10 @@ def test_cli_posterior_trends_command_executes_pipeline(tmp_path: Path) -> None:
     assert payload["n_mass_bins"] == 5
     assert payload["metadata"]["n_parent_sample"] == 72
     assert payload["metadata"]["backend"] == "numba_shared_parent"
-    assert payload["metadata"]["worker_processes"] == 0
+    _assert_kernel_only_parallelism_metadata(
+        payload["metadata"],
+        requested_worker_processes=1,
+    )
     assert payload["metadata"]["posterior_draw_mode"] == "sampled_subset"
     result_dir = Path(payload["result_dir"])
     assert result_dir.exists()

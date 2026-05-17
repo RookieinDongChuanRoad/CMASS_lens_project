@@ -53,6 +53,7 @@ from cmass_lens_inference.types import (
     RuntimeConfig,
 )
 from cmass_lens_inference.parallel import apply_thread_limits
+from .interfaces import DiagnosticsExecution
 from .registry import get_predictive_definition
 from .legacy import load_legacy_ppc_runtime_config
 from .types import (
@@ -2867,6 +2868,57 @@ def _write_standalone_gamma_trend_artifacts(
     )
 
 
+def _resolve_diagnostics_execution(
+    runtime_config: RuntimeConfig,
+    requested_worker_processes: int | None,
+    n_draws: int,
+) -> DiagnosticsExecution:
+    """
+    Resolve the generic PPC diagnostics execution policy and metadata payload.
+
+    ``run_posterior_diagnostics`` exposes a historical ``worker_processes``
+    argument, but the shared-parent diagnostics path is currently kernel-only:
+    adapters consume one Numba/math-library thread budget instead of a Python
+    process pool.  This helper keeps that policy explicit so artifacts record
+    both sides of the contract:
+    - the caller-facing process-width request that arrived at the public API
+    - the kernel-thread width that the adapter may use for the actual compute
+
+    The resolution mirrors the inference-side CPU-budget rules closely enough
+    for reproducibility, while capping kernel width by the number of posterior
+    draws so small diagnostics runs do not advertise unusable parallel work.
+    """
+
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    reserve_cores = max(0, int(runtime_config.runtime.reserve_cores))
+    auto_budget = max(1, cpu_count - reserve_cores)
+    configured_num_threads = int(runtime_config.runtime.num_threads)
+    if configured_num_threads <= 0:
+        compute_budget = auto_budget
+    else:
+        compute_budget = max(1, min(configured_num_threads, auto_budget))
+
+    if requested_worker_processes is None:
+        requested_width = compute_budget
+        serialized_request = None
+    else:
+        requested_width = int(requested_worker_processes)
+        if requested_width <= 0:
+            raise ValueError("worker_processes must be positive when provided.")
+        serialized_request = requested_width
+
+    kernel_threads = max(1, min(requested_width, compute_budget, max(1, int(n_draws))))
+    return DiagnosticsExecution(
+        strategy="kernel_only",
+        cpu_count=cpu_count,
+        reserve_cores=reserve_cores,
+        compute_budget=compute_budget,
+        requested_worker_processes=serialized_request,
+        worker_processes=0,
+        kernel_threads_per_process=kernel_threads,
+    )
+
+
 def run_posterior_diagnostics(
     run_dir: str,
     sigma_table_path: str | Path | None = None,
@@ -2890,7 +2942,6 @@ def run_posterior_diagnostics(
     per posterior draw is reused by both downstream diagnostics.
     """
 
-    del worker_processes
     if parent_sample_size < max(THETA_SAMPLE_SIZE, SIGMA_SAMPLE_SIZE):
         raise ValueError(
             "Shared-parent diagnostics require `parent_sample_size` to be at least "
@@ -2928,6 +2979,13 @@ def run_posterior_diagnostics(
         parameter_names=runtime_config.parameter_schema.internal_parameter_names,
     )
     n_posterior_draws_used = int(posterior_draws.shape[0])
+    if n_posterior_draws_used < 1:
+        raise ValueError("Shared-parent diagnostics require at least one posterior draw.")
+    execution = _resolve_diagnostics_execution(
+        runtime_config=runtime_config,
+        requested_worker_processes=worker_processes,
+        n_draws=n_posterior_draws_used,
+    )
 
     compiled_context, profile_spec, _, cosmology, _, observations = _build_ppc_context(runtime_config)
     observation_contract = _infer_observation_contract_from_runtime_config(runtime_config)
@@ -3007,6 +3065,7 @@ def run_posterior_diagnostics(
         delta_r_bin_edges=delta_r_axis_spec.bin_edges,
         parent_sample_size=int(parent_sample_size),
         random_seed=int(random_seed),
+        execution=execution,
     )
 
     theta_latent = diagnostics["theta_latent"]
@@ -3053,14 +3112,7 @@ def run_posterior_diagnostics(
         if runtime_config.data.observation_path is None
         else str(runtime_config.data.observation_path)
     )
-    parallelism_payload = {
-        "strategy": backend_name,
-        "cpu_count": max(1, int(os.cpu_count() or 1)),
-        "reserve_cores": int(runtime_config.runtime.reserve_cores),
-        "compute_budget": max(1, int(os.cpu_count() or 1) - int(runtime_config.runtime.reserve_cores)),
-        "worker_processes": 0,
-        "kernel_threads_per_process": 0,
-    }
+    parallelism_payload = execution.to_dict()
 
     ppc_summary_payload = {
         "run_id": resolved_run_dir.name,
@@ -3084,7 +3136,7 @@ def run_posterior_diagnostics(
         "mass_definition": mass_definition_metadata(mass_definition),
         "sample_sizes": {"theta_ein": THETA_SAMPLE_SIZE, "sigma": SIGMA_SAMPLE_SIZE},
         "statistics": {"theta_ein": theta_summary, "sigma": sigma_summary},
-        "parallelism": parallelism_payload,
+        "parallelism": dict(parallelism_payload),
     }
     (result_dir / "ppc_summary.json").write_text(json.dumps(ppc_summary_payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -3104,7 +3156,6 @@ def run_posterior_diagnostics(
             "parent_sample_size",
             "sigma_table_leaf_path",
             "mass_definition",
-            "parallelism",
         )},
         **predictive_metadata,
         "config_snapshot_path": str(config_snapshot_path),
@@ -3112,6 +3163,7 @@ def run_posterior_diagnostics(
         "sigma_table_path": None if resolved_sigma_table_path is None else str(resolved_sigma_table_path),
         "random_seed": int(random_seed),
         "n_posterior_draws_used": n_posterior_draws_used,
+        "parallelism": dict(parallelism_payload),
     }
     (result_dir / "run_manifest.json").write_text(json.dumps(manifest_payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -3194,7 +3246,7 @@ def run_posterior_diagnostics(
         "mass_definition": mass_definition_metadata(mass_definition),
         "parallel_strategy": backend_name,
         "worker_processes": 0,
-        "parallelism": parallelism_payload,
+        "parallelism": dict(parallelism_payload),
         "layout": "5x1",
         "panel_order": trend_panel_order,
         "figure_title": figure_title,
@@ -3285,7 +3337,7 @@ def run_posterior_diagnostics(
         "mass_definition": mass_definition_metadata(mass_definition),
         "parallel_strategy": backend_name,
         "worker_processes": 0,
-        "parallelism": parallelism_payload,
+        "parallelism": dict(parallelism_payload),
         "categories": trend_summary_payload["categories"],
     }
     _write_standalone_gamma_trend_artifacts(
@@ -3362,7 +3414,7 @@ def run_posterior_diagnostics(
             "gamma_mode": _runtime_gamma_mode(runtime_config),
             "parameter_order": list(runtime_config.parameter_schema.public_parameter_names),
             "mass_definition": mass_definition_metadata(mass_definition),
-            "parallelism": parallelism_payload,
+            "parallelism": dict(parallelism_payload),
             "statistics": ppc_summary_payload["statistics"],
         },
     )

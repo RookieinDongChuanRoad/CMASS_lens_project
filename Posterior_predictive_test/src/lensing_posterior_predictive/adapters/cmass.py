@@ -31,9 +31,10 @@ from cmass_lens_inference.numba_backend.kernels.interpolation import (
     interp_sigma_unit_clip,
 )
 from cmass_lens_inference.numba_backend.kernels.lensing import theta_ein_arcsec
+from cmass_lens_inference.parallel import apply_thread_limits
 from cmass_lens_inference.types import ObservationRecord, ProfileSpec, RuntimeConfig
 
-from ..interfaces import PPCContextBundle, PredictiveDefinition
+from ..interfaces import DiagnosticsExecution, PPCContextBundle, PredictiveDefinition
 
 
 MODEL_NAME = "cmass"
@@ -824,6 +825,8 @@ def _run_shared_parent_diagnostics_numba(
     delta_r_bin_edges: np.ndarray,
     parent_sample_size: int,
     random_seed: int,
+    *,
+    execution: DiagnosticsExecution | None = None,
 ) -> dict[str, Any]:
     """
     Execute the shared-parent Numba diagnostics kernel and adapt outputs.
@@ -832,6 +835,12 @@ def _run_shared_parent_diagnostics_numba(
     artifact-writing code can stay mostly unchanged while the hot numerical
     path uses the same Numba primitive family as production inference.
     """
+
+    if execution is not None:
+        # The generic PPC layer resolves CPU width, but this adapter owns the
+        # Numba kernels.  Apply the cap before RNG chunk allocation and kernel
+        # execution so the recorded metadata matches the actual compute route.
+        apply_thread_limits(int(execution.kernel_threads_per_process))
 
     del profile
     n_draws = int(posterior_draws.shape[0])

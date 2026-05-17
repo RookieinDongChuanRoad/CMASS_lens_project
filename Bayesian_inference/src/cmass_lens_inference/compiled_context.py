@@ -22,6 +22,14 @@ from .io import (
 )
 from .mass_definition import H_UNITS_V1
 from .profiles import build_profile_spec
+from .models.cmass.constants import (
+    CMASS_GAMMA_TRUNC_HIGH,
+    CMASS_GAMMA_TRUNC_LOW,
+    CMASS_LENS_REDSHIFT_MEAN,
+    CMASS_LENS_REDSHIFT_SCATTER,
+    CMASS_NORMALIZATION_MIN_VALUE,
+    CMASS_STELLAR_MASS_PIVOT,
+)
 from .models.cmass.context import CMASSModelContext
 from .types import RandomBasis, RuntimeConfig
 
@@ -175,14 +183,16 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CMASSModelCon
 
     sqrt2 = math.sqrt(2.0)
     sqrt2pi = math.sqrt(2.0 * math.pi)
-    p_zd_fixed = np.exp(-0.5 * ((zd - 0.558) / 0.085) ** 2) / (0.085 * sqrt2pi)
+    p_zd_fixed = np.exp(
+        -0.5 * ((zd - CMASS_LENS_REDSHIFT_MEAN) / CMASS_LENS_REDSHIFT_SCATTER) ** 2
+    ) / (CMASS_LENS_REDSHIFT_SCATTER * sqrt2pi)
 
     log10_h_ref = math.log10(runtime_config.h_ref)
     if runtime_config.unit_convention == H_UNITS_V1:
         # Move all population constants into the same h-dependent coordinate
         # system as the latent variables. Only offsets move; slopes and
         # scatters remain invariant under a deterministic axis translation.
-        stellar_mass_pivot = 11.4 + 2.0 * log10_h_ref
+        stellar_mass_pivot = CMASS_STELLAR_MASS_PIVOT + 2.0 * log10_h_ref
         mass_function_loc = profile.mass_function_loc + 2.0 * log10_h_ref
         mu_r0 = profile.mu_r0 + log10_h_ref
         # The FP prior is specified in the historical physical/legacy stellar-
@@ -193,7 +203,7 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CMASSModelCon
         fp_fit_mstar_min = runtime_config.fp_prior.fit_mstar_min + 2.0 * log10_h_ref
         fp_pivot_mstar = runtime_config.fp_prior.pivot_mstar + 2.0 * log10_h_ref
     else:
-        stellar_mass_pivot = 11.4
+        stellar_mass_pivot = CMASS_STELLAR_MASS_PIVOT
         mass_function_loc = profile.mass_function_loc
         mu_r0 = profile.mu_r0
         fp_fit_mstar_min = runtime_config.fp_prior.fit_mstar_min
@@ -305,11 +315,11 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CMASSModelCon
         beta_r=profile.beta_r,
         sigma_r=profile.sigma_r,
         nu_r=profile.nu_r if profile.nu_r is not None else 0.0,
-        mu_d=0.558,
-        sigma_d=0.085,
-        gamma_trunc_low=1.2,
-        gamma_trunc_high=2.8,
-        normalization_min_value=1.0e-10,
+        mu_d=CMASS_LENS_REDSHIFT_MEAN,
+        sigma_d=CMASS_LENS_REDSHIFT_SCATTER,
+        gamma_trunc_low=CMASS_GAMMA_TRUNC_LOW,
+        gamma_trunc_high=CMASS_GAMMA_TRUNC_HIGH,
+        normalization_min_value=CMASS_NORMALIZATION_MIN_VALUE,
         gamma_mode_code=runtime_config.parameter_schema.gamma_mode_code,
         fp_enabled=1 if runtime_config.fp_prior.enabled else 0,
         fp_fit_mstar_min=fp_fit_mstar_min,

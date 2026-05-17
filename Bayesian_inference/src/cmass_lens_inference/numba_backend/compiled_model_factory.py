@@ -142,6 +142,7 @@ def build_model_definition(
         ),
         evaluate_log_prob=production_log_prob,
         backend_kernel=model_spec.backend_kernel,
+        fp_prior_defaults=dict(model_spec.fp_prior_defaults),
     )
 
 

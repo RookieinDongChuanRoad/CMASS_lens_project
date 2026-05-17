@@ -34,9 +34,18 @@ from ...canonical_context import (
 )
 from ...compiled_context import build_random_basis
 from ...cosmology import FlatLambdaCDM
+from ...mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC
 from ...model_interfaces import CompiledContextBundle
 from ...profiles import build_profile_spec
 from ...types import ProfileSpec, RuntimeConfig
+from .constants import (
+    CMASS_GAMMA_TRUNC_HIGH,
+    CMASS_GAMMA_TRUNC_LOW,
+    CMASS_LENS_REDSHIFT_MEAN,
+    CMASS_LENS_REDSHIFT_SCATTER,
+    CMASS_NORMALIZATION_MIN_VALUE,
+    CMASS_STELLAR_MASS_PIVOT,
+)
 from .context import CMASSModelContext
 
 LOG10_2PI = math.log10(2.0 * math.pi)
@@ -102,11 +111,42 @@ def _hunit_population_constants(runtime_config: RuntimeConfig, profile: ProfileS
     log10_h_ref = math.log10(runtime_config.h_ref)
     if runtime_config.unit_convention == "h_units_v1":
         return (
-            11.4 + 2.0 * log10_h_ref,
+            CMASS_STELLAR_MASS_PIVOT + 2.0 * log10_h_ref,
             profile.mass_function_loc + 2.0 * log10_h_ref,
             profile.mu_r0 + log10_h_ref,
         )
-    return 11.4, profile.mass_function_loc, profile.mu_r0
+    return CMASS_STELLAR_MASS_PIVOT, profile.mass_function_loc, profile.mu_r0
+
+
+def _active_fp_prior_mass_locations(runtime_config: RuntimeConfig) -> tuple[float, float]:
+    """
+    Return the FP fit threshold and pivot in the active stellar-mass coordinate.
+
+    The FP prior constants are historical physical-coordinate values: the
+    published/legacy convention says "fit above log M_* = 11.0" and evaluate
+    the intercept at "log M_* = 11.3".  CMASS h-unit inference, however, feeds
+    the posterior kernels the active latent coordinate
+    ``log10[M_*/(h^-2 Msun)]``.  A location on that translated mass axis must
+    therefore move by ``2 log10(h_ref)`` before the kernel applies the cut or
+    subtracts the pivot.  The prior target values themselves are not shifted;
+    only the coordinate locations used to select and center the fitted relation
+    move into the same system as the latent draws.
+    """
+
+    if runtime_config.unit_convention == H_UNITS_V1:
+        log10_h_ref = math.log10(runtime_config.h_ref)
+        mass_axis_shift = 2.0 * log10_h_ref
+        return (
+            runtime_config.fp_prior.fit_mstar_min + mass_axis_shift,
+            runtime_config.fp_prior.pivot_mstar + mass_axis_shift,
+        )
+    if runtime_config.unit_convention == LEGACY_FIXED_KPC:
+        return runtime_config.fp_prior.fit_mstar_min, runtime_config.fp_prior.pivot_mstar
+    raise ValueError(
+        "CMASS FP prior supports unit_convention "
+        f"'{H_UNITS_V1}' or '{LEGACY_FIXED_KPC}', got "
+        f"'{runtime_config.unit_convention}'."
+    )
 
 
 def _stellar_mass_quadrature_arrays(
@@ -225,7 +265,9 @@ def build_cmass_context_from_canonical_dataset(
     sqrt2pi = math.sqrt(2.0 * math.pi)
     zd = np.asarray(active_dataset.lenses.z_d, dtype=np.float64)
     zs = np.asarray(active_dataset.lenses.z_s, dtype=np.float64)
-    p_zd_fixed = np.exp(-0.5 * ((zd - 0.558) / 0.085) ** 2) / (0.085 * sqrt2pi)
+    p_zd_fixed = np.exp(
+        -0.5 * ((zd - CMASS_LENS_REDSHIFT_MEAN) / CMASS_LENS_REDSHIFT_SCATTER) ** 2
+    ) / (CMASS_LENS_REDSHIFT_SCATTER * sqrt2pi)
 
     (
         mstar_grid,
@@ -241,6 +283,7 @@ def build_cmass_context_from_canonical_dataset(
         mass_function_loc=mass_function_loc,
         mu_r0=mu_r0,
     )
+    fp_fit_mstar_min, fp_pivot_mstar = _active_fp_prior_mass_locations(runtime_config)
 
     fp_gamma_axis, fp_zd_axis, fp_log_re_axis, fp_n_axis, fp_sigma_grid, fp_has_n_axis = (
         normalize_sigma_grid(
@@ -288,15 +331,15 @@ def build_cmass_context_from_canonical_dataset(
         beta_r=active_profile.beta_r,
         sigma_r=active_profile.sigma_r,
         nu_r=active_profile.nu_r if active_profile.nu_r is not None else 0.0,
-        mu_d=0.558,
-        sigma_d=0.085,
-        gamma_trunc_low=1.2,
-        gamma_trunc_high=2.8,
-        normalization_min_value=1.0e-10,
+        mu_d=CMASS_LENS_REDSHIFT_MEAN,
+        sigma_d=CMASS_LENS_REDSHIFT_SCATTER,
+        gamma_trunc_low=CMASS_GAMMA_TRUNC_LOW,
+        gamma_trunc_high=CMASS_GAMMA_TRUNC_HIGH,
+        normalization_min_value=CMASS_NORMALIZATION_MIN_VALUE,
         gamma_mode_code=runtime_config.parameter_schema.gamma_mode_code,
         fp_enabled=1 if runtime_config.fp_prior.enabled else 0,
-        fp_fit_mstar_min=runtime_config.fp_prior.fit_mstar_min,
-        fp_pivot_mstar=runtime_config.fp_prior.pivot_mstar,
+        fp_fit_mstar_min=float(fp_fit_mstar_min),
+        fp_pivot_mstar=float(fp_pivot_mstar),
         fp_fiducial_scatter=runtime_config.fp_prior.fiducial_scatter,
         fp_scatter_error=runtime_config.fp_prior.scatter_error,
         fp_mu_v_prior=runtime_config.fp_prior.mu_v_prior,
