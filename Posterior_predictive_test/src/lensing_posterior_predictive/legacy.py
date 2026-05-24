@@ -11,7 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from cmass_lens_inference.mass_definition import LEGACY_FIXED_KPC, get_mass_definition
+from cmass_lens_inference.mass_definition import LEGACY_FIXED_KPC, MassDefinition, get_mass_definition
+from cmass_lens_inference.models.cmass.constants import CMASS_FP_PRIOR_DEFAULTS_20260429
 from cmass_lens_inference.parameter_schema import ParameterSchema
 from cmass_lens_inference.types import (
     CosmologyConfig,
@@ -65,16 +66,15 @@ def _gamma_mode_code_from_name(gamma_mode: str) -> int:
     raise ValueError(f"Unsupported CMASS gamma mode '{gamma_mode}'.")
 
 
-def _legacy_ppc_parameter_order(mass_radius_kpc: int, gamma_mode: str) -> tuple[str, ...]:
-    """Return the old raw-config parameter order used by archived CMASS PPC runs."""
+def _legacy_ppc_parameter_order(mass_definition: MassDefinition, gamma_mode: str) -> tuple[str, ...]:
+    """Return the old raw-config parameter order used by archived CMASS PPC runs.
 
-    mass_prefix = f"mu{int(mass_radius_kpc)}_0"
-    mass_parameters = (
-        mass_prefix,
-        f"beta{int(mass_radius_kpc)}",
-        f"xi{int(mass_radius_kpc)}",
-        f"sigma{int(mass_radius_kpc)}",
-    )
+    Older raw-path snapshots can be either fixed-kpc or h-units.  The mass
+    parameter names therefore need to come from the resolved mass definition
+    instead of being reconstructed from a bare numeric aperture.
+    """
+
+    mass_parameters = mass_definition.public_parameter_names
     normalized = _normalize_gamma_mode(gamma_mode)
     if normalized == GAMMA_MODE_DEPENDENT:
         gamma_parameters = ("mu_gamma_0", "beta_gamma", "xi_gamma", "sigma_gamma")
@@ -110,14 +110,19 @@ def load_legacy_ppc_runtime_config(config_path: Path, raw_data: dict[str, Any]) 
     runtime_raw = raw_data["runtime"]
     output_raw = raw_data["output"]
 
-    mass_radius_kpc = int(mass_raw["enclosed_radius_kpc"])
     unit_convention = str(raw_data.get("unit_convention", LEGACY_FIXED_KPC))
+    if "enclosed_radius_kpc" in mass_raw:
+        mass_radius_kpc = int(mass_raw["enclosed_radius_kpc"])
+    elif "aperture_hinv_kpc" in mass_raw:
+        mass_radius_kpc = int(mass_raw["aperture_hinv_kpc"])
+    else:
+        raise KeyError("Legacy PPC config must declare mass_definition.enclosed_radius_kpc or aperture_hinv_kpc.")
     mass_definition = get_mass_definition(mass_radius_kpc, unit_convention=unit_convention)
     gamma_mode = _normalize_gamma_mode(str(gamma_raw["mode"]))
     if gamma_mode is None:
         raise ValueError(f"Unsupported legacy PPC gamma mode '{gamma_raw['mode']}'.")
 
-    parameter_order = _legacy_ppc_parameter_order(mass_radius_kpc, gamma_mode)
+    parameter_order = _legacy_ppc_parameter_order(mass_definition, gamma_mode)
     box_prior_raw = raw_data["box_prior"]
     prior_bounds = tuple(tuple(float(value) for value in box_prior_raw[name]) for name in parameter_order)
     parameter_schema = ParameterSchema(
@@ -135,6 +140,8 @@ def load_legacy_ppc_runtime_config(config_path: Path, raw_data: dict[str, Any]) 
     )
 
     cosmology_h0 = float(cosmology_raw["h0"])
+    fp_prior_raw = raw_data.get("fp_prior") or {}
+    fp_prior_defaults = CMASS_FP_PRIOR_DEFAULTS_20260429.to_config_defaults()
     return RuntimeConfig(
         unit_convention=unit_convention,
         h_ref=cosmology_h0 / 100.0,
@@ -142,7 +149,17 @@ def load_legacy_ppc_runtime_config(config_path: Path, raw_data: dict[str, Any]) 
         model=ModelConfig(name="cmass"),
         mass_definition=mass_definition,
         parameter_schema=parameter_schema,
-        fp_prior=FPPriorConfig(enabled=False),
+        fp_prior=FPPriorConfig(
+            enabled=bool(fp_prior_raw.get("enabled", False)),
+            fit_mstar_min=float(fp_prior_raw.get("fit_mstar_min", fp_prior_defaults["fit_mstar_min"])),
+            pivot_mstar=float(fp_prior_raw.get("pivot_mstar", fp_prior_defaults["pivot_mstar"])),
+            fiducial_scatter=float(fp_prior_raw.get("fiducial_scatter", fp_prior_defaults["fiducial_scatter"])),
+            scatter_error=float(fp_prior_raw.get("scatter_error", fp_prior_defaults["scatter_error"])),
+            mu_v_prior=float(fp_prior_raw.get("mu_v_prior", fp_prior_defaults["mu_v_prior"])),
+            mu_v_error=float(fp_prior_raw.get("mu_v_error", fp_prior_defaults["mu_v_error"])),
+            beta_v_prior=float(fp_prior_raw.get("beta_v_prior", fp_prior_defaults["beta_v_prior"])),
+            beta_v_error=float(fp_prior_raw.get("beta_v_error", fp_prior_defaults["beta_v_error"])),
+        ),
         data=DataConfig(
             observation_path=Path(data_raw["observation_path"]).expanduser().resolve(),
             cross_section_path=Path(data_raw["cross_section_path"]).expanduser().resolve(),

@@ -46,6 +46,7 @@ from cmass_lens_inference.mass_definition import (
     get_mass_definition,
     mass_definition_metadata,
     sigma_bundle_filename,
+    validate_h_ref,
 )
 from cmass_lens_inference.types import (
     ObservationRecord,
@@ -1794,16 +1795,22 @@ def _summarize_trend_draws(draws: np.ndarray) -> dict[str, np.ndarray]:
 
 def _infer_mass_definition_from_trend_npz_keys(dataset_names: set[str]) -> MassDefinition:
     """
-    Infer whether an existing trend run is an `m5` or `m10` product.
+    Infer the mass definition used by an existing trend run.
 
     The redraw workflow intentionally trusts the already-materialized `.npz`
     artifact instead of directory names. This keeps the annotator aligned with
     the actual plotted quantity even if a run is renamed or copied elsewhere.
     """
 
+    if any(name.endswith("_m10_hinvkpc_draws") for name in dataset_names):
+        return get_mass_definition(10, unit_convention=H_UNITS_V1)
+    if any(name.endswith("_m5_hinvkpc_draws") for name in dataset_names):
+        return get_mass_definition(5, unit_convention=H_UNITS_V1)
     if any(name.endswith("_m10_draws") for name in dataset_names):
         return get_mass_definition(10)
-    return get_mass_definition(5)
+    if any(name.endswith("_m5_draws") for name in dataset_names):
+        return get_mass_definition(5)
+    raise ValueError("Could not infer mass definition from saved Fig. 8 trend arrays.")
 
 
 def _load_trend_summary_from_npz(npz_path: Path) -> tuple[np.ndarray, MassDefinition, dict[str, dict[str, dict[str, np.ndarray]]]]:
@@ -1989,6 +1996,15 @@ def _build_fixed_fig8_display_ylim_by_panel(mass_definition: MassDefinition) -> 
       safe for `m10` naming without hardcoding a bare `"m10"` everywhere
     """
 
+    if mass_definition.unit_convention == H_UNITS_V1:
+        return {
+            mass_definition.label: (10.9, 12.05),
+            "gamma": (1.15, 2.35),
+            "sigma_ap": (140.0, 370.0),
+            "gamma_vs_sigma_star": (1.15, 2.35),
+            "gamma_vs_logre_kpc": (1.15, 2.35),
+        }
+
     return {
         mass_definition.label: (11.2, 12.3),
         "gamma": (1.45, 2.35),
@@ -2001,6 +2017,7 @@ def _build_fixed_fig8_display_ylim_by_panel(mass_definition: MassDefinition) -> 
 def _build_fixed_fig8_display_xlim_by_panel(
     mass_definition: MassDefinition,
     profile_name: str,
+    h_ref: float | None = None,
 ) -> dict[str, tuple[float, float]]:
     """
     Return the fixed per-panel x-axis ranges used for the curated historical redraws.
@@ -2010,6 +2027,9 @@ def _build_fixed_fig8_display_xlim_by_panel(
     coordinates. The user wants `gamma_vs_sigma_star` to be consistent within
     one profile family, but not necessarily identical across `devauc` and
     `sersic`, so that panel gets a profile-specific window.
+
+    For H-units runs, the historical 4.29 comparison window is expressed in
+    physical coordinates and therefore needs the active `h_ref` shift.
     """
 
     normalized_profile_name = profile_name.strip().lower()
@@ -2022,17 +2042,29 @@ def _build_fixed_fig8_display_xlim_by_panel(
     else:
         raise ValueError(f"Unsupported profile '{profile_name}' for fixed Fig. 8 x-axis limits.")
 
+    mass_xlim = (11.0, 11.8)
+    log_re_offset = 0.0
+    if mass_definition.unit_convention == H_UNITS_V1:
+        if h_ref is None:
+            raise ValueError("H-units Fig. 8 windows require an explicit h_ref.")
+        validated_h_ref = validate_h_ref(h_ref)
+        log10_h_ref = math.log10(validated_h_ref)
+        mass_shift = 2.0 * log10_h_ref
+        mass_xlim = (mass_xlim[0] + mass_shift, mass_xlim[1] + mass_shift)
+        log_re_offset = log10_h_ref
+
     return {
-        mass_definition.label: (11.0, 11.8),
-        "gamma": (11.0, 11.8),
-        "sigma_ap": (11.0, 11.8),
+        mass_definition.label: mass_xlim,
+        "gamma": mass_xlim,
+        "sigma_ap": mass_xlim,
         "gamma_vs_sigma_star": sigma_star_xlim,
-        "gamma_vs_logre_kpc": logre_xlim,
+        "gamma_vs_logre_kpc": (logre_xlim[0] + log_re_offset, logre_xlim[1] + log_re_offset),
     }
 
 
 def _update_existing_fig8_summary_metadata(
     fig8_summary_path: Path,
+    mass_definition: MassDefinition,
     figure_title: str,
     display_xlim_by_panel: dict[str, tuple[float, float]],
     display_ylim_by_panel: dict[str, tuple[float, float]],
@@ -2061,8 +2093,17 @@ def _update_existing_fig8_summary_metadata(
 
     summary_payload["figure_title"] = figure_title
     summary_payload["layout"] = "5x1"
-    summary_payload["panel_order"] = ["m10", "gamma", "sigma_ap", "gamma_vs_sigma_star", "gamma_vs_logre_kpc"]
-    summary_payload["display_xlim"] = [11.0, 11.8]
+    summary_payload["panel_order"] = [
+        mass_definition.label,
+        "gamma",
+        "sigma_ap",
+        "gamma_vs_sigma_star",
+        "gamma_vs_logre_kpc",
+    ]
+    summary_payload["display_xlim"] = [
+        float(display_xlim_by_panel[mass_definition.label][0]),
+        float(display_xlim_by_panel[mass_definition.label][1]),
+    ]
     summary_payload["display_xlim_by_panel"] = {
         quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
         for quantity_name, axis_limits in display_xlim_by_panel.items()
@@ -2397,6 +2438,44 @@ def _build_observed_gamma_delta_r_overlay(
     return _finite_observed_gamma_series(delta_r, measurements)
 
 
+def _build_fp_reference_sigma_curve(
+    runtime_config: RuntimeConfig,
+    x_values: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, str] | None:
+    """
+    Build the deterministic CMASS FP reference line in sigma units.
+
+    The FP prior itself is a linear relation in log space, but the historical
+    Fig. 8-like panel plots `sigma_ap` in linear km/s units.  We therefore
+    exponentiate the mean relation and intentionally omit the scatter band
+    because the user asked for a single reference line.
+
+    The line is only meaningful for CMASS-style runs.  Other predictive
+    definitions keep the historical figure unchanged.
+    """
+
+    if runtime_config.model.name != "cmass":
+        return None
+
+    x_array = np.asarray(x_values, dtype=float)
+    if x_array.size == 0:
+        return None
+
+    pivot_mstar = float(runtime_config.fp_prior.pivot_mstar)
+    if runtime_config.unit_convention == H_UNITS_V1:
+        pivot_mstar += 2.0 * math.log10(runtime_config.h_ref)
+    elif runtime_config.unit_convention != LEGACY_FIXED_KPC:
+        raise ValueError(
+            "CMASS FP reference only supports h_units_v1 or legacy_fixed_kpc, "
+            f"got '{runtime_config.unit_convention}'."
+        )
+
+    mean_log_sigma = float(runtime_config.fp_prior.mu_v_prior) + float(runtime_config.fp_prior.beta_v_prior) * (
+        x_array - pivot_mstar
+    )
+    return x_array, 10.0**mean_log_sigma, "FP prior mean"
+
+
 def _serialize_observed_overlay(overlay: ObservedTrendOverlay) -> dict[str, Any]:
     """Convert one observed overlay object into JSON-friendly arrays."""
 
@@ -2449,8 +2528,8 @@ def _write_trend_panel(
     The styling intentionally assigns one visual channel per population so the
     three model categories remain distinguishable when their envelopes overlap:
     - parent population: magenta uncertainty band spanning `p16-p84`
-    - detectable lenses: black solid boundary lines at `p16` and `p84`
-    - full_selection: blue dashed boundary lines at `p16` and `p84`
+    - cross-section selected lenses: black solid boundary lines at `p16` and `p84`
+    - full selection: blue dashed boundary lines at `p16` and `p84`
     """
 
     ax.fill_between(
@@ -2467,7 +2546,7 @@ def _write_trend_panel(
         color="#111111",
         linewidth=2.0,
         linestyle="-",
-        label="Detectable lenses",
+        label="Cross-section selected",
     )
     ax.plot(
         mass_grid,
@@ -2482,7 +2561,7 @@ def _write_trend_panel(
         color="#1565c0",
         linewidth=2.0,
         linestyle="--",
-        label="full_selection",
+        label="Full selection",
     )
     ax.plot(
         mass_grid,
@@ -2536,6 +2615,7 @@ def _write_fig8_like_figure(
     summary_payload: dict[str, dict[str, dict[str, np.ndarray]]],
     mass_definition: MassDefinition,
     observed_points: dict[str, ObservedTrendSeries] | None = None,
+    fp_reference_sigma_curve: tuple[np.ndarray, np.ndarray, str] | None = None,
     extra_gamma_panels: list[dict[str, Any]] | None = None,
     figure_title: str | None = None,
     display_xlim_by_panel: dict[str, tuple[float, float]] | None = None,
@@ -2546,6 +2626,9 @@ def _write_fig8_like_figure(
 
     Parameters
     ----------
+    fp_reference_sigma_curve:
+        Optional deterministic CMASS FP mean line for the `sigma_ap` panel.
+        The tuple carries `(x_values, sigma_values, label)`.
     extra_gamma_panels:
         Optional standalone gamma-only panels appended below the historical
         three-panel Fig. 8 block. Each panel definition must provide:
@@ -2595,6 +2678,8 @@ def _write_fig8_like_figure(
     if not isinstance(axes, np.ndarray):
         axes = np.asarray([axes], dtype=object)
 
+    fp_reference_handle = None
+    fp_reference_label = None
     for axis, panel_spec in zip(axes, panel_specs, strict=True):
         panel_id = str(panel_spec["panel_id"])
         _write_trend_panel(
@@ -2607,6 +2692,20 @@ def _write_fig8_like_figure(
             observed_series=panel_spec.get("observed_overlay"),
             observed_label=panel_spec.get("observed_label"),
         )
+        if panel_id == "sigma_ap" and fp_reference_sigma_curve is not None:
+            fp_x_values, fp_sigma_values, fp_label = fp_reference_sigma_curve
+            # This is a deterministic mean relation, not a posterior envelope,
+            # so it is intentionally drawn only on the sigma panel.
+            (fp_reference_handle,) = axis.plot(
+                np.asarray(fp_x_values, dtype=float),
+                np.asarray(fp_sigma_values, dtype=float),
+                color="#6a3d9a",
+                linewidth=2.2,
+                linestyle="-",
+                zorder=7,
+                label=str(fp_label),
+            )
+            fp_reference_label = str(fp_label)
         if display_xlim_by_panel is not None and panel_id in display_xlim_by_panel:
             x_axis_limits = display_xlim_by_panel[panel_id]
             axis.set_xlim(float(x_axis_limits[0]), float(x_axis_limits[1]))
@@ -2621,6 +2720,9 @@ def _write_fig8_like_figure(
             axis.set_xlabel(str(x_label), fontsize=10)
 
     handles, labels = axes[0].get_legend_handles_labels()
+    if fp_reference_handle is not None and fp_reference_label is not None:
+        handles.append(fp_reference_handle)
+        labels.append(fp_reference_label)
     axes[0].legend(handles, labels, loc="upper left", fontsize=8, frameon=False)
     if figure_title:
         figure.suptitle(figure_title, fontsize=13)
@@ -3216,6 +3318,13 @@ def run_posterior_diagnostics(
         mass_definition=mass_definition,
         gamma_mode=_runtime_gamma_mode(runtime_config),
     )
+    fp_reference_sigma_curve = _build_fp_reference_sigma_curve(runtime_config, mass_bin_centers)
+    display_xlim_by_panel = _build_fixed_fig8_display_xlim_by_panel(
+        mass_definition=mass_definition,
+        profile_name=runtime_config.profile.name,
+        h_ref=runtime_config.h_ref,
+    )
+    display_ylim_by_panel = _build_fixed_fig8_display_ylim_by_panel(mass_definition)
     trend_summary_payload = {
         "run_id": resolved_run_dir.name,
         "profile_name": runtime_config.profile.name,
@@ -3250,11 +3359,23 @@ def run_posterior_diagnostics(
         "layout": "5x1",
         "panel_order": trend_panel_order,
         "figure_title": figure_title,
+        "display_xlim": [
+            float(display_xlim_by_panel[mass_definition.label][0]),
+            float(display_xlim_by_panel[mass_definition.label][1]),
+        ],
+        "display_xlim_by_panel": {
+            quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+            for quantity_name, axis_limits in display_xlim_by_panel.items()
+        },
+        "display_ylim_by_panel": {
+            quantity_name: [float(axis_limits[0]), float(axis_limits[1])]
+            for quantity_name, axis_limits in display_ylim_by_panel.items()
+        },
         "quantities": {name: {"label": name} for name in trend_quantity_names},
         "categories": {
             "parent": {"label": "Parent population"},
-            "detectable": {"label": "Detectable lenses"},
-            "selected": {"label": "full_selection"},
+            "detectable": {"label": "Cross-section selected"},
+            "selected": {"label": "Full selection"},
         },
         "bands": serializable_summary,
     }
@@ -3306,8 +3427,11 @@ def run_posterior_diagnostics(
             observations=observations,
             mass_definition=mass_definition,
         ),
+        fp_reference_sigma_curve=fp_reference_sigma_curve,
         extra_gamma_panels=composite_extra_panels,
         figure_title=figure_title,
+        display_xlim_by_panel=display_xlim_by_panel,
+        display_ylim_by_panel=display_ylim_by_panel,
     )
 
     standalone_base_metadata = {
@@ -3749,7 +3873,11 @@ def annotate_existing_fig8_like_figures_with_observations(
                 profile_name=profile_name,
                 mass_definition=mass_definition,
             )
-            compiled_context, profile_spec, _, cosmology, _, observations = build_compiled_context(runtime_config)
+            # Annotation must follow the same context-selection rule as the
+            # production PPC path: canonical CMASS configs do not carry a raw
+            # cross-section path, so they must flow through the predictive
+            # backend bridge instead of the raw-path compiler.
+            compiled_context, profile_spec, _, cosmology, _, observations = _build_ppc_context(runtime_config)
             del compiled_context
             observed_gamma_measurements = _load_observed_gamma_measurements(
                 observation_path=resolved_observation_path,
@@ -3781,8 +3909,10 @@ def annotate_existing_fig8_like_figures_with_observations(
             annotated_display_xlim_by_panel = _build_fixed_fig8_display_xlim_by_panel(
                 mass_definition=mass_definition,
                 profile_name=profile_name,
+                h_ref=runtime_config.h_ref,
             )
             annotated_display_ylim_by_panel = _build_fixed_fig8_display_ylim_by_panel(mass_definition)
+            fp_reference_sigma_curve = _build_fp_reference_sigma_curve(runtime_config, mass_grid)
             backup_path = _backup_existing_figure(figure_path=figure_path, backup_prefix=backup_prefix)
             _write_fig8_like_figure(
                 figure_path=figure_path,
@@ -3790,6 +3920,7 @@ def annotate_existing_fig8_like_figures_with_observations(
                 summary_payload=trend_summary,
                 mass_definition=mass_definition,
                 observed_points=observed_points,
+                fp_reference_sigma_curve=fp_reference_sigma_curve,
                 extra_gamma_panels=extra_gamma_panels,
                 figure_title=figure_title,
                 display_xlim_by_panel=annotated_display_xlim_by_panel,
@@ -3797,6 +3928,7 @@ def annotate_existing_fig8_like_figures_with_observations(
             )
             _update_existing_fig8_summary_metadata(
                 fig8_summary_path=fig8_summary_path,
+                mass_definition=mass_definition,
                 figure_title=figure_title,
                 display_xlim_by_panel=annotated_display_xlim_by_panel,
                 display_ylim_by_panel=annotated_display_ylim_by_panel,

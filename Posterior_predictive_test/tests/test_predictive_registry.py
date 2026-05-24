@@ -238,7 +238,10 @@ def _reference_sonnenfeld_payload(
     unpacking, weighted sampling, and payload mapping.
     """
 
-    from cmass_lens_inference.numba_backend.kernels.interpolation import interp_sigma_unit_clip
+    from cmass_lens_inference.numba_backend.kernels.interpolation import (
+        interp_cross_section_theta_gamma,
+        interp_sigma_unit_clip,
+    )
     from cmass_lens_inference.numba_backend.kernels.lensing import theta_ein_arcsec
     from cmass_lens_inference.numba_backend.kernels.selection import theta_e_est_from_sigma_proxy
     from cmass_lens_inference.numba_backend.kernels.selection_likelihood import (
@@ -331,6 +334,7 @@ def _reference_sonnenfeld_payload(
 
         theta_ein = np.zeros(n_parent, dtype=np.float64)
         sigma_model = np.zeros(n_parent, dtype=np.float64)
+        detectable_weights = np.zeros(n_parent, dtype=np.float64)
         selected_weights = np.zeros(n_parent, dtype=np.float64)
         for parent_index in range(n_parent):
             theta_ein[parent_index] = theta_ein_arcsec(
@@ -357,6 +361,18 @@ def _reference_sonnenfeld_payload(
             )
             if theta_ein[parent_index] <= 0.0 or sigma_unit <= 0.0:
                 continue
+            cross_section_weight = interp_cross_section_theta_gamma(
+                theta_ein[parent_index],
+                gamma[parent_index],
+                context.cs_theta_e_axis,
+                context.cs_gamma_axis,
+                context.cs_cross_section_grid,
+            )
+            detectable_weights[parent_index] = (
+                cross_section_weight
+                if np.isfinite(cross_section_weight) and cross_section_weight > 0.0
+                else 0.0
+            )
             sigma_model[parent_index] = sigma_model_from_s2(sigma_unit, log_mass[parent_index])
             sigma_proxy = sigma_model[parent_index] * (
                 1.0 + float(context.sigma_proxy_fractional_scatter) * normals[parent_index, 6]
@@ -408,7 +424,6 @@ def _reference_sonnenfeld_payload(
             theta_stats[stat_name][draw_index] = theta_summary[stat_index]
             sigma_stats[stat_name][draw_index] = sigma_summary[stat_index]
 
-        detectable_weights = np.where(theta_ein > 0.0, 1.0, 0.0)
         for quantity_name, y_values in (("m5", log_mass), ("gamma", gamma), ("sigma_ap", sigma_model)):
             parent, detectable, selected, counts, det_sums, sel_sums = _reference_reduce_population_to_bins(
                 log_mstar,
@@ -820,6 +835,86 @@ def test_legacy_raw_config_parser_is_cmass_only() -> None:
             Path("config_snapshot.yaml"),
             {"model": {"name": "sonnenfeld2024_slacs"}},
         )
+
+
+def test_legacy_raw_config_parser_accepts_hunit_mass_definition_and_fp_defaults() -> None:
+    """Legacy CMASS snapshots should still parse the h-unit raw-path contract used by 4.29."""
+
+    from pathlib import Path
+
+    from lensing_posterior_predictive.legacy import load_legacy_ppc_runtime_config
+    from cmass_lens_inference.models.cmass.constants import CMASS_FP_PRIOR_DEFAULTS_20260429
+
+    runtime_config = load_legacy_ppc_runtime_config(
+        Path("config_snapshot.yaml"),
+        {
+            "profile": {"name": "devauc"},
+            "unit_convention": "h_units_v1",
+            "mass_definition": {"aperture_hinv_kpc": 5},
+            "gamma_model": {"mode": "sigma_star_dependent"},
+            "data": {
+                "observation_path": "/tmp/raw.h5",
+                "cross_section_path": "/tmp/cs.h5",
+                "sigma_table_path": "/tmp/sigma.h5",
+            },
+            "box_prior": {
+                "mu5h_0": [9.0, 12.0],
+                "beta5h": [-3.0, 3.0],
+                "xi5h": [-3.0, 3.0],
+                "sigma5h": [1.0e-2, 0.2],
+                "mu_gamma_0": [1.5, 2.5],
+                "beta_sigma_star_gamma": [-3.0, 3.0],
+                "sigma_gamma": [0.0, 0.5],
+                "mu_zs": [1.0, 3.0],
+                "sigma_zs": [0.0, 2.0],
+                "theta0": [0.0, 3.0],
+                "loga": [-1.0, 3.0],
+            },
+            "sampling": {
+                "n_walkers": 24,
+                "n_steps": 10000,
+                "warmup": 2000,
+                "random_seed": 7,
+                "initial_center": {
+                    "mu5h_0": 11.0,
+                    "beta5h": 0.59,
+                    "xi5h": -0.11,
+                    "sigma5h": 0.06,
+                    "mu_gamma_0": 1.99,
+                    "beta_sigma_star_gamma": 0.24,
+                    "sigma_gamma": 0.149,
+                    "mu_zs": 1.8,
+                    "sigma_zs": 0.215,
+                    "theta0": 0.93,
+                    "loga": 1.0,
+                },
+            },
+            "integration": {
+                "gamma_points": 200,
+                "mstar_points": 200,
+                "normalization_samples": 100000,
+            },
+            "cosmology": {"h0": 70.0, "omega_m": 0.3},
+            "runtime": {
+                "checkpoint_every": 100,
+                "parallel_strategy": "auto",
+                "progress": True,
+                "progress_summary_every": 25,
+                "show_stage_timing": True,
+                "disable_hdf5_file_locking": False,
+                "num_threads": 0,
+                "reserve_cores": 2,
+            },
+            "output": {"root_dir": "/tmp/out", "run_label": "legacy"},
+            "fp_prior": {"enabled": True},
+        },
+    )
+
+    assert runtime_config.mass_definition.public_parameter_names == ("mu5h_0", "beta5h", "xi5h", "sigma5h")
+    assert runtime_config.fp_prior.enabled is True
+    assert runtime_config.fp_prior.fiducial_scatter == pytest.approx(CMASS_FP_PRIOR_DEFAULTS_20260429.fiducial_scatter)
+    assert runtime_config.fp_prior.mu_v_prior == pytest.approx(CMASS_FP_PRIOR_DEFAULTS_20260429.mu_v_prior)
+    assert runtime_config.fp_prior.beta_v_prior == pytest.approx(CMASS_FP_PRIOR_DEFAULTS_20260429.beta_v_prior)
 
 
 def test_legacy_parser_is_quarantined_outside_generic_predictive_module() -> None:

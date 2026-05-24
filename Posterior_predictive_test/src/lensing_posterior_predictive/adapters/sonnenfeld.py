@@ -18,7 +18,10 @@ from cmass_lens_inference.canonical_context import lens_gamma_axis
 from cmass_lens_inference.canonical_dataset import load_canonical_inference_dataset
 from cmass_lens_inference.mass_definition import MassDefinition
 from cmass_lens_inference.model_registry import get_model_definition
-from cmass_lens_inference.numba_backend.kernels.interpolation import interp_sigma_unit_clip
+from cmass_lens_inference.numba_backend.kernels.interpolation import (
+    interp_cross_section_theta_gamma,
+    interp_sigma_unit_clip,
+)
 from cmass_lens_inference.numba_backend.kernels.lensing import theta_ein_arcsec
 from cmass_lens_inference.numba_backend.kernels.selection import theta_e_est_from_sigma_proxy
 from cmass_lens_inference.numba_backend.kernels.selection_likelihood import (
@@ -544,8 +547,23 @@ def _sonnenfeld_parent_diagnostics_numba_chunk(
                 1,
             )
             sigma_model_value = 0.0
+            cross_section_weight = 0.0
             selection_weight = 0.0
             if theta_ein_value > 0.0 and sigma_unit > 0.0:
+                cross_section_candidate = interp_cross_section_theta_gamma(
+                    theta_ein_value,
+                    gamma_value,
+                    cs_theta_e_axis,
+                    cs_gamma_axis,
+                    cs_cross_section_grid,
+                )
+                if math.isfinite(cross_section_candidate) and cross_section_candidate > 0.0:
+                    # "Detectable" in the Sonnenfeld Fig. 8-like products
+                    # matches the reference no-pfind posterior predictive
+                    # route: finite-fibre lensing cross-section only.  The
+                    # extra discovery probability belongs to the full
+                    # selected-lens curve below.
+                    cross_section_weight = cross_section_candidate
                 sigma_model_value = sigma_model_from_s2(sigma_unit, log_mass_value)
                 sigma_proxy = sigma_model_value * (1.0 + sigma_proxy_fractional_scatter * normals[6])
                 theta_est = theta_e_est_from_sigma_proxy(
@@ -578,7 +596,7 @@ def _sonnenfeld_parent_diagnostics_numba_chunk(
             log_sigma_star_values[local_parent_index] = log_mstar_value - LOG10_2PI - 2.0 * log_re_value
             delta_r_values[local_parent_index] = delta_r_value
             sigma_model_values[local_parent_index] = sigma_model_value
-            detectable_weights[local_parent_index] = 1.0 if theta_ein_value > 0.0 else 0.0
+            detectable_weights[local_parent_index] = cross_section_weight
             selected_weight_value = selection_weight if math.isfinite(selection_weight) and selection_weight > 0.0 else 0.0
             selected_weights[local_parent_index] = selected_weight_value
             total_selected_weight += selected_weight_value

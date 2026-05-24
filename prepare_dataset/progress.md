@@ -1,5 +1,45 @@
 # Progress Log
 
+## Session: 2026-05-23
+
+### `s2_grid` 数值偏移诊断
+- **Status:** root cause identified; no production data modified
+- **Scope:** 只读检查 `data/raw/observations_deV_with_mass_grids.hdf5` 与
+  `data/raw/observations_with_mass_grids_all.hdf5` 中已存储的 `s2_grid`，
+  追踪它们相对当前生产默认 aperture policy 的偏移来源。
+- **Environment:** 所有验证命令均通过 `conda run -n cmass_lens ...` 执行。
+- **Actions taken:**
+  - 核验 `prepare_dataset/tests/test_jeans_regression.py` 与
+    `prepare_dataset/tests/test_hdf5_processing.py` 在 `cmass_lens` 中通过：
+    `17 passed in 40.06s`。
+  - 追踪 `prepare_dataset/prepare_dataset/io/hdf5.py` 中的
+    `_process_group()`：它会优先使用 `resolve_group_aperture_policy()`
+    解析出的 HDF5 group 显式 aperture metadata，只有缺失时才回退到调用方
+    policy 或 `DEFAULT_PRODUCTION_APERTURE_POLICY`。
+  - 只读扫描两份 raw HDF5 的 `num_sigma > 0` group，发现部分 group 携带
+    显式 `aperture_shape/aperture_width_arcsec/aperture_height_arcsec/seeing_fwhm_arcsec`
+    元数据，且 seeing 不是统一的生产默认 `0.9 arcsec`。
+  - 用文件式 JIT 诊断脚本 `/private/tmp/cmass_s2_aperture_diagnostic.py`
+    复算代表性 group，避免 `python -c` 触发 numba cache locator 问题。
+- **Evidence:**
+  - `021411-040502` 的显式策略为 `width=1.6, height=0.9, seeing=0.7`；
+    stored `s2_grid` 相对默认生产策略最大差异约 `3.19%`（deV）和
+    `4.66%`（Sersic），但相对 group 显式策略差异为 `0`。
+  - `021737-051329` 的显式策略为 `width=1.68, height=1.5, seeing=0.6`；
+    stored `s2_grid` 相对默认生产策略最大差异约 `8.63%`（deV）和
+    `8.80%`（Sersic），但相对 group 显式策略差异为 `0`。
+  - `023307-043838` 的显式策略正好是 `width=1.6, height=0.9, seeing=0.9`；
+    stored grid 与默认生产策略差异为 `0`，是控制样本。
+  - 既有回归测试使用的 `023817-054555` 没有现代显式 aperture metadata；
+    stored grid 与 fresh 默认复算仅有约 `0.16%` 差异，因此原测试没有暴露
+    这些显式 metadata group 的偏移。
+- **Current conclusion:**
+  - 当前 `s2_grid` 偏移不是 `cmass_lens` 环境错误造成的。
+  - 第一处可确认的偏移来源是 raw HDF5 group 内的显式 aperture/seeing 元数据
+    覆盖了当前文档化的生产默认策略 `1.6 x 0.9 arcsec, seeing=0.9 arcsec`。
+  - 后续修复需要先明确科学合同：重建 raw 文件时是否应尊重历史 group-level
+    aperture metadata，还是强制采用统一生产策略并清理或降级这些 metadata。
+
 ## Session: 2026-05-05
 
 ### 双 lensing cross-section 生成器

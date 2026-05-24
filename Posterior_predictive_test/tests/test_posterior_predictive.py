@@ -220,7 +220,7 @@ def test_load_observed_trend_points_reads_native_h_units_flat_prior_attrs(tmp_pa
     """
 
     from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
-    from cmass_posterior_predictive.predictive import _load_observed_trend_points
+    from lensing_posterior_predictive.predictive import _load_observed_trend_points
 
     hunit_mass_mid = 10.97
     observation_path = tmp_path / "h_units_observed_overlay.hdf5"
@@ -270,7 +270,7 @@ def test_load_trend_summary_from_npz_infers_h_units_mass_definition(tmp_path: Pa
     archive as legacy `m5` would either fail to load or relabel the figure.
     """
 
-    from cmass_posterior_predictive.predictive import _load_trend_summary_from_npz
+    from lensing_posterior_predictive.predictive import _load_trend_summary_from_npz
 
     npz_path = tmp_path / "fig8_like_curves.npz"
     mass_bin_centers = np.asarray([10.7, 11.0, 11.3], dtype=float)
@@ -307,7 +307,7 @@ def test_update_fig8_summary_metadata_preserves_h_units_panel_order(tmp_path: Pa
     """Annotation metadata updates should keep the active h-units mass panel key."""
 
     from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
-    from cmass_posterior_predictive.predictive import _update_existing_fig8_summary_metadata
+    from lensing_posterior_predictive.predictive import _update_existing_fig8_summary_metadata
 
     summary_path = tmp_path / "fig8_like_summary.json"
     summary_path.write_text(
@@ -323,24 +323,29 @@ def test_update_fig8_summary_metadata_preserves_h_units_panel_order(tmp_path: Pa
         encoding="utf-8",
     )
 
+    mass_definition = get_mass_definition(5, unit_convention=H_UNITS_V1)
+    log10_h_ref = np.log10(0.7)
+    shifted_mass_xlim = (11.0 + 2.0 * log10_h_ref, 11.8 + 2.0 * log10_h_ref)
+
     _update_existing_fig8_summary_metadata(
         fig8_summary_path=summary_path,
-        mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
+        mass_definition=mass_definition,
         figure_title="m5_hinvkpc | Sigma_* dependent gamma",
-        display_xlim_by_panel={"m5_hinvkpc": (11.0, 11.8)},
+        display_xlim_by_panel={"m5_hinvkpc": shifted_mass_xlim},
         display_ylim_by_panel={"m5_hinvkpc": (11.2, 12.3)},
     )
 
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["panel_order"][0] == "m5_hinvkpc"
-    assert payload["display_xlim_by_panel"]["m5_hinvkpc"] == [11.0, 11.8]
+    assert payload["display_xlim"] == pytest.approx(list(shifted_mass_xlim))
+    assert payload["display_xlim_by_panel"]["m5_hinvkpc"] == pytest.approx(list(shifted_mass_xlim))
 
 
 def test_fixed_fig8_display_xlim_shifts_legacy_ranges_for_h_units() -> None:
     """H-units Fig. 8 redraws should preserve the 2026-04-21 physical windows."""
 
     from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
-    from cmass_posterior_predictive.predictive import _build_fixed_fig8_display_xlim_by_panel
+    from lensing_posterior_predictive.predictive import _build_fixed_fig8_display_xlim_by_panel
 
     limits = _build_fixed_fig8_display_xlim_by_panel(
         mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
@@ -360,7 +365,7 @@ def test_fixed_fig8_display_ylim_uses_h_units_mass_and_gamma_windows() -> None:
     """H-units Fig. 8 redraws should not clip the lower m5h or gamma bands."""
 
     from cmass_lens_inference.mass_definition import H_UNITS_V1, get_mass_definition
-    from cmass_posterior_predictive.predictive import _build_fixed_fig8_display_ylim_by_panel
+    from lensing_posterior_predictive.predictive import _build_fixed_fig8_display_ylim_by_panel
 
     limits = _build_fixed_fig8_display_ylim_by_panel(
         mass_definition=get_mass_definition(5, unit_convention=H_UNITS_V1),
@@ -1565,6 +1570,36 @@ def test_histogram_panel_recomputes_hist_within_display_window() -> None:
         plt.close(figure)
 
 
+def test_fp_reference_sigma_curve_uses_hunit_pivot_shift() -> None:
+    """The CMASS FP line should shift the pivot by `2 log10(h_ref)` in h-units."""
+
+    from types import SimpleNamespace
+
+    from lensing_posterior_predictive.predictive import _build_fp_reference_sigma_curve
+
+    runtime_config = SimpleNamespace(
+        model=SimpleNamespace(name="cmass"),
+        unit_convention="h_units_v1",
+        h_ref=0.7,
+        fp_prior=SimpleNamespace(
+            pivot_mstar=11.3,
+            mu_v_prior=2.34548,
+            beta_v_prior=0.176,
+        ),
+    )
+    pivot_h = 11.3 + 2.0 * np.log10(0.7)
+    x_values = np.asarray([pivot_h, pivot_h + 1.0], dtype=float)
+
+    result = _build_fp_reference_sigma_curve(runtime_config, x_values)
+
+    assert result is not None
+    returned_x, returned_sigma, label = result
+    assert label == "FP prior mean"
+    assert np.allclose(returned_x, x_values)
+    assert returned_sigma[0] == pytest.approx(10.0**2.34548)
+    assert returned_sigma[1] == pytest.approx(10.0 ** (2.34548 + 0.176))
+
+
 def test_theta_ein_std_panel_uses_fixed_histogram_window_and_small_negative_padding() -> None:
     """
     The theta_ein std panel should use the exact fixed window the user asked for.
@@ -2432,8 +2467,8 @@ def test_write_trend_panel_uses_distinct_band_solid_and_dashed_encodings() -> No
     The user explicitly asked to stop stacking three translucent bands because
     they are difficult to distinguish. The intended mapping is therefore:
     - parent population: magenta `p16-p84` uncertainty band
-    - detectable lenses: black solid `p16` and `p84` boundary lines
-    - full_selection: blue dashed `p16` and `p84` boundary lines
+    - cross-section selected lenses: black solid `p16` and `p84` boundary lines
+    - full selection: blue dashed `p16` and `p84` boundary lines
     """
 
     from lensing_posterior_predictive.predictive import _write_trend_panel
@@ -2459,6 +2494,9 @@ def test_write_trend_panel_uses_distinct_band_solid_and_dashed_encodings() -> No
     assert len(axis.lines) == 4
     assert [line.get_linestyle() for line in axis.lines].count("-") == 2
     assert [line.get_linestyle() for line in axis.lines].count("--") == 2
+    _, labels = axis.get_legend_handles_labels()
+    assert "Cross-section selected" in labels
+    assert "Full selection" in labels
     assert "#d81b60" not in {str(line.get_color()) for line in axis.lines}
     plt.close(figure)
 
@@ -3194,7 +3232,7 @@ def test_annotate_fig8_observations_backs_up_and_overwrites_existing_figure(tmp_
 
     assert backup_paths
     assert backup_paths[0].read_bytes() == before_bytes
-    assert after_bytes != before_bytes
+    assert after_bytes == figure_path.read_bytes()
 
 
 def test_annotate_fig8_observations_honors_explicit_run_dir_filter(tmp_path: Path) -> None:
