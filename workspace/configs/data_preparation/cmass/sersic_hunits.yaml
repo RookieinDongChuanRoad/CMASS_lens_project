@@ -1,0 +1,19 @@
+schema_version: statistical_sl_data_preparation_config_v1
+dataset_family: cmass
+profile:
+  name: sersic
+unit_convention: h_units_v1
+
+inputs:
+  raw_observation_catalog: workspace/data/raw/summary_table_deV.txt
+  raw_lens_catalog: workspace/data/raw/SLACS_table.cat
+
+outputs:
+  canonical_dataset_path: workspace/data/canonical/inference_dataset_sersic_slit_m5_hunits_v1.hdf5
+  manifest_path: workspace/data/canonical/inference_dataset_sersic_slit_m5_hunits_v1.manifest.json
+
+notes:
+  purpose: >
+    Workspace-level data-preparation contract for the CMASS sersic h-units
+    pipeline.  This file records the intended input/output boundary without
+    changing scientific schema or unit semantics.
