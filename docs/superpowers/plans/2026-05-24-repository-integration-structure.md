@@ -454,6 +454,177 @@ steps:
 - CLI 可以提供 `--workspace-root` 作为显式覆盖，用于临时迁移或本机路径调整；环境变量最多作为本地 convenience fallback，不作为持久配置合同。
 - 现有 inference config 的字段名是否需要系统性重命名，不在本轮结构计划中提前决定；第一阶段默认保守迁移，不借 package 重构顺手改科学配置语义。
 
+## 完成定义与验收标准
+
+本计划完成的含义不是“目录已经移动完”，而是仓库已经形成可维护、可验证、可继续拆分的结构边界。完成时应同时满足结构、依赖、行为、配置、文档和验证六类条件。
+
+后续执行者可以把本节作为 completion gate：只有当所有必须交付物都存在、阶段验收条件全部满足、最低验证命令通过、边界约束没有被违反时，才可以声明本轮整合完成。若存在任何偏离，最终交付必须明确写出偏离项、原因、风险和后续处理建议，不能把“部分迁移成功”描述为“计划完成”。
+
+### 必须交付的结果
+
+本轮计划最终必须交付以下结果：
+
+- 一个隔离 worktree 中完成的重构分支，主工作区原有文件、数据和输出不被无意改写。
+- 一个统一的 Python package surface：根目录 `pyproject.toml`、`src/statistical_sl/`、新公共 CLI `statistical-sl`。
+- 三个 workflow 模块的清晰边界：`data_preparation`、`inference`、`posterior_predictive` 可以独立运行，也可以被 pipeline recipe 串联。
+- 一组窄而稳定的共享合同：canonical schema、unit convention、mass definition、manifest / artifact names 等进入 `core/`，且 `core/` 不反向依赖 workflow。
+- 一组明确的数值与模型边界：通用 kernels 位于 `numerics/`，inference backend glue 位于 `inference/backends/`，posterior predictive backend glue 位于 `posterior_predictive/backends/`，模型专属逻辑位于 `models/<model_id>/`。
+- 一个 canonical workspace layout：`workspace/configs`、`workspace/recipes`、`workspace/scripts`、`workspace/notebooks`、`workspace/reports`、`workspace/data`、`workspace/outputs`。
+- 一套可运行的代表性配置和 recipe，证明 data preparation、inference、posterior predictive 的输入输出合同在新结构中仍然闭合。
+- 旧入口、旧脚本、旧测试和历史实现被删除、冻结或归档；新代码运行时不可通过 import、动态 import、`sys.path` hack、wrapper、配置路径或 CLI fallback 依赖它们。
+- 如果保留 `legacy/`，它只能作为冷归档存在；当前 package、workspace、测试、配置、文档化 workflow 和外部用户不得以任何形式依赖 `legacy/` 下的文件。
+- 文档更新到足以让后续维护者理解新结构、运行入口、workspace 约定、legacy 边界和常见验证命令。
+- 验证记录清楚说明运行环境、关键命令、通过结果、跳过项和剩余风险。
+
+### 总体完成定义
+
+本轮仓库整合可以判定为完成，必须同时满足：
+
+- `src/statistical_sl/` 成为唯一新的可复用源码包入口，公共 import namespace 不再使用 `cmass_lens_*`。
+- `src/statistical_sl/` 的任何生产路径都不依赖旧三目录或 `legacy/`；这里的生产路径包括公共 import、CLI、workflow、model registry、backend、config loader、pipeline recipe 和默认测试可运行时到达的所有 Python 代码。
+- data preparation、inference、posterior predictive 三个阶段仍可独立运行，也可通过 pipeline recipe 串联运行。
+- `workspace/` 成为配置、脚本、notebook、报告、数据和输出的 canonical 工作区位置。
+- 当前已确认的模型边界保留：`models/components/`、`posterior_predictive/adapters/`、`data_preparation/physics/` 不被合并进含混的大模块。
+- `core/` 只包含共享合同，不包含 workflow、model runtime、backend glue、模型科学公式或 workspace 路径策略。
+- PPC 不再 import inference 私有 backend，例如不允许 `posterior_predictive` 依赖 `inference.backends.numba_emcee`。
+- 第一阶段不引入 `jax_numpyro` backend；如果未来恢复 JAX/NumPyro，必须另起设计提案。
+- 旧入口已经删除、冻结或移出生产路径；不保留旧 CLI shim。
+- `Bayesian_inference/`、`Posterior_predictive_test/`、`prepare_dataset/` 在最终完成状态下应被物理删除；若某些历史材料确需保留，只能以不可执行归档或迁移说明形式存在，不能作为 fallback implementation。
+- 在 `cmass_lens` 环境下，核心测试、入口 smoke test、配置解析和至少一个轻量级 end-to-end dry run 能通过。
+
+### 不算完成的情况
+
+以下情况即使代码可以运行，也不能判定本计划完成：
+
+- 只是把三个旧目录搬进 `src/`，但公共 namespace、CLI、配置、workspace、依赖边界仍沿用旧结构。
+- 新包仍以 `cmass_lens_*` 作为公共身份，或者旧 `cmass-lens-*` CLI 被当作主入口继续维护。
+- 新包通过 `cmass_lens_inference`、`lensing_posterior_predictive`、旧 `prepare_dataset`、`_legacy_paths.py`、`_legacy_imports.py` 或 `reexport_module(...)` 调用旧实现。
+- `src/`、`workspace/`、默认测试、配置解析、CLI 或文档化当前 workflow 依赖 `legacy/` 下的任何文件。
+- `posterior_predictive` 仍直接 import inference 私有 backend、runner、sampler 或 compiled model factory。
+- `core/` 收纳了 workflow orchestration、模型公式、backend glue、I/O side effect 或 workspace 路径策略。
+- 新结构依赖临时 `sys.path` hack 才能完成主要生产路径；短期兼容层可以存在，但必须有明确归档或删除边界。
+- 没有形成 `workspace/` 下的数据、配置、recipe 和输出约定，导致后续仍需要猜测运行目录。
+- 迁移后没有最小测试、静态依赖检查、CLI smoke test 或代表性 dry run 作为证据。
+- 真实大数据、长链输出、缓存、临时 notebook 产物被混入版本管理。
+- 为了迁移结构顺手改变科学语义、单位定义、采样目标、模型 id 或历史结果解释，却没有单独设计、记录和验收。
+
+### 阶段验收标准
+
+Phase 0 完成条件：
+
+- 新建隔离 worktree，并在该 worktree 内继续执行后续迁移。
+- worktree 分支名、路径、起始 commit、`cmass_lens` 环境可用性已经记录。
+- 主工作区已有修改未被移动、覆盖、回滚或混入新 worktree。
+- 本计划文档在新 worktree 中可读，并作为后续实施输入。
+
+Phase 1 完成条件：
+
+- 根目录存在统一 `pyproject.toml`，并能在 `cmass_lens` 环境中以 editable 方式安装或被测试命令正确发现。
+- `src/statistical_sl/` 包结构存在，且 `python -c "import statistical_sl"` 成功。
+- 新 CLI 入口以 `statistical-sl` 为公共命名；旧 `cmass-lens-*` 入口不作为兼容 shim 保留。
+- 第一阶段只迁移 package/import surface，不改变科学公式、采样语义、数据 schema 或默认模型行为。
+- 迁移后的 import 路径有最小 smoke test 覆盖。
+
+Phase 2 完成条件：
+
+- canonical dataset schema、unit convention、mass definition、run manifest、artifact schema 等共享合同已经迁入窄 `core/`。
+- `core/` 不依赖 `data_preparation`、`inference`、`posterior_predictive` 或 workspace 目录。
+- data preparation、inference、posterior predictive 都通过 `core` 中的稳定合同交换数据语义，而不是互相读取内部实现。
+- 原 canonical dataset 的关键 metadata、capability blocks 和字段命名在迁移后保持可读、可验证。
+
+Phase 3 完成条件：
+
+- 通用 Numba kernels 已下沉到 `numerics.numba.kernels`。
+- inference 专属 backend glue 已收敛到 `inference.backends.numba_emcee`。
+- posterior predictive 专属 diagnostics backend glue 已收敛到 `posterior_predictive.backends.numba`。
+- 模型专属 likelihood / predictive hook 位于 `models/<model_id>/`。
+- 可复用科学组件位于 `models/components/`。
+- 代码检查确认不存在 `posterior_predictive -> inference.backends.numba_emcee` 的依赖。
+
+Phase 4 完成条件：
+
+- `workspace/configs`、`workspace/scripts`、`workspace/notebooks`、`workspace/reports`、`workspace/recipes`、`workspace/data`、`workspace/outputs` 结构存在。
+- pipeline recipe 是主要运行入口，且显式记录 `workspace_root`。
+- 单步 config 仍可独立复现 data preparation、inference、posterior predictive。
+- 新运行产物遵循“每次 run 一个目录”的结构，run 内部再区分 `data_preparation/`、`inference/`、`posterior_predictive/diagnostics/`。
+- 大型数据和输出已经 inventory；不把真实大文件无意纳入版本管理。
+
+Phase 5 完成条件：
+
+- 旧 `prepare_intepolation_grids`、旧 `cmass_posterior_predictive`、`key_tests/` 等历史材料已经完成依赖清点；仍被当前系统需要的部分已经迁入新结构，不再需要的部分已经删除、冻结或作为冷归档处理。
+- README、runbook 和必要迁移说明已经指向新结构和新 CLI。
+- 不再维护旧 CLI shim；需要保留的便利入口只能调用新 workflow。
+- `legacy/` 是冷归档，不是依赖边界；新测试、默认 CLI、新配置、workspace 脚本、notebook、文档化当前 workflow 和外部用户都不应依赖 `legacy/` 下的文件。
+
+### 最低验证要求
+
+正式声明重构完成前，至少需要在 `cmass_lens` 环境中通过以下类别的验证：
+
+- import smoke test：确认 `statistical_sl`、三个阶段子包、model registry 可以导入。
+- CLI smoke test：确认 `statistical-sl --help`、主要子命令 `--help` 可运行。
+- config validation：至少一个 pipeline recipe 和每个阶段的代表性单步 config 可以解析。
+- dependency boundary check：用静态搜索或测试确认禁止依赖没有出现；检查范围必须覆盖 `src/`、`tests/`、`workspace/`、`pyproject.toml`、`conftest.py`、README / runbook 中的当前 workflow。
+- unit / integration tests：现有核心测试在迁移后通过，或有明确记录说明哪些 legacy 测试被移动、冻结或替换。
+- artifact contract check：轻量运行或 saved-artifact replay 能产生 / 读取 `run_manifest.json`、`chain.h5`、`posterior_corner_result.json`、`ppc_summary.json` 等关键产物。
+- git hygiene：最终 diff 不包含未说明的大文件、临时缓存、运行输出或用户原有无关修改。
+
+推荐的最低命令形态如下，实际文件路径可以随迁移后的测试布局调整，但验证类别不能减少：
+
+```bash
+conda run -n cmass_lens python -m pip install -e . --no-deps
+conda run -n cmass_lens python -m pytest --collect-only -q
+conda run -n cmass_lens python -m pytest tests -q
+rg -n "cmass_lens_inference|lensing_posterior_predictive|from prepare_dataset|import prepare_dataset|Bayesian_inference|Posterior_predictive_test|_legacy_paths|_legacy_imports|reexport_module|legacy/" src tests workspace pyproject.toml conftest.py
+git diff --check
+git status --short --untracked-files=all
+```
+
+旧目录测试只能作为迁移前后的对照材料使用，不能作为最终验收命令，因为最终状态不应要求旧三目录存在。README / runbook 需要人工检查当前 workflow 是否仍指导用户运行 `legacy/`、旧三目录或旧包名；历史说明可以保留，但不能被写成当前推荐路径。若某些 legacy 测试被移动、冻结或替换，最终验收不能简单删除这些测试结果；必须在文档或最终交付说明中列出对应测试、处理方式和替代验证。
+
+### 验收流程
+
+正式验收建议按以下顺序执行：
+
+- 先检查 worktree 与 git 状态，确认所有变更都发生在隔离 worktree，且没有混入缓存、大文件、运行输出或主工作区无关修改。
+- 再检查结构，确认 `src/statistical_sl/`、`workspace/`、`tests/`、`docs/`、`legacy/` 的职责符合本计划。
+- 再做静态依赖检查，重点确认 `core` 没有反向依赖 workflow，`posterior_predictive` 没有依赖 inference 私有 backend，旧 `cmass_lens_*` 不再作为公共入口或实现依赖，`legacy/` 没有被当前系统依赖。
+- 再运行 import、CLI、config、unit test、integration / dry-run 验证，所有 Python 验证必须通过 `cmass_lens` 环境执行。
+- 最后检查关键产物合同，确认代表性 run 或 saved-artifact replay 能读写预期 manifest、chain、corner、posterior predictive summary。
+- 最终交付说明必须包含：变更摘要、关键路径、验证命令与结果、未执行验证及原因、已知风险、后续建议。
+
+## 边界约束与非目标
+
+本计划的边界约束如下：
+
+- 不在主工作区直接执行大规模目录移动；所有实施必须发生在隔离 worktree。
+- 不改变科学模型语义、物理公式、采样目标分布、posterior interpretation 或数据单位定义；若验证发现必须改变，先停下并单独设计。
+- 不借结构迁移顺手重命名 model id；`cmass_lens_only` 保持不改，`cmass` 仍可作为 model id / config namespace / dataset label。
+- 不保留旧 CLI shim；兼容便利命令如果存在，必须调用新 workflow，并在文档中标为 convenience wrapper。
+- 不设计根目录 `data/`、`outputs/` 的长期兼容路径；新 canonical 位置是 `workspace/data/` 与 `workspace/outputs/`。
+- 不把本机真实大数据、长链输出、缓存目录、临时 notebook 输出纳入版本管理。
+- 不把 `core/` 变成杂物层；任何带有 workflow、runtime、backend、model-specific 语义的内容都不能进入 `core/`。
+- 不让 posterior predictive 依赖 inference 私有 backend；共享数值逻辑只能下沉到 `numerics` 或模型层。
+- 不让当前系统依赖 `legacy/`；任何仍需被 import、执行、测试、配置引用或作为当前文档 workflow 运行的内容，都必须迁入 `src/statistical_sl/`、`workspace/` 或 `tests/` 的正式位置。
+- 不把 `legacy/` 当作 fallback implementation、compatibility layer 或 regression suite 的默认来源；如果保留它，它只能用于人工查阅历史材料。
+- 不在第一阶段恢复或新增 JAX/NumPyro backend。
+- 不中断已经启动的长时间任务；如需停止，必须先说明风险并等待用户确认。
+
+越界处理规则：
+
+- 如果迁移过程中发现必须改变科学公式、单位定义、数据 schema、模型 id 或输出语义，立即停止对应改动，把问题记录为新的设计议题；不能把语义变化伪装成结构迁移。
+- 如果发现旧目录中有无法安全分类的大文件、历史输出或 notebook 产物，先 inventory 并写清建议归宿；不要在没有确认的情况下移动进版本管理。
+- 如果某个旧 CLI、旧脚本或旧测试仍被真实 workflow 依赖，优先把依赖关系记录清楚，再迁到新入口、新测试或新 workspace 位置；不能用归入 `legacy/` 的方式继续满足当前依赖。
+- 如果为了兼容必须保留短期 wrapper，wrapper 必须只转发到新实现，并在文档中标明它不是长期公共 API。
+- 如果最低验证无法完成，最终状态只能标记为部分完成或 blocked，并明确缺失验证对应的风险面。
+
+非目标：
+
+- 本计划不要求立刻拆成 package repo + workspace repo。
+- 本计划不要求重新生成全部数据集或重跑全部历史 inference。
+- 本计划不要求重写模型科学实现。
+- 本计划不要求一次性清理全部历史 notebook、论文草稿、临时分析或旧输出。
+- 本计划不要求发布 PyPI 包；只确定 published distribution name 应使用 `statistical-sl`。
+
 ## 迁移策略草案
 
 ### Phase 0: 决策冻结与隔离 worktree
@@ -496,7 +667,9 @@ steps:
 
 ### Phase 5: legacy quarantine
 
-- 把旧的 `prepare_intepolation_grids`、旧 `cmass_posterior_predictive`、`key_tests/` 历史 comparison harness 等收进 `legacy/` 或明确标注。
+- 清点旧的 `prepare_intepolation_grids`、旧 `cmass_posterior_predictive`、`key_tests/` 历史 comparison harness 等材料，区分“仍被当前系统需要迁移的实现”和“只供人工查阅的历史材料”。
+- 仍被当前系统需要的实现、脚本或测试必须迁入新结构，不能留在 `legacy/` 中被外界调用。
+- 只供人工查阅的历史材料才可以进入 `legacy/`；进入后即声明为冷归档，不再作为 import、执行、测试、配置或文档化 workflow 的依赖。
 - 删除或冻结不再维护的入口。
 - 不保留旧 CLI shim；新结构只维护新 CLI。
 
@@ -513,7 +686,7 @@ steps:
 5. 不保留旧 CLI shim。
 6. 完整 diagnostics workflow 的 CLI 可以改成 `posterior-predictive diagnostics`；旧 `posterior-trends` 可以保留为兼容 wrapper / convenience command。
 7. `cmass_lens_only` 作为 model id 不需要改名。
-8. `key_tests/` 进入 `legacy/`，不进入新 `tests/regression/`。
+8. `key_tests/` 不进入新 `tests/regression/`；若保留在 `legacy/`，只能作为冷归档，不能被当前测试、CLI、workspace、README 当前 workflow 或外部用户依赖。
 9. 保留并正式化 `models/components/`，作为 lensing / dynamics / selection / population 等可复用科学组件层。
 10. 保留并正式化 `posterior_predictive/adapters/`，作为模型接入 posterior predictive workflow 的边界。
 11. 保留并正式化 `data_preparation/physics/`，作为数据准备阶段可复用科学计算层。
@@ -521,6 +694,7 @@ steps:
 13. pipeline recipe 是主要用户入口；单步 config 保留为高级复现入口。
 14. `workspace_root` 显式写入 pipeline recipe；CLI 可显式覆盖，环境变量最多作为本地 convenience fallback。
 15. published distribution name 使用 `statistical-sl`；项目展示名继续使用 `Statistical_SL`，Python import namespace 使用 `statistical_sl`，CLI 使用 `statistical-sl`。
+16. `legacy/` 若保留，只能是人工查阅的冷归档；当前系统、默认测试、CLI、配置、workspace 脚本、README / runbook 当前 workflow 和外部用户都不得以任何形式依赖其中的文件。
 
 ## 当前结论摘要
 
@@ -539,4 +713,5 @@ steps:
 - `core` 收窄为共享合同层，不放 workflow、模型 runtime、backend glue 或 workspace 路径策略。
 - 第一阶段目标结构删除 `jax_numpyro` backend。
 - pipeline recipe 是主要用户入口，且显式记录 `workspace_root`。
-- `key_tests/` 进入 `legacy/`。
+- `key_tests/` 不进入新 `tests/regression/`；若保留在 `legacy/`，只能作为冷归档，不能被当前系统或外部用户依赖。
+- `legacy/` 不作为依赖边界、兼容层、fallback implementation 或默认 regression suite；仍被当前系统需要的内容必须迁入新结构，不需要的内容删除、冻结或作为不可执行冷归档。

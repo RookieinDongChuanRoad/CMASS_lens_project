@@ -1,0 +1,28 @@
+schema_version: statistical_sl_posterior_predictive_config_v1
+workflow: posterior_diagnostics
+model:
+  name: cmass
+profile:
+  name: sersic
+
+inputs:
+  inference_run_dir: ${steps.inference.output_run_dir}
+  sigma_table_path: workspace/data/external/sigma_tables/sersic_sigma_unit_table.hdf5
+
+execution:
+  n_posterior_draws: 1000
+  burn_in: auto
+  random_seed: 20260309
+  parent_sample_size: 100000
+  worker_processes: null
+  n_mass_bins: 10
+  mass_bin_min: 10.9
+  mass_bin_max: 11.9
+
+outputs:
+  output_dir: ${steps.inference.output_run_dir}/posterior_predictive/diagnostics/${diagnostic_run_id}
+
+notes:
+  purpose: >
+    Workspace-level PPC diagnostics contract.  Pipeline recipes should treat
+    this file as the durable step configuration for the current package layout.

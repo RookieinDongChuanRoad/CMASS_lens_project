@@ -1,8 +1,0 @@
-name: cmass_lens
-dependencies:
-  - python
-  - numpy
-  - scipy
-  - astropy
-  - h5py
-  - pytest

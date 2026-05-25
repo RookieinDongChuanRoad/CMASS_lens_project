@@ -1,0 +1,18 @@
+schema_version: statistical_sl_pipeline_v1
+name: cmass_sersic_diagnostics
+workspace_root: ../..
+
+steps:
+  data_preparation:
+    config: ../../configs/data_preparation/cmass/sersic_hunits.yaml
+    output_dataset: data/canonical/inference_dataset_sersic_slit_m5_hunits_v1.hdf5
+
+  inference:
+    config: ../../configs/inference/cmass/sersic.yaml
+    dataset: ${steps.data_preparation.output_dataset}
+    output_run_dir: outputs/cmass/${run_id}
+
+  posterior_predictive:
+    config: ../../configs/posterior_predictive/cmass/sersic_diagnostics.yaml
+    run_dir: ${steps.inference.output_run_dir}
+    output_dir: ${steps.inference.output_run_dir}/posterior_predictive/diagnostics/${diagnostic_run_id}

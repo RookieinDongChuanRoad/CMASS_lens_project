@@ -33,17 +33,34 @@ ENV/
 
 # Research outputs and benchmark artifacts are generated from runs, often
 # large, and would dominate repository size without adding maintainable code.
+# Historical root-level output directories remain ignored so accidental local
+# runs do not enter version control.  The canonical output root is
+# `workspace/outputs/`.
 outputs/
-Posterior_predictive_test/results/
-Posterior_predictive_test/worktrees/
-key_tests/output/
+legacy/key_tests/output/
 .worktrees/
 runtime/
+
+# The new workspace keeps a documented output root in git while excluding
+# actual run directories.  A run directory can contain HDF5 chains, NPZ curve
+# bundles, PNG figures, and logs, so it must stay local unless deliberately
+# packaged elsewhere.
+!workspace/outputs/
+workspace/outputs/*
+!workspace/outputs/README.md
 
 # Data caches and derived artifacts are not part of the code snapshot that
 # should be published to GitHub.
 data/caches/
 data/derived/
+workspace/data/raw/*
+!workspace/data/raw/
+!workspace/data/raw/SLACS_table.cat
+!workspace/data/raw/summary_table_deV.txt
+workspace/data/external/
+workspace/data/canonical/
+workspace/data/derived/
+workspace/data/caches/
 
 # Binary data products from samplers, interpolation grids, raw observation
 # dumps, and packaged experiment outputs are intentionally excluded from the

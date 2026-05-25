@@ -1,344 +1,54 @@
-# CMASS Lens Project Workspace
+# Statistical_SL Workspace
 
-This repository is a workstation-bound CMASS strong-lens research workspace,
-not a generic plug-and-play package. It combines production-oriented inference
-code, interpolation-grid preparation, comparison harnesses, and research-side
-validation scripts that currently assume the local filesystem layout under
-`/Users/liurongfu/Work/CMASS_lens_project`.
+`Statistical_SL` is the integrated strong-lensing workspace for reusable code,
+run configuration, local data, and generated outputs.
 
-If you are taking over this workspace, treat this README as an operator manual:
-it explains what each major area does, which assumptions are hard-coded today,
-and what order of operations is expected when running the project.
+The repository is organized around a single importable package,
+`statistical_sl`, and a separate `workspace/` tree for analysis-facing files.
 
-## What Lives Here
+## Layout
 
-### `prepare_dataset/`
+- `src/statistical_sl/`: reusable Python package code
+- `workspace/configs/`: single-step configs
+- `workspace/recipes/`: pipeline recipes
+- `workspace/data/`: local raw, external, and canonical data roots
+- `workspace/outputs/`: per-run output directories
+- `workspace/scripts/`, `workspace/notebooks/`, `workspace/reports/`: user-facing work files
+- `tests/`: package and workflow checks
+- `docs/`: design and migration notes
 
-Prepares or refreshes the HDF5 data products consumed by inference and
-posterior-predictive workflows.
+## Install
 
-- Updates the raw observation HDF5 files under `data/raw/`
-- Builds cross-section grids, sigma-unit bundles, and canonical inference
-  datasets under `data/external/`
-- Depends on the external `spherical_jeans` package
-- Has its own environment notes in
-  [`prepare_dataset/README.md`](prepare_dataset/README.md)
-
-### `Bayesian_inference/`
-
-Main hierarchical Bayesian inference package for the CMASS strong-lens study.
-
-- Package source lives under `Bayesian_inference/src/cmass_lens_inference/`
-- Runtime configs live under `Bayesian_inference/configs/`
-- Provides CLI entrypoints for new runs and resume
-- Writes main run artifacts under `outputs/`
-- Scientific and modeling requirements are documented in
-  [`Bayesian_inference/PROJECT_REQUIREMENTS.md`](Bayesian_inference/PROJECT_REQUIREMENTS.md)
-
-### `key_tests/`
-
-An isolated comparison workspace for running the current implementation against
-the legacy reference implementation.
-
-- Contains wrappers, generated configs, copied reference code, notebook assets,
-  and comparison reports
-- Uses `key_tests/run_comparison.py` as the orchestrator for the smoke/compare
-  workflow
-- Writes comparison artifacts under `key_tests/output/`
-- Current comparison report lives at
-  [`key_tests/reports/pipeline_comparison.md`](key_tests/reports/pipeline_comparison.md)
-
-### `Posterior_predictive_test/`
-
-Standalone model-aware posterior-predictive, trend, monitor, and Numba-backed
-diagnostics package.
-
-- Package source lives under `Posterior_predictive_test/src/lensing_posterior_predictive/`
-- Provides the `lensing-posterior-predictive` CLI for PPC, trends, diagnostics, and monitor workflows
-- Writes its artifacts under `Posterior_predictive_test/results/`
-- Some defaults in this area point outside the repository to
-  `/Users/liurongfu/Desktop/Spectrum_reduction/...`
-
-### `data/`
-
-Canonical local data layout for this workspace.
-
-- `data/raw/`: immutable observation HDF5 inputs
-- `data/external/`: external cross-section and sigma-unit grids
-- `data/derived/`: reproducible transformed data products
-- `data/caches/`: disposable caches
-
-See [`data/README.md`](data/README.md) for the current layout summary.
-
-### `outputs/`
-
-Canonical output location for primary inference runs.
-
-- `outputs/devauc/`: de Vaucouleurs-profile runs
-- `outputs/sersic/`: Sersic-profile runs
-- `outputs/*/latest`: convenience symlinks when maintained; verify them before
-  using them as the most recent real run
-- `outputs/benchmarks/`: benchmark logs and timing outputs
-
-## Hard Assumptions You Must Not Ignore
-
-### Environment
-
-The supported runtime environment is the conda environment `cmass_lens`.
-
-The repository only tracks the baseline environment file in
-[`prepare_dataset/environment.yml`](prepare_dataset/environment.yml):
+Use the checked-in conda environment `cmass_lens`, then install the package
+editable from the repository root:
 
 ```bash
-conda env update -n cmass_lens -f /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset/environment.yml
+cd /Users/liurongfu/Work/CMASS_lens_project
+conda run -n cmass_lens python -m pip install -e . --no-deps
 ```
 
-That environment file covers baseline scientific packages, but the inference
-package itself is defined in `Bayesian_inference/pyproject.toml`. Install it
-into the same conda environment before using the CLI:
+## CLI
+
+The public command is `statistical-sl`.
+
+Help for the three workflow groups:
 
 ```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-conda run -n cmass_lens python -m pip install -e .
+statistical-sl prepare-dataset --help
+statistical-sl inference --help
+statistical-sl posterior-predictive --help
 ```
 
-### External dependency
-
-`prepare_dataset` depends on `spherical_jeans`, which is not
-vendored in this repository. The environment must already be able to import it.
-
-### Absolute-path assumptions
-
-Many configs, scripts, and reports assume this exact root path:
-
-```text
-/Users/liurongfu/Work/CMASS_lens_project
-```
-
-This is especially true for:
-
-- `Bayesian_inference/configs/*.yaml`
-- reports and manifests under `key_tests/`
-
-### Missing large artifacts from Git
-
-The repository does not track the full HDF5 inputs, sigma tables, chains, or
-generated result trees. Full scientific runs require local copies of these
-artifacts to exist under the expected directories, especially:
-
-- `data/raw/*.hdf5`
-- `data/external/*.h5`
-- `data/external/inference_dataset_*.hdf5`
-- `outputs/`
-- `key_tests/output/`
-- `Posterior_predictive_test/results/`
-
-## Standard Workflow
-
-The safest way to work in this repository is to follow the same order the code
-already assumes.
-
-### 1. Validate the environment
-
-First update the conda environment, then run the data-preparation environment
-check from the `prepare_dataset` directory:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
-conda run -n cmass_lens python -m prepare_dataset.env_check
-```
-
-If you need the inference CLI in that environment, install the editable package
-once from `Bayesian_inference/`.
-
-### 2. Refresh data-preparation products
-
-Run these commands from `prepare_dataset/`.
-
-Process both standard raw observation files:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
-conda run -n cmass_lens python -m prepare_dataset --all-default-inputs
-```
-
-Process a single file:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
-conda run -n cmass_lens python -m prepare_dataset --input /Users/liurongfu/Work/CMASS_lens_project/data/raw/observations_with_mass_grids_all.hdf5
-```
-
-Build posterior-predictive sigma-unit bundle files:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
-conda run -n cmass_lens python -m prepare_dataset --build-sigma-unit-hdf5 --profile all --observation-flavor all --sigma-definition all --workers 14
-```
-
-These commands populate or refresh:
-
-- `data/raw/*.updated.hdf5` or in-place replacements
-- `data/external/cs_grid_power.h5`
-- `data/external/fibre_crosssect_grid.hdf5`
-- `data/external/jeans_deV_sigma_bundle.h5`
-- `data/external/jeans_sers_sigma_bundle.h5`
-- `data/external/inference_dataset_*.hdf5` when the canonical dataset writer is run
-
-### 3. Run the main inference
-
-After installing `Bayesian_inference` into `cmass_lens`, use the packaged CLI.
-The tracked configs already point at the canonical data paths and `outputs/`.
-Every production inference config now selects a scientific model by
-`model.name`, declares one unit convention, and points at one canonical dataset:
-
-```yaml
-unit_convention: h_units_v1
-
-model:
-  name: cmass
-
-data:
-  inference_dataset_path: /Users/liurongfu/Work/CMASS_lens_project/data/external/inference_dataset_devauc_slit_m5_hunits_v1.hdf5
-```
-
-Top-level `mass_definition` / `gamma_model` sections and raw
-`data.observation_path` / `data.cross_section_path` fields are legacy surfaces.
-Production inference rejects them; build a canonical dataset first and put its
-path in `data.inference_dataset_path`.
-
-Run the de Vaucouleurs branch:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-conda run -n cmass_lens cmass-lens-inference run --config /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/configs/devauc.yaml
-```
-
-Run the Sersic branch:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-conda run -n cmass_lens cmass-lens-inference run --config /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference/configs/sersic.yaml
-```
-
-Resume an existing run:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-conda run -n cmass_lens cmass-lens-inference resume --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest
-```
-
-### 4. Run posterior predictive tests or posterior trends
-
-These commands use the `lensing-posterior-predictive` CLI from
-`Posterior_predictive_test/` after that package has been installed into the
-same `cmass_lens` environment.
-
-Example devauc posterior predictive run:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
-conda run -n cmass_lens lensing-posterior-predictive posterior-predictive \
-  --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/devauc/latest \
-  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_deV_sigma_bundle.h5 \
-  --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/devauc
-```
-
-Example sersic posterior-trend run:
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test
-conda run -n cmass_lens lensing-posterior-predictive posterior-trends \
-  --run-dir /Users/liurongfu/Work/CMASS_lens_project/outputs/sersic/latest \
-  --sigma-table /Users/liurongfu/Work/CMASS_lens_project/data/external/jeans_sers_sigma_bundle.h5 \
-  --output-dir /Users/liurongfu/Work/CMASS_lens_project/Posterior_predictive_test/results/sersic
-```
-
-Prefer a concrete run directory when auditing results. The `latest` symlink can
-lag behind the newest real directory if old output trees were moved or archived.
-
-The CLI also exposes `posterior-predictive-monitor` if you need to wait for
-fresh external sigma tables before running both profile branches. The monitor
-now resolves the expected per-profile bundle filename from each run's recorded
-profile and mass definition.
-
-### 5. Run current-vs-reference comparison checks
-
-The isolated comparison harness lives in `key_tests/` and should be run from
-there because the scripts use sibling imports and workspace-relative paths.
-
-```bash
-cd /Users/liurongfu/Work/CMASS_lens_project/key_tests
-conda run -n cmass_lens python run_comparison.py
-```
-
-This workflow prepares the workspace, refreshes copied reference files, runs
-smoke and compare jobs for both profiles, and rewrites the comparison report.
-
-### 6. Run posterior diagnostics through the Numba shared-parent path
-
-The former notebook-vs-pipeline comparison entrypoint has been retired. Use
-`posterior-diagnostics` for the maintained PPC plus Fig. 8-like trend workflow.
-
-## Data and Output Conventions
-
-- Canonical raw observation inputs live under `data/raw/`
-- Canonical external grids live under `data/external/`
-- Main inference outputs live under `outputs/`
-- Current-vs-reference comparison artifacts live under `key_tests/output/`
-- Posterior diagnostics artifacts live under `Posterior_predictive_test/results/`
-
-Git intentionally ignores most heavy runtime artifacts, so absence from Git
-history does not mean those files are optional for local scientific runs.
-
-## Verification Entry Points
-
-Useful checks already defined in the workspace:
-
-- Grid-preparation environment check:
-
-  ```bash
-  cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
-  conda run -n cmass_lens python -m prepare_dataset.env_check
-  ```
-
-- Grid-generation tests:
-
-  ```bash
-  cd /Users/liurongfu/Work/CMASS_lens_project/prepare_dataset
-  conda run -n cmass_lens python -m pytest tests -q
-  ```
-
-- Inference / PPC tests:
-
-  ```bash
-  cd /Users/liurongfu/Work/CMASS_lens_project/Bayesian_inference
-  conda run -n cmass_lens pytest -q tests/test_runner_cli.py tests/test_posterior_predictive.py
-  ```
-
-- Key-test workspace checks:
-
-  ```bash
-  cd /Users/liurongfu/Work/CMASS_lens_project/key_tests
-  conda run -n cmass_lens pytest -q
-  ```
-
-## Important Limitations
-
-- This workspace is path-bound. Moving it to another root directory will break
-  configs and scripts unless you update hard-coded paths.
-- `spherical_jeans` is external and not version-pinned here beyond “must be
-  importable in `cmass_lens`”.
-- Many large data and result artifacts are intentionally excluded from Git, so
-  cloning the repository alone is not enough for full reproducibility.
-- Some files in the tree are operator notes rather than polished product
-  documentation, especially `task_plan.md`, `progress.md`, and `findings.md`.
-- `Posterior_predictive_test/` and parts of `key_tests/` are mixed
-  research/prototype tooling, not hardened public interfaces.
-
-## Deeper References
-
-- [`Bayesian_inference/PROJECT_REQUIREMENTS.md`](Bayesian_inference/PROJECT_REQUIREMENTS.md)
-- [`prepare_dataset/README.md`](prepare_dataset/README.md)
-- [`data/README.md`](data/README.md)
-- [`key_tests/reports/pipeline_comparison.md`](key_tests/reports/pipeline_comparison.md)
+## Workspace contract
+
+- New runtime data should live under `workspace/data/`
+- New run output should live under `workspace/outputs/`
+- Each run should keep its own directory and then split inference and
+  posterior-predictive artifacts underneath that run directory
+- Configs should declare `workspace_root` explicitly in pipeline recipes
+
+## Legacy material
+
+Historical comparison data and archived implementation notes may remain in the
+repository for reference, but they are not part of the default production path.
+Current workflows should use the package and workspace layout above.
