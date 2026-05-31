@@ -8,12 +8,12 @@ from pathlib import Path
 class ForbiddenDependency:
     """A source token that would prove the new package still depends on old code.
 
-    The integration plan defines the old workflow directories and ``legacy/``
-    as non-production material.  This test turns that architectural rule into a
-    cheap static guard.  It deliberately checks text rather than importing
-    modules, because import-time checks can miss dormant wrappers, fallback
-    paths, and configuration references that only activate under specific CLI
-    arguments.
+    The integration plan defines the old workflow directories and the archived
+    historical tree as non-production material.  This test turns that
+    architectural rule into a cheap static guard.  It deliberately checks text
+    rather than importing modules, because import-time checks can miss dormant
+    wrappers, fallback paths, and configuration references that only activate
+    under specific CLI arguments.
     """
 
     token: str

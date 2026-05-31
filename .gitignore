@@ -61,6 +61,7 @@ workspace/data/external/
 workspace/data/canonical/
 workspace/data/derived/
 workspace/data/caches/
+workspace/data/_staging/
 
 # Binary data products from samplers, interpolation grids, raw observation
 # dumps, and packaged experiment outputs are intentionally excluded from the

@@ -13,6 +13,19 @@ The workspace is designed so it can later be split into a separate repository:
 - `data/` contains local input and intermediate data products.
 - `outputs/` contains run directories, with one directory per run.
 
+## Current Post-Canonical Workflow Slice
+
+The currently audited workflow slice starts after canonical datasets already
+exist under `data/canonical/` and then runs:
+
+1. inference from `configs/inference/...`
+2. inference-owned posterior corner generation in the completed run directory
+3. posterior diagnostics from `configs/posterior_predictive/...`
+
+Recipes with `mode: post_canonical` connect those steps. They do not imply
+that data preparation is deprecated or removed; they only provide a focused run
+surface for validating inference and diagnostics from existing canonical data.
+
 Large data files and generated outputs are intentionally ignored by git.  The
 tracked README files document the expected layout without versioning local
 research artifacts.

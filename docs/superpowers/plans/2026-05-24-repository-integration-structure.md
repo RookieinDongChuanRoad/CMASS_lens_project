@@ -190,6 +190,25 @@ posterior_predictive/
 
 后续需要进一步讨论：是否保留 CLI 子命令名 `posterior-diagnostics`，还是改成 `posterior-predictive diagnostics`。无论命令名如何，语义上它都应表示一次完整 posterior predictive diagnostics workflow，而不是只表示某个局部 diagnostic artifact。
 
+#### 2026-05-30 post-canonical workflow amendment
+
+The post-canonical workflow repair validates the slice that starts after
+canonical datasets already exist. This is not a decision to remove or deprecate
+data preparation. Full recipes may still contain a data-preparation step; the
+new `mode: post_canonical` recipes are focused entrypoints for inference plus
+posterior diagnostics from already available canonical HDF5 files.
+
+The same repair keeps inference artifacts at the run root:
+`config_snapshot.yaml`, `chain.h5`, `metadata.json`, and `run_result.json`.
+This is an intentional compatibility decision because current posterior corner
+and posterior diagnostics readers load those files from the run root.
+
+The retained invariant is still "one run directory owns all artifacts":
+posterior diagnostics are nested below
+`posterior_predictive/diagnostics/<diagnostic_run_id>/`. Moving inference
+artifacts into an `inference/` subdirectory is deferred to a separate artifact
+compatibility migration.
+
 ## 目标库结构
 
 ```text

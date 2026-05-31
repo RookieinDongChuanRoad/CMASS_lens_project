@@ -37,6 +37,26 @@ Help for the three workflow groups:
 statistical-sl prepare-dataset --help
 statistical-sl inference --help
 statistical-sl posterior-predictive --help
+statistical-sl pipeline --help
+```
+
+Post-canonical pipeline recipe commands:
+
+```bash
+statistical-sl pipeline validate --recipe workspace/recipes/cmass/devauc_diagnostics_from_canonical.yaml
+statistical-sl pipeline run --recipe workspace/recipes/cmass/devauc_diagnostics_from_canonical.yaml --dry-run
+```
+
+Pipeline runs execute inference, write the run-root `posterior_corner.*`
+artifacts, then write posterior diagnostics under
+`posterior_predictive/diagnostics/`.
+
+Run a posterior diagnostics config against an existing inference run:
+
+```bash
+statistical-sl posterior-predictive posterior-diagnostics \
+  --config workspace/configs/posterior_predictive/cmass/devauc_diagnostics.yaml \
+  --run-dir workspace/outputs/devauc/latest
 ```
 
 ## Workspace contract
@@ -45,6 +65,8 @@ statistical-sl posterior-predictive --help
 - New run output should live under `workspace/outputs/`
 - Each run should keep its own directory and then split inference and
   posterior-predictive artifacts underneath that run directory
+- Posterior diagnostics should write under
+  `workspace/outputs/<profile>/<run_id>/posterior_predictive/diagnostics/<diagnostic_run_id>/`
 - Configs should declare `workspace_root` explicitly in pipeline recipes
 
 ## Legacy material

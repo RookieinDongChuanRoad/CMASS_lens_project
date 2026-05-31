@@ -13,6 +13,8 @@ import math
 
 import numpy as np
 
+from statistical_sl.core.cross_section_policy import CROSS_SECTION_MODE_SEPARABLE_THETA_SQUARED
+from statistical_sl.core.mass_definition import H_UNITS_V1
 from statistical_sl.inference.cosmology import FlatLambdaCDM
 from statistical_sl.inference.io import (
     WITHIN_RE_SIGMA_DEFINITION,
@@ -21,7 +23,6 @@ from statistical_sl.inference.io import (
     load_sigma_unit_table,
 )
 from statistical_sl.inference.profiles import build_profile_spec
-from statistical_sl.core.mass_definition import H_UNITS_V1
 from statistical_sl.models.cmass.constants import (
     CMASS_GAMMA_TRUNC_HIGH,
     CMASS_GAMMA_TRUNC_LOW,
@@ -320,6 +321,7 @@ def build_compiled_context(runtime_config: RuntimeConfig) -> tuple[CMASSModelCon
         gamma_trunc_low=CMASS_GAMMA_TRUNC_LOW,
         gamma_trunc_high=CMASS_GAMMA_TRUNC_HIGH,
         normalization_min_value=CMASS_NORMALIZATION_MIN_VALUE,
+        cross_section_mode_code=CROSS_SECTION_MODE_SEPARABLE_THETA_SQUARED,
         gamma_mode_code=runtime_config.parameter_schema.gamma_mode_code,
         fp_enabled=1 if runtime_config.fp_prior.enabled else 0,
         fp_fit_mstar_min=fp_fit_mstar_min,

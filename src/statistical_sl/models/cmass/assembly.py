@@ -131,12 +131,24 @@ COMPONENTS = (
         required_context_fields=("z_grid", "chi_kpc_grid", "mass_radius_kpc"),
     ),
     theta_gamma_cross_section_component(
-        required_context_fields=("cs_theta_e_axis", "cs_gamma_grid", "cs_cross_section_grid"),
+        required_context_fields=(
+            "cs_theta_e_axis",
+            "cs_gamma_grid",
+            "cs_cross_section_grid",
+            "cs_over_theta_grid",
+            "cross_section_mode_code",
+        ),
         required_capabilities=(CAPABILITY_LENSING_CROSS_SECTION_THETA_GAMMA_V1,),
     ),
     discovery_probability_component(
         parameters=tuple(PARAMETER_SPEC_BY_INTERNAL_NAME[name] for name in DISCOVERY_PARAMETER_NAMES),
-        required_context_fields=("cs_theta_e_axis", "cs_gamma_grid", "cs_cross_section_grid"),
+        required_context_fields=(
+            "cs_theta_e_axis",
+            "cs_gamma_grid",
+            "cs_cross_section_grid",
+            "cs_over_theta_grid",
+            "cross_section_mode_code",
+        ),
     ),
 )
 

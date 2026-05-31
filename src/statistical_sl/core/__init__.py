@@ -11,6 +11,7 @@ from __future__ import annotations
 __all__ = [
     "artifacts",
     "canonical_schema",
+    "cross_section_policy",
     "manifests",
     "mass_definition",
     "unit_conventions",

@@ -159,10 +159,11 @@ has_s2                      # [N_lens]
 theta_e_axis              # [N_theta]
 gamma_axis                # [N_gamma_cs]
 cross_section_grid         # [N_theta, N_gamma_cs]
+source
 boundary_policy
 ```
 
-推荐插值语义：
+基础二维表插值语义：
 
 ```text
 g = interp2d(theta_E, gamma, cross_section_grid)
@@ -170,25 +171,28 @@ g = interp2d(theta_E, gamma, cross_section_grid)
 
 设计决策：
 
-- CMASS 当前的一维 separable cross-section 不在 inference runtime 中保留特殊形态。
-  数据准备阶段应将它转换为二维网格：
+- CMASS 当前的一维 separable cross-section 会在数据准备阶段转换为二维网格，
+  同时保留 `source="separable_cs_over_theta_ein"` 和
+  `boundary_policy="theta_squared_extrapolate_clip_gamma"`：
 
   ```text
   cross_section(theta_E, gamma)
     = pi * (cs_over_theta_ein(gamma) * theta_E)^2
   ```
 
+  运行时可以从二维网格恢复 `cs_over_theta_ein(gamma)`，并在 `theta_E` 超出
+  有限网格时按同一个解析关系延拓。
 - Sonnenfeld 可以直接写入 finite-fibre / seeing-convolved / flux-thresholded 的
-  `g(theta_E, gamma)` 网格。
-- inference backend 只消费统一二维接口，不关心 cross-section 是否来自 separable
-  近似。
-- `boundary_policy` 应在后续 validator 中变成明确枚举。首选策略是
+  `g(theta_E, gamma)` 网格，并使用
   `zero_outside_theta_clip_gamma`：`theta_E` 超出可用范围时 cross-section 置零，
   `gamma` 轴可按预计算网格规则 clip 或 zero，具体实现需与生成网格时的物理约定
   保持一致。
+- inference backend 仍消费统一二维接口，但不能丢弃 `source + boundary_policy`。
+  这两个 attr 是 runtime-visible contract：它们决定 CMASS separable grids 是否
+  允许解析延拓，也防止真实二维 finite-fibre tables 被错误外推。
 
-统一二维接口的收益是：CMASS 和 Sonnenfeld 的 likelihood / normalization 都可以
-共享同一个 cross-section reader 和 JAX interpolation helper。
+统一二维接口的收益是：CMASS 和 Sonnenfeld 可以共享 reader 和基础网格结构；
+`source + boundary_policy` 则补足不同物理来源在边界处的评价语义。
 
 ## `velocity_dispersion_grids`
 

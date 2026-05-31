@@ -16,6 +16,8 @@ from typing import Any
 import h5py
 import numpy as np
 
+from statistical_sl.core.cross_section_policy import resolve_cross_section_mode
+
 
 CANONICAL_SCHEMA_VERSION = "canonical_inference_dataset_v1"
 
@@ -91,11 +93,20 @@ class CanonicalLensingMassGrids:
 
 @dataclass(frozen=True)
 class CanonicalCrossSectionGrid:
-    """Unified two-dimensional theta_E x gamma lensing cross-section grid."""
+    """
+    Unified theta_E x gamma lensing cross-section grid plus evaluation metadata.
+
+    ``source`` records the preparation product that produced the grid, while
+    ``boundary_policy`` records how runtime code may evaluate outside the
+    finite axes.  The numerical array alone is not enough to distinguish a
+    finite-fibre table from a CMASS separable table with analytic
+    theta-squared scaling.
+    """
 
     theta_e_axis: np.ndarray
     gamma_axis: np.ndarray
     cross_section_grid: np.ndarray
+    source: str
     boundary_policy: str
 
 
@@ -259,6 +270,7 @@ def _load_cross_section(group: h5py.Group) -> CanonicalCrossSectionGrid:
         theta_e_axis=_read_required_dataset(group, "theta_e_axis", dtype=np.float64),
         gamma_axis=_read_required_dataset(group, "gamma_axis", dtype=np.float64),
         cross_section_grid=_read_required_dataset(group, "cross_section_grid", dtype=np.float64),
+        source=_decode_hdf5_string(group.attrs.get("source", "")),
         boundary_policy=_decode_hdf5_string(group.attrs.get("boundary_policy", "")),
     )
 
@@ -494,6 +506,7 @@ def _validate_shapes(
             "lensing_cross_section.cross_section_grid must have shape "
             f"{expected_cross_section_shape}, got {cross_section.cross_section_grid.shape}."
         )
+    resolve_cross_section_mode(cross_section.source, cross_section.boundary_policy)
 
     missing_s2 = (lenses.num_sigma > 0) & (mass_grids.has_s2 == 0)
     if np.any(missing_s2):
