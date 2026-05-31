@@ -60,6 +60,7 @@ class CMASSModelContext:
     gamma_trunc_low: float
     gamma_trunc_high: float
     normalization_min_value: float
+    cross_section_mode_code: int
     gamma_mode_code: int
     fp_enabled: int
     fp_fit_mstar_min: float

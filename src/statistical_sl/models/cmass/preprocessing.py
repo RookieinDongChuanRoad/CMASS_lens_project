@@ -18,6 +18,11 @@ import math
 
 import numpy as np
 
+from statistical_sl.core.cross_section_policy import (
+    CROSS_SECTION_MODE_SEPARABLE_THETA_SQUARED,
+    resolve_cross_section_mode,
+)
+from statistical_sl.core.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC
 from statistical_sl.inference.canonical_dataset import (
     CAPABILITY_LENSING_CROSS_SECTION_THETA_GAMMA_V1,
     CAPABILITY_LENSING_MASS_GRIDS_V1,
@@ -34,7 +39,6 @@ from statistical_sl.inference.canonical_context import (
 )
 from statistical_sl.inference.compiled_context import build_random_basis
 from statistical_sl.inference.cosmology import FlatLambdaCDM
-from statistical_sl.core.mass_definition import H_UNITS_V1, LEGACY_FIXED_KPC
 from statistical_sl.models.interfaces import CompiledContextBundle
 from statistical_sl.inference.profiles import build_profile_spec
 from statistical_sl.inference.types import ProfileSpec, RuntimeConfig
@@ -147,6 +151,54 @@ def _active_fp_prior_mass_locations(runtime_config: RuntimeConfig) -> tuple[floa
         f"'{H_UNITS_V1}' or '{LEGACY_FIXED_KPC}', got "
         f"'{runtime_config.unit_convention}'."
     )
+
+
+def _recover_cross_section_factor(
+    dataset: CanonicalInferenceDataset,
+    *,
+    mode_code: int,
+    target_gamma_axis: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Recover CMASS ``cs_over_theta(gamma)`` when the canonical policy allows it.
+
+    Canonical files store a dense ``theta_E x gamma`` area grid for a uniform
+    schema.  For CMASS separable cross-sections, the runtime still needs the
+    underlying one-dimensional factor so it can evaluate
+    ``pi * (theta_E * cs_over_theta(gamma))**2`` outside the finite theta axis.
+    The largest positive theta row is used because it maximizes numerical
+    separation from zero while preserving the exact separable relation.
+    """
+
+    gamma_axis = np.asarray(dataset.cross_section.gamma_axis, dtype=np.float64)
+    if mode_code != CROSS_SECTION_MODE_SEPARABLE_THETA_SQUARED:
+        zeros = np.zeros_like(gamma_axis, dtype=np.float64)
+        return zeros, np.zeros_like(target_gamma_axis, dtype=np.float64)
+
+    theta_axis = np.asarray(dataset.cross_section.theta_e_axis, dtype=np.float64)
+    positive_theta_indices = np.flatnonzero(theta_axis > 0.0)
+    if positive_theta_indices.size == 0:
+        raise ValueError("Separable cross-section policy requires a positive theta_e_axis entry.")
+
+    row_index = int(positive_theta_indices[-1])
+    theta_value = float(theta_axis[row_index])
+    cross_section_row = np.asarray(dataset.cross_section.cross_section_grid[row_index], dtype=np.float64)
+    if cross_section_row.shape != gamma_axis.shape:
+        raise ValueError(
+            "Separable cross-section row must match gamma axis shape, got "
+            f"{cross_section_row.shape} for gamma shape {gamma_axis.shape}."
+        )
+
+    cs_over_theta = np.sqrt(np.maximum(cross_section_row, 0.0) / math.pi) / theta_value
+    if not np.all(np.isfinite(cs_over_theta)) or np.any(cs_over_theta < 0.0):
+        raise ValueError("Recovered separable cross-section factor contains invalid values.")
+
+    cs_over_theta_int = np.interp(
+        np.asarray(target_gamma_axis, dtype=np.float64),
+        gamma_axis,
+        cs_over_theta,
+    )
+    return cs_over_theta.astype(np.float64, copy=False), cs_over_theta_int.astype(np.float64, copy=False)
 
 
 def _stellar_mass_quadrature_arrays(
@@ -291,14 +343,23 @@ def build_cmass_context_from_canonical_dataset(
             profile_fixed_n=active_profile.fixed_n,
         )
     )
+    cross_section_mode_code = resolve_cross_section_mode(
+        active_dataset.cross_section.source,
+        active_dataset.cross_section.boundary_policy,
+    )
+    cs_over_theta_grid, cs_over_theta_int = _recover_cross_section_factor(
+        active_dataset,
+        mode_code=cross_section_mode_code,
+        target_gamma_axis=gamma_grid_int,
+    )
     context = CMASSModelContext(
         z_grid=np.ascontiguousarray(cosmology.z_table, dtype=np.float64),
         chi_kpc_grid=np.ascontiguousarray(cosmology.comoving_distance_table_mpc * 1000.0, dtype=np.float64),
         cs_gamma_grid=np.ascontiguousarray(active_dataset.cross_section.gamma_axis, dtype=np.float64),
-        cs_over_theta_grid=np.zeros_like(np.asarray(active_dataset.cross_section.gamma_axis, dtype=np.float64)),
+        cs_over_theta_grid=np.ascontiguousarray(cs_over_theta_grid, dtype=np.float64),
         cs_theta_e_axis=np.ascontiguousarray(active_dataset.cross_section.theta_e_axis, dtype=np.float64),
         cs_cross_section_grid=np.ascontiguousarray(active_dataset.cross_section.cross_section_grid, dtype=np.float64),
-        cs_over_theta_int=np.zeros(n_gamma, dtype=np.float64),
+        cs_over_theta_int=np.ascontiguousarray(cs_over_theta_int, dtype=np.float64),
         gamma_grid_int=np.ascontiguousarray(gamma_grid_int, dtype=np.float64),
         mass_grid_int=np.ascontiguousarray(mass_grid_int, dtype=np.float64),
         dmass_dthetaein_grid_int=np.ascontiguousarray(dmass_dthetaein_grid_int, dtype=np.float64),
@@ -336,6 +397,7 @@ def build_cmass_context_from_canonical_dataset(
         gamma_trunc_low=CMASS_GAMMA_TRUNC_LOW,
         gamma_trunc_high=CMASS_GAMMA_TRUNC_HIGH,
         normalization_min_value=CMASS_NORMALIZATION_MIN_VALUE,
+        cross_section_mode_code=int(cross_section_mode_code),
         gamma_mode_code=runtime_config.parameter_schema.gamma_mode_code,
         fp_enabled=1 if runtime_config.fp_prior.enabled else 0,
         fp_fit_mstar_min=float(fp_fit_mstar_min),

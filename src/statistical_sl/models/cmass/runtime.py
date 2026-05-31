@@ -130,6 +130,7 @@ def get_data_spec() -> DataSpec:
         ),
         static_fields=(
             StaticContextSpec("use_sersic_index"),
+            StaticContextSpec("cross_section_mode_code"),
             StaticContextSpec("fp_enabled"),
             StaticContextSpec("fp_has_n_axis"),
         ),

@@ -36,34 +36,77 @@ def test_workspace_layout_exists_with_canonical_runtime_boundaries() -> None:
     assert (workspace_root / "outputs" / "README.md").is_file()
 
 
-def test_cmass_pipeline_recipe_references_existing_step_configs() -> None:
+def test_workspace_post_canonical_recipes_reference_existing_step_configs() -> None:
     """
-    The pipeline recipe is the user-facing orchestration contract.
+    Post-canonical recipes are the current audited inference + diagnostics slice.
 
-    This test deliberately validates only structural fields.  It should not run
-    the expensive scientific workflow; it proves that the recipe declares a
-    workspace root, references real single-step configs, and keeps inference
-    artifacts grouped under one run directory before PPC diagnostics write
-    their subdirectory.
+    Full recipes that include data preparation may exist separately. This test
+    only validates recipes explicitly marked `mode: post_canonical`.
     """
 
     repository_root = Path(__file__).resolve().parents[1]
-    recipe_path = repository_root / "workspace" / "recipes" / "cmass" / "sersic_diagnostics.yaml"
-    recipe = yaml.safe_load(recipe_path.read_text(encoding="utf-8"))
+    recipe_root = repository_root / "workspace" / "recipes"
+    recipe_paths = []
+    for candidate in sorted(recipe_root.glob("**/*.yaml")):
+        payload = yaml.safe_load(candidate.read_text(encoding="utf-8"))
+        if payload.get("mode") == "post_canonical":
+            recipe_paths.append(candidate)
 
-    assert recipe["schema_version"] == "statistical_sl_pipeline_v1"
-    assert recipe["workspace_root"] == "../.."
-    assert set(recipe["steps"]) == {"data_preparation", "inference", "posterior_predictive"}
+    assert recipe_paths, "No post-canonical workspace pipeline recipes found."
 
-    recipe_dir = recipe_path.parent
-    for step_payload in recipe["steps"].values():
-        config_path = (recipe_dir / step_payload["config"]).resolve()
-        assert config_path.is_file(), config_path
+    for recipe_path in recipe_paths:
+        recipe = yaml.safe_load(recipe_path.read_text(encoding="utf-8"))
+        assert recipe["schema_version"] == "statistical_sl_pipeline_v1"
+        assert recipe["workspace_root"] == "../.."
+        assert set(recipe["steps"]) == {"inference", "posterior_predictive"}
 
-    inference_output_run_dir = recipe["steps"]["inference"]["output_run_dir"]
-    assert inference_output_run_dir == "outputs/cmass/${run_id}"
-    assert recipe["steps"]["posterior_predictive"]["run_dir"] == "${steps.inference.output_run_dir}"
-    assert (
-        recipe["steps"]["posterior_predictive"]["output_dir"]
-        == "${steps.inference.output_run_dir}/posterior_predictive/diagnostics/${diagnostic_run_id}"
+        recipe_dir = recipe_path.parent
+        inference_step = recipe["steps"]["inference"]
+        posterior_step = recipe["steps"]["posterior_predictive"]
+
+        inference_config_path = (recipe_dir / inference_step["config"]).resolve()
+        posterior_config_path = (recipe_dir / posterior_step["config"]).resolve()
+        dataset_path = (repository_root / "workspace" / inference_step["dataset"]).resolve()
+
+        assert inference_config_path.is_file(), inference_config_path
+        assert posterior_config_path.is_file(), posterior_config_path
+        assert dataset_path.is_file(), dataset_path
+        assert posterior_step["run_dir"] == "${steps.inference.output_run_dir}"
+        assert posterior_step["output_root_dir"] == "outputs"
+        assert posterior_step["result_dir"] == (
+            "${steps.inference.output_run_dir}/posterior_predictive/diagnostics/${diagnostic_run_id}"
+        )
+
+
+def test_workspace_inference_configs_cover_current_production_models() -> None:
+    """
+    The workspace is now the public run surface for production inference.
+
+    The historical standalone inference-config tree is gone, so every
+    production model that the pipeline skill can mention must have a concrete
+    workspace config.  The configs also need to point at workspace-owned data
+    and output roots so new runs do not silently keep writing to the old
+    top-level ``data`` / ``outputs`` layout.
+    """
+
+    repository_root = Path(__file__).resolve().parents[1]
+    config_root = repository_root / "workspace" / "configs" / "inference"
+    expected_configs = (
+        config_root / "cmass" / "devauc.yaml",
+        config_root / "cmass" / "sersic.yaml",
+        config_root / "sonnenfeld2024_slacs" / "sonnenfeld2024_slacs.yaml",
+        config_root / "sonnenfeld2024_slacs" / "sonnenfeld2024_slacs_hunit.yaml",
+        config_root / "sonnenfeld2024_slacs" / "sonnenfeld2024_slacs_sigma_star_gamma.yaml",
+        config_root / "sonnenfeld2024_slacs" / "sonnenfeld2024_slacs_sigma_star_gamma_hunit.yaml",
     )
+
+    for config_path in expected_configs:
+        assert config_path.is_file(), config_path
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        dataset_path = Path(payload["data"]["inference_dataset_path"])
+        output_root = Path(payload["output"]["root_dir"])
+
+        assert dataset_path.parts[:3] == ("workspace", "data", "canonical")
+        assert output_root == Path("workspace/outputs")
+        old_config_root = "Bayesian" + "_inference"
+        assert old_config_root not in config_path.read_text(encoding="utf-8")

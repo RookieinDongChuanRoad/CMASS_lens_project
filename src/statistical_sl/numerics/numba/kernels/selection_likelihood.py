@@ -23,9 +23,77 @@ import math
 import numba as nb
 import numpy as np
 
+from statistical_sl.core.cross_section_policy import (
+    CROSS_SECTION_MODE_GRID_ZERO_OUTSIDE,
+    CROSS_SECTION_MODE_SEPARABLE_THETA_SQUARED,
+)
+
 from .distributions import normal_pdf, truncated_normal_pdf_nonneg
-from .interpolation import interp_cross_section_theta_gamma
+from .interpolation import interp1d_clip, interp_cross_section_theta_gamma
 from .selection import p_find
+
+
+@nb.njit(cache=True, inline="always")
+def separable_theta_squared_cross_section(
+    theta_e: float,
+    gamma: float,
+    gamma_axis: np.ndarray,
+    cs_over_theta_grid: np.ndarray,
+) -> float:
+    """
+    Evaluate a separable CMASS cross-section with analytic theta_E scaling.
+
+    Legacy CMASS products tabulate ``cs_over_theta(gamma)``.  For that source,
+    the area is valid beyond the finite theta grid as
+    ``pi * (theta_E * cs_over_theta(gamma))**2``; gamma still uses the product's
+    clipped one-dimensional interpolation contract.
+    """
+
+    if theta_e <= 0.0 or not math.isfinite(theta_e) or not math.isfinite(gamma):
+        return 0.0
+    cs_over_theta = interp1d_clip(gamma, gamma_axis, cs_over_theta_grid)
+    if cs_over_theta <= 0.0 or not math.isfinite(cs_over_theta):
+        return 0.0
+    value = math.pi * (theta_e * cs_over_theta) ** 2
+    if not math.isfinite(value):
+        return 0.0
+    return value
+
+
+@nb.njit(cache=True, inline="always")
+def policy_cross_section_value(
+    theta_e: float,
+    gamma: float,
+    mode_code: int,
+    theta_e_axis: np.ndarray,
+    gamma_axis: np.ndarray,
+    cross_section_grid: np.ndarray,
+    cs_over_theta_grid: np.ndarray,
+) -> float:
+    """
+    Evaluate cross-section area according to a resolved canonical policy.
+
+    The integer mode is resolved outside Numba from ``source + boundary_policy``.
+    This keeps the scientific HDF5 contract explicit while giving inference and
+    diagnostics one shared scalar evaluator.
+    """
+
+    if mode_code == CROSS_SECTION_MODE_SEPARABLE_THETA_SQUARED:
+        return separable_theta_squared_cross_section(
+            theta_e,
+            gamma,
+            gamma_axis,
+            cs_over_theta_grid,
+        )
+    if mode_code == CROSS_SECTION_MODE_GRID_ZERO_OUTSIDE:
+        return interp_cross_section_theta_gamma(
+            theta_e,
+            gamma,
+            theta_e_axis,
+            gamma_axis,
+            cross_section_grid,
+        )
+    return 0.0
 
 
 @nb.njit(cache=True, inline="always")
@@ -57,6 +125,48 @@ def cross_section_find_weight(
         theta_e_axis,
         gamma_axis,
         cross_section_grid,
+    )
+    if cross_section <= 0.0:
+        return 0.0
+
+    find_probability = p_find(theta_for_detection, theta0, loga)
+    if find_probability <= 0.0:
+        return 0.0
+    return cross_section * find_probability
+
+
+@nb.njit(cache=True, inline="always")
+def policy_cross_section_find_weight(
+    theta_e: float,
+    gamma: float,
+    theta_for_detection: float,
+    theta0: float,
+    loga: float,
+    mode_code: int,
+    theta_e_axis: np.ndarray,
+    gamma_axis: np.ndarray,
+    cross_section_grid: np.ndarray,
+    cs_over_theta_grid: np.ndarray,
+) -> float:
+    """
+    Return cross-section times discovery probability for the resolved policy.
+
+    Grid mode preserves the historical finite-domain behavior.  Separable mode
+    is the CMASS-specific analytic extension advertised by the canonical
+    boundary policy.
+    """
+
+    if theta_e <= 0.0 or theta_for_detection <= 0.0 or not math.isfinite(gamma):
+        return 0.0
+
+    cross_section = policy_cross_section_value(
+        theta_e,
+        gamma,
+        mode_code,
+        theta_e_axis,
+        gamma_axis,
+        cross_section_grid,
+        cs_over_theta_grid,
     )
     if cross_section <= 0.0:
         return 0.0
@@ -146,6 +256,9 @@ __all__ = [
     "cross_section_find_weight",
     "gaussian_source_redshift_density",
     "observed_sigma_likelihood",
+    "policy_cross_section_find_weight",
+    "policy_cross_section_value",
+    "separable_theta_squared_cross_section",
     "sigma_model_from_s2",
     "truncated_nonnegative_source_redshift_density",
 ]

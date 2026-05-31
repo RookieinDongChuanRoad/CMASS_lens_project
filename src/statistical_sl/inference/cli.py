@@ -14,6 +14,7 @@ import json
 from statistical_sl.inference.posterior_corner import (
     DEFAULT_DEVAUC_CORNER_RUN_DIR,
     DEFAULT_SERSIC_CORNER_RUN_DIR,
+    run_posterior_corner,
     run_latest_profile_corner_plots,
 )
 from statistical_sl.inference.runner import resume_inference, run_inference
@@ -31,6 +32,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     resume_parser = subparsers.add_parser("resume", help="Resume an existing run directory")
     resume_parser.add_argument("--run-dir", required=True, help="Existing run directory to resume")
+
+    corner_single_parser = subparsers.add_parser(
+        "posterior-corner",
+        help="Generate one posterior corner plot for a completed run",
+    )
+    corner_single_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
+    corner_single_parser.add_argument(
+        "--burn-in",
+        default="auto",
+        help="Burn-in steps to discard, or 'auto' to reuse the run's stored warmup",
+    )
 
     corner_parser = subparsers.add_parser(
         "posterior-corner-latest",
@@ -65,6 +77,11 @@ def main() -> None:
         result = run_inference(args.config, label=args.label)
     elif args.command == "resume":
         result = resume_inference(args.run_dir)
+    elif args.command == "posterior-corner":
+        burn_in: str | int = args.burn_in
+        if burn_in != "auto":
+            burn_in = int(burn_in)
+        result = run_posterior_corner(run_dir=args.run_dir, burn_in=burn_in)
     else:
         burn_in: str | int = args.burn_in
         if burn_in != "auto":

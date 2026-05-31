@@ -35,6 +35,7 @@ import numpy as np
 import yaml
 from tqdm.auto import tqdm
 
+from statistical_sl.core.manifests import DIAGNOSTICS_DIRNAME, POSTERIOR_PREDICTIVE_DIRNAME
 from statistical_sl.inference.config import load_runtime_config
 from statistical_sl.inference.cosmology import FlatLambdaCDM
 from statistical_sl.inference.profiles import build_profile_spec
@@ -99,6 +100,7 @@ DEFAULT_DIAGNOSTICS_PARENT_SAMPLE_SIZE = DEFAULT_TREND_PARENT_SAMPLE_SIZE
 DEFAULT_TREND_MASS_BIN_COUNT = 19
 DEFAULT_TREND_MASS_BIN_MIN = 10.15
 DEFAULT_TREND_MASS_BIN_MAX = 12.05
+DEFAULT_DIAGNOSTICS_RUN_ID_PREFIX = "diagnostics"
 TREND_CATEGORY_NAMES = ("parent", "detectable", "selected")
 LOG10_2PI = math.log10(2.0 * math.pi)
 GAMMA_MODE_DEPENDENT = "dependent"
@@ -1865,7 +1867,7 @@ def _resolve_gamma_mode_for_fig8_run(run_dir: Path, fig8_summary_path: Path) -> 
     Resolve one run's gamma mode without triggering config migration side effects.
 
     Resolution order:
-    1) `ppc/fig8_like_summary.json` `gamma_mode`
+    1) diagnostics summary JSON `gamma_mode`
     2) `config_snapshot.yaml` `gamma_model.mode` (read-only YAML parse)
     3) run-name fallback (`independent` / `sigma_star` / default dependent)
     """
@@ -1977,7 +1979,7 @@ def _build_fixed_fig8_display_ylim_by_panel(mass_definition: MassDefinition) -> 
         return {
             mass_definition.label: (10.9, 12.05),
             "gamma": (1.15, 2.35),
-            "sigma_ap": (140.0, 370.0),
+            "sigma_ap": (140.0, 400.0),
             "gamma_vs_sigma_star": (1.15, 2.35),
             "gamma_vs_logre_kpc": (1.15, 2.35),
         }
@@ -1985,7 +1987,7 @@ def _build_fixed_fig8_display_ylim_by_panel(mass_definition: MassDefinition) -> 
     return {
         mass_definition.label: (11.2, 12.3),
         "gamma": (1.45, 2.35),
-        "sigma_ap": (140.0, 370.0),
+        "sigma_ap": (140.0, 400.0),
         "gamma_vs_sigma_star": (1.45, 2.35),
         "gamma_vs_logre_kpc": (1.45, 2.35),
     }
@@ -2858,15 +2860,55 @@ def _write_overview_figure(
     plt.close(figure)
 
 
-def _materialize_result_dir(output_root_dir: Path, profile_name: str, run_id: str) -> Path:
-    """Create the deterministic result directory for one PPC run.
+def _default_diagnostic_run_id() -> str:
+    """Return a stable human-readable identifier for one diagnostics execution."""
 
-    All PPC-family workflows now write artifacts under a dedicated `ppc`
-    subdirectory so inference-chain files and PPC products never share the
-    same run root.
+    timestamp_text = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M%S_%f")
+    return f"{DEFAULT_DIAGNOSTICS_RUN_ID_PREFIX}_{timestamp_text}"
+
+
+def _validate_diagnostic_run_id(diagnostic_run_id: str) -> str:
+    """
+    Normalize and validate a diagnostics run identifier.
+
+    Diagnostics artifacts are written under an inference-run-owned directory.
+    Rejecting empty names and path separators keeps a malformed CLI argument
+    from escaping that subtree.
     """
 
-    result_dir = output_root_dir.expanduser().resolve() / profile_name / run_id / "ppc"
+    normalized = diagnostic_run_id.strip()
+    if not normalized:
+        raise ValueError("diagnostic_run_id must not be empty.")
+    if normalized in {".", ".."} or Path(normalized).name != normalized:
+        raise ValueError(f"diagnostic_run_id must be a single path component: {diagnostic_run_id!r}")
+    return normalized
+
+
+def _materialize_result_dir(
+    output_root_dir: Path,
+    profile_name: str,
+    run_id: str,
+    diagnostic_run_id: str | None = None,
+) -> Path:
+    """Create the result directory for one posterior-diagnostics execution.
+
+    Inference artifacts own the run root.  Posterior-predictive diagnostics
+    therefore live below that run as
+    ``posterior_predictive/diagnostics/<diagnostic_run_id>`` instead of the
+    older flat ``ppc`` directory.
+    """
+
+    resolved_diagnostic_run_id = _validate_diagnostic_run_id(
+        diagnostic_run_id or _default_diagnostic_run_id()
+    )
+    result_dir = (
+        output_root_dir.expanduser().resolve()
+        / profile_name
+        / run_id
+        / POSTERIOR_PREDICTIVE_DIRNAME
+        / DIAGNOSTICS_DIRNAME
+        / resolved_diagnostic_run_id
+    )
     result_dir.mkdir(parents=True, exist_ok=True)
     return result_dir
 
@@ -3002,6 +3044,7 @@ def run_posterior_diagnostics(
     run_dir: str,
     sigma_table_path: str | Path | None = None,
     output_root_dir: str | Path = DEFAULT_PPC_OUTPUT_ROOT_DIR,
+    diagnostic_run_id: str | None = None,
     n_posterior_draws: int | None = DEFAULT_TREND_POSTERIOR_DRAWS,
     burn_in: str | int = "auto",
     random_seed: int = DEFAULT_RANDOM_SEED,
@@ -3184,7 +3227,13 @@ def run_posterior_diagnostics(
         for category_name in trend_category_names
     }
 
-    result_dir = _materialize_result_dir(Path(output_root_dir), runtime_config.profile.name, resolved_run_dir.name)
+    result_dir = _materialize_result_dir(
+        Path(output_root_dir),
+        runtime_config.profile.name,
+        resolved_run_dir.name,
+        diagnostic_run_id=diagnostic_run_id,
+    )
+    resolved_diagnostic_run_id = result_dir.name
     backend_name = predictive_definition.backend
     observation_path_metadata = (
         None
@@ -3202,6 +3251,7 @@ def run_posterior_diagnostics(
         "observation_path": observation_path_metadata,
         "observation_flavor": observation_flavor,
         "result_dir": str(result_dir),
+        "diagnostic_run_id": resolved_diagnostic_run_id,
         "burn_in_applied": burn_in_steps,
         "requested_n_replicates": None if n_posterior_draws is None else int(n_posterior_draws),
         "n_posterior_draws_used": n_posterior_draws_used,
@@ -3223,6 +3273,7 @@ def run_posterior_diagnostics(
         **{key: ppc_summary_payload[key] for key in (
             "run_id",
             "profile_name",
+            "diagnostic_run_id",
             "gamma_mode",
             "parameter_order",
             "observation_path",
@@ -3311,6 +3362,7 @@ def run_posterior_diagnostics(
         "observation_path": observation_path_metadata,
         "observation_flavor": observation_flavor,
         "result_dir": str(result_dir),
+        "diagnostic_run_id": resolved_diagnostic_run_id,
         "burn_in_applied": burn_in_steps,
         "requested_n_posterior_draws": None if n_posterior_draws is None else int(n_posterior_draws),
         "n_posterior_draws": n_posterior_draws_used,
@@ -3420,6 +3472,7 @@ def run_posterior_diagnostics(
         "observation_path": observation_path_metadata,
         "observation_flavor": observation_flavor,
         "result_dir": str(result_dir),
+        "diagnostic_run_id": resolved_diagnostic_run_id,
         "burn_in_applied": burn_in_steps,
         "requested_n_posterior_draws": None if n_posterior_draws is None else int(n_posterior_draws),
         "n_posterior_draws": n_posterior_draws_used,
@@ -3502,6 +3555,7 @@ def run_posterior_diagnostics(
         metadata={
             **predictive_metadata,
             "backend": backend_name,
+            "diagnostic_run_id": resolved_diagnostic_run_id,
             "parent_sample_size": int(parent_sample_size),
             "requested_n_posterior_draws": None if n_posterior_draws is None else int(n_posterior_draws),
             "n_posterior_draws_used": n_posterior_draws_used,
@@ -3611,9 +3665,53 @@ def run_posterior_trends(
     )
 
 
-def _discover_unarchived_trend_run_dirs(outputs_root: Path) -> list[tuple[str, Path]]:
+def _has_required_fig8_artifacts(result_dir: Path) -> bool:
+    """Return whether one diagnostics directory can support Fig. 8 redraws."""
+
+    required_paths = (
+        result_dir / "fig8_like_curves.npz",
+        result_dir / "fig8_like.png",
+        result_dir / "gamma_vs_logre_kpc_curves.npz",
+        result_dir / "gamma_vs_sigma_star_curves.npz",
+    )
+    return all(path.exists() for path in required_paths)
+
+
+def _iter_existing_diagnostics_result_dirs(run_dir: Path) -> list[Path]:
     """
-    Return all profile run directories whose Fig. 8 products live under `ppc/`.
+    Return diagnostics artifact directories for one inference run.
+
+    New artifacts live under
+    ``posterior_predictive/diagnostics/<diagnostic_run_id>``.  The legacy
+    ``ppc`` fallback is retained only so saved historical artifacts can still
+    be annotated without rerunning expensive diagnostics.
+    """
+
+    result_dirs: list[Path] = []
+    diagnostics_root = run_dir / POSTERIOR_PREDICTIVE_DIRNAME / DIAGNOSTICS_DIRNAME
+    if diagnostics_root.exists():
+        for candidate in sorted(diagnostics_root.iterdir()):
+            if candidate.is_dir() and _has_required_fig8_artifacts(candidate):
+                result_dirs.append(candidate)
+
+    legacy_ppc_dir = run_dir / "ppc"
+    if _has_required_fig8_artifacts(legacy_ppc_dir):
+        result_dirs.append(legacy_ppc_dir)
+    return result_dirs
+
+
+def _latest_existing_diagnostics_result_dir(run_dir: Path) -> Path | None:
+    """Return the newest available diagnostics directory for one run."""
+
+    candidates = _iter_existing_diagnostics_result_dirs(run_dir)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _discover_unarchived_trend_run_dirs(outputs_root: Path) -> list[tuple[str, Path, Path]]:
+    """
+    Return profile run directories with discoverable Fig. 8 diagnostics.
 
     The user only wants the active, unarchived runs under `outputs/devauc/*`
     and `outputs/sersic/*`. This helper therefore ignores the `archived`
@@ -3621,7 +3719,7 @@ def _discover_unarchived_trend_run_dirs(outputs_root: Path) -> list[tuple[str, P
     trend-array artifact needed for redraw.
     """
 
-    discovered: list[tuple[str, Path]] = []
+    discovered: list[tuple[str, Path, Path]] = []
     for profile_name in ("devauc", "sersic"):
         profile_root = outputs_root / profile_name
         if not profile_root.exists():
@@ -3629,9 +3727,9 @@ def _discover_unarchived_trend_run_dirs(outputs_root: Path) -> list[tuple[str, P
         for run_dir in sorted(profile_root.iterdir()):
             if not run_dir.is_dir() or run_dir.name in {"archived", "latest"}:
                 continue
-            ppc_dir = run_dir / "ppc"
-            if (ppc_dir / "fig8_like_curves.npz").exists() and (ppc_dir / "fig8_like.png").exists():
-                discovered.append((profile_name, run_dir))
+            diagnostics_dir = _latest_existing_diagnostics_result_dir(run_dir)
+            if diagnostics_dir is not None:
+                discovered.append((profile_name, run_dir, diagnostics_dir))
     return discovered
 
 
@@ -3662,7 +3760,7 @@ def _resolve_profile_name_for_annotation_run(run_dir: Path, outputs_root: Path) 
 def _resolve_requested_annotation_runs(
     outputs_root: Path,
     run_dirs: list[str] | None,
-) -> list[tuple[str, Path]]:
+) -> list[tuple[str, Path, Path]]:
     """
     Resolve either explicit run selections or the legacy auto-discovery set.
 
@@ -3675,23 +3773,21 @@ def _resolve_requested_annotation_runs(
     if not run_dirs:
         return _discover_unarchived_trend_run_dirs(outputs_root)
 
-    resolved_pairs: list[tuple[str, Path]] = []
+    resolved_pairs: list[tuple[str, Path, Path]] = []
     for raw_run_dir in run_dirs:
         run_dir = Path(raw_run_dir).expanduser().resolve()
         if not run_dir.exists() or not run_dir.is_dir():
             raise ValueError(f"Explicit run directory '{run_dir}' does not exist or is not a directory.")
-        ppc_dir = run_dir / "ppc"
-        required_paths = [
-            ppc_dir / "fig8_like_curves.npz",
-            ppc_dir / "fig8_like.png",
-            ppc_dir / "gamma_vs_logre_kpc_curves.npz",
-            ppc_dir / "gamma_vs_sigma_star_curves.npz",
-        ]
-        if not all(path.exists() for path in required_paths):
+        diagnostics_dir = _latest_existing_diagnostics_result_dir(run_dir)
+        if diagnostics_dir is None:
             raise ValueError(
                 f"Explicit run directory '{run_dir}' is missing one or more required trend artifacts for 5-panel redraw."
             )
-        resolved_pairs.append((_resolve_profile_name_for_annotation_run(run_dir, outputs_root), run_dir))
+        resolved_pairs.append((
+            _resolve_profile_name_for_annotation_run(run_dir, outputs_root),
+            run_dir,
+            diagnostics_dir,
+        ))
     return resolved_pairs
 
 
@@ -3713,6 +3809,7 @@ def _backup_existing_figure(figure_path: Path, backup_prefix: str) -> Path:
 def _resolve_annotation_observation_path(
     profile_name: str,
     run_dir: Path,
+    diagnostics_dir: Path,
     raw_devauc_path: str | Path | None,
     raw_sersic_path: str | Path | None,
 ) -> Path:
@@ -3730,7 +3827,7 @@ def _resolve_annotation_observation_path(
         return Path(override_path).expanduser().resolve()
     config_snapshot_path = run_dir / "config_snapshot.yaml"
     if not config_snapshot_path.exists():
-        fig8_summary_path = run_dir / "ppc" / "fig8_like_summary.json"
+        fig8_summary_path = diagnostics_dir / "fig8_like_summary.json"
         if not fig8_summary_path.exists():
             raise FileNotFoundError(
                 f"Cannot resolve observation path for '{run_dir}': missing both "
@@ -3751,6 +3848,7 @@ def _resolve_annotation_observation_path(
 def _resolve_annotation_runtime_config(
     profile_name: str,
     run_dir: Path,
+    diagnostics_dir: Path,
     raw_devauc_path: str | Path | None,
     raw_sersic_path: str | Path | None,
 ):
@@ -3765,7 +3863,7 @@ def _resolve_annotation_runtime_config(
 
     config_snapshot_path = run_dir / "config_snapshot.yaml"
     if not config_snapshot_path.exists():
-        fig8_summary_path = run_dir / "ppc" / "fig8_like_summary.json"
+        fig8_summary_path = diagnostics_dir / "fig8_like_summary.json"
         if not fig8_summary_path.exists():
             raise FileNotFoundError(
                 f"Cannot resolve runtime config for '{run_dir}': missing both "
@@ -3784,6 +3882,7 @@ def _resolve_annotation_runtime_config(
     resolved_observation_path = _resolve_annotation_observation_path(
         profile_name=profile_name,
         run_dir=run_dir,
+        diagnostics_dir=diagnostics_dir,
         raw_devauc_path=raw_devauc_path,
         raw_sersic_path=raw_sersic_path,
     )
@@ -3816,17 +3915,18 @@ def annotate_existing_fig8_like_figures_with_observations(
     processed_runs: list[dict[str, Any]] = []
     skipped_runs: list[dict[str, Any]] = []
 
-    for profile_name, run_dir in _resolve_requested_annotation_runs(resolved_outputs_root, run_dirs):
-        ppc_dir = run_dir / "ppc"
-        figure_path = ppc_dir / "fig8_like.png"
-        fig8_summary_path = ppc_dir / "fig8_like_summary.json"
+    for profile_name, run_dir, diagnostics_dir in _resolve_requested_annotation_runs(resolved_outputs_root, run_dirs):
+        figure_path = diagnostics_dir / "fig8_like.png"
+        fig8_summary_path = diagnostics_dir / "fig8_like_summary.json"
         try:
-            mass_grid, mass_definition, trend_summary = _load_trend_summary_from_npz(ppc_dir / "fig8_like_curves.npz")
+            mass_grid, mass_definition, trend_summary = _load_trend_summary_from_npz(
+                diagnostics_dir / "fig8_like_curves.npz"
+            )
             gamma_vs_logre_grid, gamma_vs_logre_summary = _load_single_quantity_trend_summary_from_npz(
-                ppc_dir / "gamma_vs_logre_kpc_curves.npz"
+                diagnostics_dir / "gamma_vs_logre_kpc_curves.npz"
             )
             gamma_vs_sigma_star_grid, gamma_vs_sigma_star_summary = _load_single_quantity_trend_summary_from_npz(
-                ppc_dir / "gamma_vs_sigma_star_curves.npz"
+                diagnostics_dir / "gamma_vs_sigma_star_curves.npz"
             )
             gamma_mode = _resolve_gamma_mode_for_fig8_run(
                 run_dir=run_dir,
@@ -3841,6 +3941,7 @@ def annotate_existing_fig8_like_figures_with_observations(
             runtime_config = _resolve_annotation_runtime_config(
                 profile_name=profile_name,
                 run_dir=run_dir,
+                diagnostics_dir=diagnostics_dir,
                 raw_devauc_path=raw_devauc_path,
                 raw_sersic_path=raw_sersic_path,
             )
@@ -3914,6 +4015,7 @@ def annotate_existing_fig8_like_figures_with_observations(
                 {
                     "profile_name": profile_name,
                     "run_id": run_dir.name,
+                    "diagnostics_dir": str(diagnostics_dir),
                     "figure_path": str(figure_path),
                     "backup_path": str(backup_path),
                     "observation_path": str(resolved_observation_path),
@@ -3938,6 +4040,7 @@ def annotate_existing_fig8_like_figures_with_observations(
                 {
                     "profile_name": profile_name,
                     "run_id": run_dir.name,
+                    "diagnostics_dir": str(diagnostics_dir),
                     "figure_path": str(figure_path),
                     "reason": str(exc),
                 }

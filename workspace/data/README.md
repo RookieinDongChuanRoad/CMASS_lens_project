@@ -8,6 +8,8 @@ are:
 - `canonical/` for canonical inference datasets consumed by inference configs.
 - `derived/` for intermediate products that can be regenerated.
 - `caches/` for disposable local caches.
+- `_staging/` for temporary migration or validation inputs that are not yet a
+  stable public dataset contract.
 
 Large scientific data files are ignored by git.  Keep provenance in manifests
 or reports rather than committing binary data products directly.

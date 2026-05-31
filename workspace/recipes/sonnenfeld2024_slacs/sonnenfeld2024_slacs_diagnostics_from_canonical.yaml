@@ -1,0 +1,16 @@
+schema_version: statistical_sl_pipeline_v1
+name: sonnenfeld2024_slacs_diagnostics_from_canonical
+workspace_root: ../..
+mode: post_canonical
+
+steps:
+  inference:
+    config: ../../configs/inference/sonnenfeld2024_slacs/sonnenfeld2024_slacs.yaml
+    dataset: data/canonical/inference_dataset_sonnenfeld2024_slacs_m5_fixed_v1.hdf5
+    output_run_dir: outputs/devauc/${run_id}
+
+  posterior_predictive:
+    config: ../../configs/posterior_predictive/sonnenfeld2024_slacs/sonnenfeld2024_slacs_diagnostics.yaml
+    run_dir: ${steps.inference.output_run_dir}
+    output_root_dir: outputs
+    result_dir: ${steps.inference.output_run_dir}/posterior_predictive/diagnostics/${diagnostic_run_id}

@@ -1,13 +1,13 @@
 schema_version: statistical_sl_posterior_predictive_config_v1
 workflow: posterior_diagnostics
 model:
-  name: cmass
+  name: sonnenfeld2024_slacs_sigma_star_gamma
 profile:
-  name: sersic
+  name: devauc
 
 inputs:
-  inference_run_dir: ${steps.inference.output_run_dir}
-  sigma_table_path: workspace/data/external/hunits_v1/jeans_sers_sigma_bundle.h5
+  inference_run_dir: null
+  sigma_table_path: null
 
 execution:
   n_posterior_draws: null
@@ -25,5 +25,5 @@ outputs:
 
 notes:
   purpose: >
-    Workspace-level PPC diagnostics contract.  Pipeline recipes should treat
-    this file as the durable step configuration for the current package layout.
+    Post-canonical Sonnenfeld 2024 SLACS sigma-star gamma diagnostics. The
+    model adapter does not require a CMASS observed-aperture sigma bundle.

@@ -10,9 +10,10 @@ steps:
   inference:
     config: ../../configs/inference/cmass/sersic.yaml
     dataset: ${steps.data_preparation.output_dataset}
-    output_run_dir: outputs/cmass/${run_id}
+    output_run_dir: outputs/sersic/${run_id}
 
   posterior_predictive:
     config: ../../configs/posterior_predictive/cmass/sersic_diagnostics.yaml
     run_dir: ${steps.inference.output_run_dir}
-    output_dir: ${steps.inference.output_run_dir}/posterior_predictive/diagnostics/${diagnostic_run_id}
+    output_root_dir: outputs
+    result_dir: ${steps.inference.output_run_dir}/posterior_predictive/diagnostics/${diagnostic_run_id}

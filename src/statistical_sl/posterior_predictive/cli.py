@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from .config import load_posterior_diagnostics_config
 from .predictive import (
     DEFAULT_EXTERNAL_SIGMA_DIR,
     DEFAULT_MONITOR_NOT_BEFORE,
@@ -83,7 +84,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "posterior-diagnostics",
         help="Run Numba shared-parent PPC and Fig. 8-like trend diagnostics",
     )
-    diagnostics_parser.add_argument("--run-dir", required=True, help="Completed inference run directory")
+    diagnostics_parser.add_argument("--config", default=None, help="Posterior diagnostics YAML config")
+    diagnostics_parser.add_argument("--run-dir", default=None, help="Completed inference run directory")
     diagnostics_parser.add_argument(
         "--sigma-table",
         default=None,
@@ -93,6 +95,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_PPC_OUTPUT_ROOT_DIR),
         help=f"Root directory for diagnostics artifacts (default: {DEFAULT_PPC_OUTPUT_ROOT_DIR})",
+    )
+    diagnostics_parser.add_argument(
+        "--diagnostic-run-id",
+        default=None,
+        help=(
+            "Optional name for the diagnostics artifact directory under "
+            "posterior_predictive/diagnostics/. Defaults to a timestamped id."
+        ),
     )
     diagnostics_parser.add_argument("--n-posterior-draws", type=int, default=DEFAULT_TREND_POSTERIOR_DRAWS)
     diagnostics_parser.add_argument("--burn-in", default="auto")
@@ -212,19 +222,53 @@ def main() -> None:
         burn_in = args.burn_in
         if burn_in != "auto":
             burn_in = int(burn_in)
-        result = run_posterior_diagnostics(
-            run_dir=args.run_dir,
-            sigma_table_path=args.sigma_table,
-            output_root_dir=args.output_dir,
-            n_posterior_draws=args.n_posterior_draws,
-            burn_in=burn_in,
-            random_seed=args.seed,
-            parent_sample_size=args.parent_sample_size,
-            worker_processes=args.worker_processes,
-            n_mass_bins=args.n_mass_bins,
-            mass_bin_min=args.mass_bin_min,
-            mass_bin_max=args.mass_bin_max,
-        )
+        if args.config is not None:
+            config = load_posterior_diagnostics_config(args.config)
+            try:
+                kwargs = config.to_run_kwargs(
+                    run_dir_override=args.run_dir,
+                    diagnostic_run_id=args.diagnostic_run_id,
+                )
+            except ValueError as exc:
+                parser.error(str(exc))
+            if args.sigma_table is not None:
+                kwargs["sigma_table_path"] = args.sigma_table
+            if args.output_dir != str(DEFAULT_PPC_OUTPUT_ROOT_DIR):
+                kwargs["output_root_dir"] = args.output_dir
+            if args.n_posterior_draws != DEFAULT_TREND_POSTERIOR_DRAWS:
+                kwargs["n_posterior_draws"] = args.n_posterior_draws
+            if args.burn_in != "auto":
+                kwargs["burn_in"] = burn_in
+            if args.seed != 20260309:
+                kwargs["random_seed"] = args.seed
+            if args.parent_sample_size != DEFAULT_DIAGNOSTICS_PARENT_SAMPLE_SIZE:
+                kwargs["parent_sample_size"] = args.parent_sample_size
+            if args.worker_processes is not None:
+                kwargs["worker_processes"] = args.worker_processes
+            if args.n_mass_bins != DEFAULT_TREND_MASS_BIN_COUNT:
+                kwargs["n_mass_bins"] = args.n_mass_bins
+            if args.mass_bin_min != DEFAULT_TREND_MASS_BIN_MIN:
+                kwargs["mass_bin_min"] = args.mass_bin_min
+            if args.mass_bin_max != DEFAULT_TREND_MASS_BIN_MAX:
+                kwargs["mass_bin_max"] = args.mass_bin_max
+            result = run_posterior_diagnostics(**kwargs)
+        else:
+            if args.run_dir is None:
+                parser.error("posterior-diagnostics requires --run-dir unless --config provides inputs.inference_run_dir.")
+            result = run_posterior_diagnostics(
+                run_dir=args.run_dir,
+                sigma_table_path=args.sigma_table,
+                output_root_dir=args.output_dir,
+                diagnostic_run_id=args.diagnostic_run_id,
+                n_posterior_draws=args.n_posterior_draws,
+                burn_in=burn_in,
+                random_seed=args.seed,
+                parent_sample_size=args.parent_sample_size,
+                worker_processes=args.worker_processes,
+                n_mass_bins=args.n_mass_bins,
+                mass_bin_min=args.mass_bin_min,
+                mass_bin_max=args.mass_bin_max,
+            )
     elif args.command == "posterior-predictive-monitor":
         burn_in = args.burn_in
         if burn_in != "auto":

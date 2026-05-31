@@ -26,10 +26,10 @@ from statistical_sl.numerics.numba.kernels.distributions import (
     truncnorm_sample,
 )
 from statistical_sl.numerics.numba.kernels.interpolation import (
-    interp_cross_section_theta_gamma,
     interp_sigma_unit_clip,
 )
 from statistical_sl.numerics.numba.kernels.lensing import theta_ein_arcsec
+from statistical_sl.numerics.numba.kernels.selection_likelihood import policy_cross_section_value
 from statistical_sl.numerics.numba.runtime import apply_thread_limits
 from statistical_sl.inference.types import ObservationRecord, ProfileSpec, RuntimeConfig
 from statistical_sl.core.mass_definition import MassDefinition
@@ -319,6 +319,8 @@ def _shared_parent_diagnostics_numba_chunk(
     cs_theta_e_axis: np.ndarray,
     cs_gamma_grid: np.ndarray,
     cs_cross_section_grid: np.ndarray,
+    cs_over_theta_grid: np.ndarray,
+    cross_section_mode_code: int,
     sigma_gamma_axis: np.ndarray,
     sigma_zd_axis: np.ndarray,
     sigma_log_re_axis: np.ndarray,
@@ -502,12 +504,14 @@ def _shared_parent_diagnostics_numba_chunk(
                 mass_radius_kpc,
                 mass_log_physical_offset,
             )
-            cross_section = interp_cross_section_theta_gamma(
+            cross_section = policy_cross_section_value(
                 theta_ein_value,
                 gamma_value,
+                cross_section_mode_code,
                 cs_theta_e_axis,
                 cs_gamma_grid,
                 cs_cross_section_grid,
+                cs_over_theta_grid,
             )
             discovery_probability = _numba_logistic_discovery_probability(theta_ein_value, theta0, loga)
             valid_geometry = (
@@ -876,6 +880,8 @@ def _run_shared_parent_diagnostics_numba(
                 as_float64_contiguous(context.cs_theta_e_axis),
                 as_float64_contiguous(context.cs_gamma_grid),
                 as_float64_contiguous(context.cs_cross_section_grid),
+                as_float64_contiguous(context.cs_over_theta_grid),
+                int(context.cross_section_mode_code),
                 as_float64_contiguous(sigma_arrays["gamma_axis"]),
                 as_float64_contiguous(sigma_arrays["zd_axis"]),
                 as_float64_contiguous(sigma_arrays["log_re_axis"]),

@@ -3,11 +3,11 @@ workflow: posterior_diagnostics
 model:
   name: cmass
 profile:
-  name: sersic
+  name: devauc
 
 inputs:
-  inference_run_dir: ${steps.inference.output_run_dir}
-  sigma_table_path: workspace/data/external/hunits_v1/jeans_sers_sigma_bundle.h5
+  inference_run_dir: null
+  sigma_table_path: workspace/data/external/hunits_v1/jeans_deV_sigma_bundle.h5
 
 execution:
   n_posterior_draws: null
@@ -25,5 +25,6 @@ outputs:
 
 notes:
   purpose: >
-    Workspace-level PPC diagnostics contract.  Pipeline recipes should treat
-    this file as the durable step configuration for the current package layout.
+    Post-canonical CMASS de Vaucouleurs posterior diagnostics.  The concrete
+    inference run directory is supplied by a pipeline recipe or by the CLI
+    --run-dir option.

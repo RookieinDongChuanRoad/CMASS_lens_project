@@ -30,7 +30,12 @@ from statistical_sl.core.canonical_schema import (
     CAPABILITY_VELOCITY_DISPERSION_FP_WITHIN_RE_V1,
     CAPABILITY_VELOCITY_DISPERSION_PER_LENS_S2_V1,
     CAPABILITY_VELOCITY_DISPERSION_POPULATION_SIGMA_UNIT_V1,
-    DEFAULT_BOUNDARY_POLICY,
+)
+from statistical_sl.core.cross_section_policy import (
+    BOUNDARY_THETA_SQUARED_EXTRAPOLATE_CLIP_GAMMA,
+    BOUNDARY_ZERO_OUTSIDE_THETA_CLIP_GAMMA,
+    SOURCE_MUFIBRE3_CS_GRID,
+    SOURCE_SEPARABLE_CS_OVER_THETA_EIN,
 )
 
 DEFAULT_THETA_E_AXIS = np.linspace(0.0, 5.0, 256, dtype=float)
@@ -257,11 +262,29 @@ def _read_cross_section_product(
                     "mufibre3_cs_grid must have shape "
                     f"{expected_shape}, got {cross_section_grid.shape}."
                 )
-            return theta_axis, gamma_axis, cross_section_grid, "mufibre3_cs_grid"
+            return theta_axis, gamma_axis, cross_section_grid, SOURCE_MUFIBRE3_CS_GRID
 
         gamma_axis, cs_over_theta = _read_legacy_cross_section_input(cross_section_path, handle)
         cross_section_grid = np.pi * (theta_e_axis[:, None] * cs_over_theta[None, :]) ** 2
-        return theta_e_axis, gamma_axis, cross_section_grid, "separable_cs_over_theta_ein"
+        return theta_e_axis, gamma_axis, cross_section_grid, SOURCE_SEPARABLE_CS_OVER_THETA_EIN
+
+
+def _boundary_policy_for_cross_section_source(source: str) -> str:
+    """
+    Return the runtime boundary policy implied by one canonical source product.
+
+    The canonical writer still materializes a two-dimensional grid for every
+    consumer, but the valid out-of-bounds behavior depends on how the grid was
+    produced.  Legacy CMASS grids are separable in ``theta_E`` and therefore
+    support analytic theta-squared extension.  Sonnenfeld finite-fibre grids are
+    genuine finite-domain tables and must remain zero outside their theta axis.
+    """
+
+    if source == SOURCE_SEPARABLE_CS_OVER_THETA_EIN:
+        return BOUNDARY_THETA_SQUARED_EXTRAPOLATE_CLIP_GAMMA
+    if source == SOURCE_MUFIBRE3_CS_GRID:
+        return BOUNDARY_ZERO_OUTSIDE_THETA_CLIP_GAMMA
+    raise ValueError(f"Unsupported lensing_cross_section source={source!r}.")
 
 
 def _write_string_array(group: h5py.Group, dataset_name: str, values: tuple[str, ...]) -> None:
@@ -410,7 +433,7 @@ def _write_lensing_cross_section(
     group.create_dataset("theta_e_axis", data=theta_axis)
     group.create_dataset("gamma_axis", data=gamma_axis)
     group.create_dataset("cross_section_grid", data=cross_section_grid)
-    group.attrs["boundary_policy"] = DEFAULT_BOUNDARY_POLICY
+    group.attrs["boundary_policy"] = _boundary_policy_for_cross_section_source(source)
     group.attrs["source"] = source
 
 

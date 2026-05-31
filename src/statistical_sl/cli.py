@@ -24,6 +24,7 @@ WORKFLOW_COMMANDS: dict[str, tuple[str, str]] = {
         "statistical_sl.posterior_predictive.cli",
         "statistical-sl posterior-predictive",
     ),
+    "pipeline": ("statistical_sl.pipeline.cli", "statistical-sl pipeline"),
 }
 
 

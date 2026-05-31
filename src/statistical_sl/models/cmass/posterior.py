@@ -35,8 +35,8 @@ from statistical_sl.numerics.numba.kernels.integration import trapezoid_1d
 from statistical_sl.numerics.numba.kernels.interpolation import interp_sigma_unit_clip
 from statistical_sl.numerics.numba.kernels.lensing import theta_ein_arcsec
 from statistical_sl.numerics.numba.kernels.selection_likelihood import (
-    cross_section_find_weight,
     observed_sigma_likelihood,
+    policy_cross_section_find_weight,
     sigma_model_from_s2,
     truncated_nonnegative_source_redshift_density,
 )
@@ -240,6 +240,8 @@ def normalization_mc_numba(
     cs_theta_e_axis: np.ndarray,
     cs_gamma_grid: np.ndarray,
     cs_cross_section_grid: np.ndarray,
+    cs_over_theta_grid: np.ndarray,
+    cross_section_mode_code: int,
     z_grid: np.ndarray,
     chi_kpc_grid: np.ndarray,
     mu_d: float,
@@ -341,15 +343,17 @@ def normalization_mc_numba(
         )
         if theta_e <= 0.0:
             continue
-        selection_weight = cross_section_find_weight(
+        selection_weight = policy_cross_section_find_weight(
             theta_e,
             gamma,
             theta_e,
             theta0,
             loga,
+            cross_section_mode_code,
             cs_theta_e_axis,
             cs_gamma_grid,
             cs_cross_section_grid,
+            cs_over_theta_grid,
         )
         if selection_weight <= 0.0:
             continue
@@ -365,6 +369,8 @@ def population_summary_mc_numba(
     cs_theta_e_axis: np.ndarray,
     cs_gamma_grid: np.ndarray,
     cs_cross_section_grid: np.ndarray,
+    cs_over_theta_grid: np.ndarray,
+    cross_section_mode_code: int,
     z_grid: np.ndarray,
     chi_kpc_grid: np.ndarray,
     mu_d: float,
@@ -496,15 +502,17 @@ def population_summary_mc_numba(
         )
         if theta_e <= 0.0:
             continue
-        selection_weight = cross_section_find_weight(
+        selection_weight = policy_cross_section_find_weight(
             theta_e,
             gamma,
             theta_e,
             theta0,
             loga,
+            cross_section_mode_code,
             cs_theta_e_axis,
             cs_gamma_grid,
             cs_cross_section_grid,
+            cs_over_theta_grid,
         )
         if selection_weight <= 0.0:
             continue
@@ -525,6 +533,8 @@ def log_likelihood_lenses_numba(
     cs_theta_e_axis: np.ndarray,
     cs_gamma_grid: np.ndarray,
     cs_cross_section_grid: np.ndarray,
+    cs_over_theta_grid: np.ndarray,
+    cross_section_mode_code: int,
     mass_grid_int: np.ndarray,
     dmass_dthetaein_grid_int: np.ndarray,
     s2_grid_int: np.ndarray,
@@ -603,15 +613,17 @@ def log_likelihood_lenses_numba(
             if theta_e <= 0.0:
                 continue
 
-            selection_weight = cross_section_find_weight(
+            selection_weight = policy_cross_section_find_weight(
                 theta_e,
                 gamma,
                 theta_e,
                 theta0,
                 loga,
+                cross_section_mode_code,
                 cs_theta_e_axis,
                 cs_gamma_grid,
                 cs_cross_section_grid,
+                cs_over_theta_grid,
             )
             if selection_weight <= 0.0:
                 continue
@@ -788,6 +800,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel, total_start: floa
             cs_theta_e_axis=context.cs_theta_e_axis,
             cs_gamma_grid=context.cs_gamma_grid,
             cs_cross_section_grid=context.cs_cross_section_grid,
+            cs_over_theta_grid=context.cs_over_theta_grid,
+            cross_section_mode_code=context.cross_section_mode_code,
             z_grid=context.z_grid,
             chi_kpc_grid=context.chi_kpc_grid,
             mu_d=context.mu_d,
@@ -826,6 +840,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel, total_start: floa
             cs_theta_e_axis=context.cs_theta_e_axis,
             cs_gamma_grid=context.cs_gamma_grid,
             cs_cross_section_grid=context.cs_cross_section_grid,
+            cs_over_theta_grid=context.cs_over_theta_grid,
+            cross_section_mode_code=context.cross_section_mode_code,
             z_grid=context.z_grid,
             chi_kpc_grid=context.chi_kpc_grid,
             mu_d=context.mu_d,
@@ -862,6 +878,8 @@ def log_prob(theta: np.ndarray, compiled_model: CompiledModel, total_start: floa
         cs_theta_e_axis=context.cs_theta_e_axis,
         cs_gamma_grid=context.cs_gamma_grid,
         cs_cross_section_grid=context.cs_cross_section_grid,
+        cs_over_theta_grid=context.cs_over_theta_grid,
+        cross_section_mode_code=context.cross_section_mode_code,
         mass_grid_int=context.mass_grid_int,
         dmass_dthetaein_grid_int=context.dmass_dthetaein_grid_int,
         s2_grid_int=context.s2_grid_int,
