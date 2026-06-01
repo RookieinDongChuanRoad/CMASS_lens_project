@@ -118,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build one canonical inference_dataset.hdf5 from prepared observation and cross-section HDF5 inputs.",
     )
     parser.add_argument(
+        "--build-canonical-direct",
+        action="store_true",
+        help="Build one canonical inference dataset directly from catalog and trusted velocity-measurement sources.",
+    )
+    parser.add_argument(
         "--build-power-law-cross-section-hdf5",
         action="store_true",
         help="Build the legacy CMASS power-law cs_grid_power.h5 cross-section table.",
@@ -132,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="PPXF CSV file used by --sync-slit-canonical-sigma.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="YAML config used by --build-canonical-direct.",
     )
     parser.add_argument(
         "--sl2s-source",
@@ -335,6 +346,7 @@ def main() -> int:
         + int(args.repack_legacy_sigma_unit_hdf5)
         + int(args.sync_slit_canonical_sigma)
         + int(args.build_canonical_inference_dataset)
+        + int(args.build_canonical_direct)
         + int(args.build_power_law_cross_section_hdf5)
         + int(args.build_fibre_cross_section_hdf5)
     )
@@ -395,6 +407,17 @@ def main() -> int:
         except ValueError as error:
             parser.error(str(error))
         print(f"fibre-cross-section: wrote {output_path}")
+        return 0
+
+    if args.build_canonical_direct:
+        if args.config is None:
+            parser.error("--build-canonical-direct requires --config.")
+        from statistical_sl.data_preparation.direct_pipeline.runner import run_direct_canonical_build
+
+        result = run_direct_canonical_build(args.config)
+        print(f"canonical-direct: wrote {result.canonical_hdf5}")
+        if result.audit_json is not None:
+            print(f"canonical-direct: wrote {result.audit_json}")
         return 0
 
     if args.build_canonical_inference_dataset:

@@ -1,0 +1,44 @@
+schema_version: statistical_sl_direct_data_preparation_v1
+
+output:
+  canonical_hdf5: ../../../data/canonical/inference_dataset_cmass_sersic_direct_hunits.hdf5
+  audit_json: ../../../outputs/data_preparation/cmass/sersic_direct_hunits.audit.json
+
+catalog:
+  type: cmass_summary_table
+  path: ../../../data/raw/summary_table_deV.txt
+  profile_name: sersic
+
+velocity_measurements:
+  type: velocity_measurements_v1
+  path: ../../../data/external/cmass_velocity_measurements_v1.csv
+  missing_policy: num_sigma_zero
+  max_observations_per_lens: 2
+
+units:
+  unit_convention: h_units_v1
+  h_ref: 0.7
+  mass_definition_label: m5_hinvkpc
+  mass_radius_kpc: 5.0
+
+aperture:
+  observation_flavor: slit
+  sigma_definition: observed_aperture
+  shape: rectangular
+  width_arcsec: 1.6
+  height_arcsec: 0.9
+  seeing_fwhm_arcsec: 0.9
+
+grids:
+  gamma_axis:
+    min: 1.2
+    max: 2.8
+    points: 17
+  theta_e_axis:
+    min: 0.0
+    max: 5.0
+    points: 256
+
+cross_section:
+  type: cmass_power_law
+  source_hdf5: ../../../data/external/cs_grid_power.h5

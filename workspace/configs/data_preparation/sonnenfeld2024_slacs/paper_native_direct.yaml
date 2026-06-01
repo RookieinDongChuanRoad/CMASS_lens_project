@@ -1,0 +1,42 @@
+schema_version: statistical_sl_direct_data_preparation_v1
+
+output:
+  canonical_hdf5: ../../../data/canonical/inference_dataset_sonnenfeld2024_slacs_paper_native_direct.hdf5
+  audit_json: ../../../outputs/data_preparation/sonnenfeld2024_slacs/paper_native_direct.audit.json
+
+catalog:
+  type: slacs_table
+  path: ../../../data/raw/SLACS_table.cat
+  profile_name: devauc
+
+velocity_measurements:
+  type: catalog_columns
+  missing_policy: fail
+  trust_catalog_sigma: true
+
+units:
+  unit_convention: legacy_fixed_kpc
+  h_ref: 0.7
+  mass_definition_label: m5
+  mass_radius_kpc: 5.0
+
+aperture:
+  observation_flavor: slacs_fibre
+  sigma_definition: observed_aperture
+  shape: circular
+  radius_arcsec: 1.5
+  seeing_fwhm_arcsec: 1.5
+
+grids:
+  gamma_axis:
+    min: 1.2
+    max: 2.8
+    points: 17
+  theta_e_axis:
+    min: 0.0
+    max: 5.0
+    points: 256
+
+cross_section:
+  type: sonnenfeld_fibre
+  source_hdf5: ../../../data/external/fibre_crosssect_grid.hdf5
